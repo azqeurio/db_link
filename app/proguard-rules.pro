@@ -1,0 +1,12 @@
+# Application-specific R8 rules.
+-keep class dev.pl36.cameralink.core.protocol.** { *; }
+-keep class dev.pl36.cameralink.core.model.** { *; }
+-keep class dev.pl36.cameralink.core.usb.UsbNative { *; }
+-keep class androidx.camera.view.PreviewView { *; }
+-keep class androidx.camera.view.CameraController { *; }
+-keep class androidx.camera.view.LifecycleCameraController { *; }
+-keep class com.google.mlkit.vision.barcode.BarcodeScannerOptions { *; }
+-keep class com.google.mlkit.vision.barcode.BarcodeScanning { *; }
+-keep class com.google.mlkit.vision.barcode.BarcodeScanner { *; }
+-keep class com.google.mlkit.vision.barcode.common.Barcode { *; }
+-keep class com.google.mlkit.vision.common.InputImage { *; }

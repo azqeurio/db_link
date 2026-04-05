@@ -1,0 +1,249 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">db link</string>
+
+    <string name="dest_dashboard">대시보드</string>
+    <string name="dest_remote">리모트</string>
+    <string name="dest_library">Library</string>
+    <string name="dest_geotag">위치정보</string>
+    <string name="dest_system">시스템</string>
+    <string name="dest_settings">설정</string>
+
+    <string name="dash_title">db link</string>
+    <string name="dash_sync">새로고침</string>
+    <string name="dash_syncing">새로고침 중…</string>
+    <string name="dash_battery">배터리</string>
+    <string name="dash_storage">저장 공간</string>
+    <string name="dash_controls">조작</string>
+    <string name="dash_interface">연결 방식</string>
+    <string name="dash_operating_mode">촬영 모드</string>
+    <string name="dash_location_sync">위치정보</string>
+    <string name="dash_advanced_details">고급 정보</string>
+
+    <string name="rem_live_view">라이브뷰</string>
+    <string name="rem_inactive">라이브뷰 꺼짐</string>
+    <string name="rem_exposure">노출 보정</string>
+    <string name="rem_parameters">카메라 설정</string>
+    <string name="rem_actions">동작</string>
+
+    <string name="geo_drop_pin">현재 위치 저장</string>
+    <string name="geo_actions">동작</string>
+    <string name="geo_start_tracking">추적 시작</string>
+    <string name="geo_stop_tracking">추적 중지</string>
+    <string name="geo_auto_match">자동 매칭</string>
+    <string name="geo_adjust_clock">시간 보정</string>
+    <string name="geo_history">위치 기록</string>
+    <string name="geo_title">Location</string>
+    <string name="geo_active_pins">저장된 위치</string>
+    <string name="geo_time_offset">시간 오프셋</string>
+    <string name="geo_sync_now">위치 갱신</string>
+    <string name="geo_sync_section">매칭 및 시계</string>
+    <string name="geo_auto_match_summary">사진 촬영 시간에 맞춰 위치 샘플을 자동으로 연결합니다.</string>
+    <string name="geo_current_position">현재 위치</string>
+    <string name="geo_location_history">기록</string>
+    <string name="geo_route_map">Route map</string>
+    <string name="geo_history_expand">Show history</string>
+    <string name="geo_history_collapse">Hide history</string>
+    <string name="geo_map_loading">Loading map…</string>
+    <string name="geo_map_unavailable_no_key">Google Maps route view is disabled until a GOOGLE_MAPS_API_KEY is configured.</string>
+    <string name="geo_map_empty">No recorded route or photo locations yet.</string>
+    <string name="geo_coordinates">좌표</string>
+    <string name="geo_accuracy">정확도</string>
+    <string name="geo_altitude">고도</string>
+    <string name="geo_speed">속도</string>
+    <string name="geo_timestamp">시간</string>
+
+    <string name="set_preferences">환경설정</string>
+    <string name="set_about">앱 정보</string>
+    <string name="set_version">버전</string>
+    <string name="settings_title">Settings</string>
+    <string name="settings_camera_management">저장된 카메라</string>
+    <string name="settings_current_camera">현재 카메라</string>
+    <string name="settings_saved_camera_none">저장된 카메라가 없습니다.</string>
+    <string name="settings_saved_camera">저장된 카메라</string>
+    <string name="settings_auto_connect_target">자동 연결 대상</string>
+    <string name="settings_select">선택</string>
+    <string name="settings_delete">삭제</string>
+    <string name="settings_forget_all">저장된 카메라 모두 삭제</string>
+    <string name="settings_usage_environment">사용 환경</string>
+    <string name="settings_diagnostics">진단</string>
+    <string name="settings_logs">로그</string>
+    <string name="settings_export_logs">로그 내보내기</string>
+    <string name="settings_clear_logs">로그 지우기</string>
+    <string name="settings_about_title">앱 정보</string>
+    <string name="settings_camera_base_url">카메라 주소</string>
+    <string name="settings_language">언어</string>
+    <string name="settings_language_summary">앱에 표시할 언어를 선택합니다.</string>
+    <string name="settings_language_english">영어</string>
+    <string name="settings_language_korean">한국어</string>
+
+    <!-- Settings: Section headers -->
+    <string name="settings_section_connection">연결 및 카메라</string>
+    <string name="settings_section_dial">리모트 조작</string>
+    <string name="settings_section_dial_subtitle">다이얼 방향</string>
+    <string name="settings_section_tethered_capture">테더링 촬영</string>
+    <string name="settings_section_auto_import">자동 가져오기</string>
+    <string name="settings_section_auto_geotag">자동 위치 태그</string>
+    <string name="settings_section_live_view">라이브뷰</string>
+    <string name="settings_section_app_info">앱 / 정보</string>
+    <string name="settings_section_developer">개발자</string>
+    <string name="settings_section_licenses">라이선스</string>
+
+    <!-- Settings: Live View -->
+    <string name="settings_live_view_quality_label">해상도</string>
+    <string name="settings_live_view_quality_value">800 × 600</string>
+    <string name="settings_live_view_note">라이브뷰 해상도는 카메라 프로토콜에 의해 고정됩니다.</string>
+
+    <!-- Settings: Connection & Camera -->
+    <string name="settings_nearby_discovery_title">근처 기기 탐색</string>
+    <string name="settings_nearby_discovery_summary">카메라 설정 시 Wi-Fi와 블루투스를 사용합니다</string>
+
+    <!-- Settings: Dial direction (per-dial) -->
+    <string name="settings_reverse_dial_aperture_title">조리개 다이얼 반전</string>
+    <string name="settings_reverse_dial_aperture_summary">조리개 스크롤 방향을 반대로 바꿉니다</string>
+    <string name="settings_reverse_dial_shutter_title">셔터 속도 다이얼 반전</string>
+    <string name="settings_reverse_dial_shutter_summary">셔터 속도 스크롤 방향을 반대로 바꿉니다</string>
+    <string name="settings_reverse_dial_iso_title">ISO 다이얼 반전</string>
+    <string name="settings_reverse_dial_iso_summary">ISO 스크롤 방향을 반대로 바꿉니다</string>
+    <string name="settings_reverse_dial_wb_title">화이트밸런스 다이얼 반전</string>
+    <string name="settings_reverse_dial_wb_summary">화이트밸런스 스크롤 방향을 반대로 바꿉니다</string>
+    <string name="settings_reverse_dial_ev_title">노출 보정 다이얼 반전</string>
+    <string name="settings_reverse_dial_ev_summary">노출 보정 스크롤 방향을 반대로 바꿉니다</string>
+    <string name="settings_capture_review_after_shot_title">최신 촬영본 미리보기</string>
+    <string name="settings_capture_review_after_shot_summary">촬영 후 보관함을 새로고치고 최신 사진을 바로 열 수 있게 준비합니다.</string>
+    <string name="settings_capture_save_after_shot_title">최신 촬영본 저장</string>
+    <string name="settings_capture_save_after_shot_summary">촬영한 최신 사진을 이 기기로 자동 저장합니다.</string>
+
+    <!-- Settings: Auto Import -->
+    <string name="settings_auto_import_title">자동 가져오기</string>
+    <string name="settings_auto_import_summary">카메라가 근처에서 연결되면 사진을 가져옵니다</string>
+    <string name="settings_import_new_only_title">새 파일만</string>
+    <string name="settings_import_new_only_summary">이전에 전송한 적 없는 파일만 가져옵니다</string>
+    <string name="settings_import_skip_duplicates_title">중복 건너뛰기</string>
+    <string name="settings_import_skip_duplicates_summary">기기에 이미 있는 파일은 덮어쓰지 않습니다</string>
+    <string name="settings_auto_import_dest_label">저장 위치</string>
+    <string name="settings_auto_import_dest_default">Pictures/db link</string>
+    <string name="settings_auto_import_format_label">파일 형식</string>
+    <string name="settings_auto_import_format_jpeg">JPEG만</string>
+    <string name="settings_auto_import_format_jpeg_raw">JPEG + RAW</string>
+    <string name="settings_auto_import_format_raw">RAW만</string>
+    <string name="settings_auto_import_timing_label">가져오기 시점</string>
+    <string name="settings_auto_import_timing_on_connect">연결 시</string>
+    <string name="settings_auto_import_timing_since_launch">앱 실행 후</string>
+    <string name="settings_auto_import_timing_manual">수동 시작만</string>
+    <string name="settings_auto_import_note">RAW 가져오기는 호환되는 카메라에서 사용할 수 있습니다. 단, 기기 OS 또는 사진 앱이 지원하지 않는 RAW 파일은 정상적으로 열리지 않을 수 있습니다.</string>
+
+    <!-- Settings: Auto Geotag -->
+    <string name="settings_auto_geotag_title">자동 위치 태그</string>
+    <string name="settings_auto_geotag_summary">촬영 시간에 맞춰 위치 정보를 사진에 기록합니다</string>
+    <string name="settings_geotag_sync_clock_title">시간 동기화 신뢰</string>
+    <string name="settings_geotag_sync_clock_summary">연결 시 시계 오프셋을 0으로 재설정 (카메라 시간은 자동 동기화됨)</string>
+    <string name="settings_geotag_include_altitude_title">고도 포함</string>
+    <string name="settings_geotag_include_altitude_summary">EXIF GPS 필드에 고도 데이터를 기록합니다</string>
+    <string name="settings_auto_geotag_accuracy_label">매칭 범위</string>
+    <string name="settings_auto_geotag_accuracy_1m">±1분</string>
+    <string name="settings_auto_geotag_accuracy_2m">±2분</string>
+    <string name="settings_auto_geotag_accuracy_5m">±5분</string>
+    <string name="settings_auto_geotag_accuracy_10m">±10분</string>
+    <string name="settings_auto_geotag_requires">앱 사용 중 위치 권한이 필요합니다.</string>
+    <string name="settings_auto_geotag_method_label">매칭 방식</string>
+    <string name="settings_auto_geotag_method_value">시간 기반 보간</string>
+    <string name="settings_auto_geotag_source_label">위치 소스</string>
+    <string name="settings_auto_geotag_source_value">기기 GPS</string>
+    <string name="settings_auto_geotag_writes_label">기록 대상</string>
+    <string name="settings_auto_geotag_writes_value">EXIF GPS 필드</string>
+    <string name="settings_auto_geotag_unavailable">위치를 사용할 수 없습니다. 위치 서비스를 활성화하고 권한을 허용해 주세요.</string>
+    <string name="settings_auto_geotag_permission_granted">위치 권한 허용됨</string>
+    <string name="settings_auto_geotag_permission_denied">위치 권한 허용되지 않음</string>
+
+    <!-- Settings: Developer -->
+    <string name="settings_debug_workbench_title">프로토콜 워크벤치</string>
+    <string name="settings_debug_workbench_summary">디버그 프로토콜 검사 도구</string>
+    <string name="settings_verbose_logs_title">상세 로그</string>
+    <string name="settings_verbose_logs_summary">HTTP 및 파서 진단 정보</string>
+
+    <!-- Settings: App Info -->
+    <string name="settings_app_version_label">버전</string>
+    <string name="settings_license_text">db link — MIT License\nAndroidX (Core, Compose, Lifecycle, Navigation, DataStore, Work, ExifInterface, CameraX, ProfileInstaller) — Apache 2.0\nOkHttp — Apache 2.0\nGoogle Material Components — Apache 2.0\nGoogle Play Services Location — Google APIs ToS\nML Kit Barcode Scanning — Google APIs ToS\nKotlin &amp; Coroutines — Apache 2.0</string>
+    <string name="settings_support_donate">후원하기</string>
+    <string name="common_edit">편집</string>
+    <string name="common_save">저장</string>
+    <string name="common_cancel">취소</string>
+    <string name="transfer_loading">카메라에서 사진을 불러오는 중…</string>
+    <string name="transfer_retry">다시 시도</string>
+    <string name="transfer_empty_title">카메라에 사진이 없습니다</string>
+    <string name="transfer_empty_message">카메라에 연결한 뒤 불러오기를 눌러 사진을 확인하세요</string>
+    <string name="transfer_load_button">사진 불러오기</string>
+    <string name="remote_tethered_title">테더링 촬영</string>
+    <string name="remote_tethered_review_toggle">촬영 후 미리보기</string>
+    <string name="remote_tethered_save_toggle">촬영 후 저장</string>
+    <string name="remote_tethered_latest">최신 촬영본</string>
+    <string name="remote_tethered_status_idle">Remote 화면을 벗어나지 않고 최신 촬영본을 준비합니다.</string>
+    <string name="remote_tethered_status_latest">최신: %1$s</string>
+    <string name="remote_tethered_status_syncing">최신 촬영본 동기화 중…</string>
+    <string name="remote_tethered_status_saving">최신 촬영본 저장 중…</string>
+
+    <string name="dashboard_no_camera_selected">선택된 카메라 없음</string>
+    <string name="dashboard_saved_cameras">저장된 카메라</string>
+    <string name="dashboard_current_selected">현재 선택됨</string>
+    <string name="dashboard_saved_camera">저장된 카메라</string>
+    <string name="dashboard_reconnect">다시 연결</string>
+    <string name="dashboard_disconnect">연결 해제</string>
+    <string name="dashboard_connect">연결</string>
+    <string name="dashboard_add_camera">카메라 추가</string>
+    <string name="dashboard_scan_qr">QR 스캔</string>
+    <string name="dashboard_quick_actions">바로가기</string>
+    <string name="dashboard_camera_status">카메라 상태</string>
+    <string name="dashboard_wait_camera_wifi">카메라를 통신 모드로 전환해 Wi-Fi가 켜질 때까지 기다리세요.</string>
+    <string name="dashboard_join_camera_wifi">계속하려면 카메라 Wi-Fi에 연결하세요.</string>
+    <string name="dashboard_other_wifi">"%1$s"에 연결되어 있습니다. 카메라 Wi-Fi로 전환하세요.</string>
+    <string name="dashboard_camera_wifi_detected">카메라 Wi-Fi가 감지되었습니다.</string>
+    <string name="dashboard_location_inactive">비활성</string>
+    <string name="dashboard_open_location_settings">위치정보 설정 열기</string>
+    <string name="settings_section_file_save">파일 저장 설정</string>
+    <string name="settings_tether_save_target_label">테더 저장 우선순위</string>
+    <string name="settings_tether_save_target_sd">SD 카드만</string>
+    <string name="settings_tether_save_target_sd_phone">SD 카드 + 휴대폰</string>
+    <string name="settings_tether_save_target_phone">휴대폰 우선</string>
+    <string name="settings_tether_save_target_sd_summary">테더 촬영본을 카메라 카드에만 저장하고 휴대폰 가져오기는 하지 않습니다.</string>
+    <string name="settings_tether_save_target_sd_phone_summary">테더 촬영 후 카메라 저장본을 유지하면서 최신 사진을 휴대폰으로 가져옵니다.</string>
+    <string name="settings_tether_save_target_phone_summary">테더 촬영본을 바로 휴대폰으로 가져오도록 우선 처리합니다.</string>
+    <string name="settings_photo_source_label">사진 소스</string>
+    <string name="settings_photo_source_slot_1">슬롯 1</string>
+    <string name="settings_photo_source_slot_2">슬롯 2</string>
+    <string name="settings_photo_source_current_slot_1">현재 슬롯 1에서 읽는 중</string>
+    <string name="settings_photo_source_current_slot_2">현재 슬롯 2에서 읽는 중</string>
+    <string name="remote_tethered_save_target">저장 대상: %1$s</string>
+    <string name="remote_tethered_live_view_start">라이브뷰 표시</string>
+    <string name="remote_tethered_live_view_stop">라이브뷰 중지</string>
+    <string name="remote_tethered_open_latest">최신 촬영본 열기</string>
+    <string name="remote_tethered_capture_to_sd">SD에 촬영</string>
+    <string name="remote_tethered_capture_to_sd_phone">촬영 후 가져오기</string>
+    <string name="remote_tethered_capture_to_phone">휴대폰으로 촬영</string>
+    <string name="studio_title">USB 스튜디오</string>
+    <string name="studio_status_connected">USB 연결됨</string>
+    <string name="studio_status_idle">테더링 준비 완료</string>
+    <string name="studio_scan_busy">스캔 중…</string>
+    <string name="studio_scan">USB 스캔</string>
+    <string name="studio_disconnect">연결 해제</string>
+    <string name="studio_connect_busy">연결 중…</string>
+    <string name="studio_connect">연결</string>
+    <string name="studio_detected_cameras">감지된 OM 카메라</string>
+    <string name="studio_connected_camera">연결된 카메라</string>
+    <string name="studio_chip_capture_ready">촬영 준비 완료</string>
+    <string name="studio_chip_capture_limited">촬영 제한됨</string>
+    <string name="studio_chip_live_view_supported">라이브뷰 가능</string>
+    <string name="studio_chip_live_view_unknown">라이브뷰 상태 미확인</string>
+    <string name="studio_chip_storage_count">저장소 대상 %1$d개</string>
+    <string name="studio_capture_section">테더링 촬영</string>
+    <string name="studio_capture_summary">USB 촬영 후 최신 프레임을 바로 휴대폰으로 가져옵니다.</string>
+    <string name="studio_capture_busy">가져오는 중…</string>
+    <string name="studio_capture_to_phone">휴대폰으로 촬영</string>
+    <string name="studio_import_latest">최신 사진 가져오기</string>
+    <string name="studio_last_import">마지막 USB 가져오기</string>
+    <string name="studio_import_count">가져온 사진: %1$d</string>
+    <string name="notification_geotag_title">지오태그 작동중</string>
+    <string name="notification_geotag_text">위치를 기록하고 있습니다</string>
+    <string name="notification_geotag_channel">지오태그 상태</string>
+    <string name="notification_geotag_channel_description">앱이 지오태그용 위치를 기록하는 동안 표시됩니다.</string>
+</resources>
