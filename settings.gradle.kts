@@ -17,5 +17,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PL36 Camera Link"
+rootProject.name = "db link"
 include(":app")

@@ -7,13 +7,13 @@ plugins {
 }
 
 val buildRootProvider = providers
-    .gradleProperty("CAMERALINK_BUILD_ROOT")
-    .orElse(providers.environmentVariable("CAMERALINK_BUILD_ROOT"))
+    .gradleProperty("DBLINK_BUILD_ROOT")
+    .orElse(providers.environmentVariable("DBLINK_BUILD_ROOT"))
     .orElse(
         providers.provider {
             File(
                 System.getProperty("java.io.tmpdir"),
-                "cameralink-build/${rootProject.name}/${project.name}",
+                "dblink-build/${rootProject.name}/${project.name}",
             ).absolutePath
         },
     )
@@ -57,11 +57,11 @@ val escapedGoogleMapsApiKey = googleMapsApiKey
     .replace("\"", "\\\"")
 
 android {
-    namespace = "dev.pl36.cameralink"
+    namespace = "dev.dblink"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "dev.pl36.cameralink"
+        applicationId = "dev.dblink"
         minSdk = 26
         targetSdk = 36
         versionCode = 2

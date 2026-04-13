@@ -1,8 +1,8 @@
 # Third-Party Notices
 
-This repository contains original project code under the MIT License in [LICENSE](C:/Users/godth/OneDrive/바탕%20화면/pl36/modern-app/LICENSE).
+This repository contains original project code under the MIT License in [LICENSE](LICENSE).
 
-The Android app depends on third-party libraries and SDKs with their own terms. The list below reflects the direct dependencies declared in [app/build.gradle.kts](C:/Users/godth/OneDrive/바탕%20화면/pl36/modern-app/app/build.gradle.kts).
+The Android app depends on third-party libraries and SDKs with their own terms. The list below reflects the direct dependencies declared in [app/build.gradle.kts](app/build.gradle.kts).
 
 ## Apache License 2.0
 

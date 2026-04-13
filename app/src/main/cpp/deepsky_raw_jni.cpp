@@ -98,7 +98,7 @@ ProcessedBuffers BuildBuffers(const libraw_processed_image_t* image, int preview
 
 }  // namespace
 
-extern "C" JNIEXPORT jobject JNICALL Java_dev_pl36_cameralink_core_deepsky_DeepSkyNative_decodeOrf(
+extern "C" JNIEXPORT jobject JNICALL Java_dev_dblink_core_deepsky_DeepSkyNative_decodeOrf(
     JNIEnv* env,
     jobject /* thiz */,
     jstring raw_path,
@@ -169,7 +169,7 @@ extern "C" JNIEXPORT jobject JNICALL Java_dev_pl36_cameralink_core_deepsky_DeepS
         static_cast<jsize>(buffers.alignment_luma.size()),
         reinterpret_cast<const jfloat*>(buffers.alignment_luma.data()));
 
-    jclass result_class = env->FindClass("dev/pl36/cameralink/core/deepsky/NativeRawDecodeResult");
+    jclass result_class = env->FindClass("dev/dblink/core/deepsky/NativeRawDecodeResult");
     if (result_class == nullptr) {
         LibRaw::dcraw_clear_mem(image);
         processor.recycle();

@@ -22,14 +22,6 @@ Still in progress:
 
 ## Recommended local configuration
 
-### Windows path workaround
-
-If Android Studio reports that the project path contains non-ASCII characters, open the project from this ASCII-only junction instead:
-
-- `C:\dev\pl36-modern-app`
-
-That junction already points to the real workspace location on this machine.
-
 ### 1. Install tooling
 
 - Android Studio latest stable
@@ -63,7 +55,7 @@ If your SDK is installed somewhere else, point `sdk.dir` there instead.
 
 ### 3. Open the project
 
-- Open [modern-app](C:/Users/godth/OneDrive/바탕%20화면/pl36/modern-app) in Android Studio
+- Open the repository root in Android Studio
 - Let Android Studio sync Gradle
 - If prompted, install missing SDK components
 

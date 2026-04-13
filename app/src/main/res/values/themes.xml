@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.CameraLinkModern" parent="Theme.Material3.DayNight.NoActionBar">
+    <style name="Theme.DbLinkModern" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
 
-    <style name="Theme.CameraLinkModern.Starting" parent="Theme.SplashScreen">
+    <style name="Theme.DbLinkModern.Starting" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/splash_background</item>
         <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
-        <item name="postSplashScreenTheme">@style/Theme.CameraLinkModern</item>
+        <item name="postSplashScreenTheme">@style/Theme.DbLinkModern</item>
     </style>
 
 </resources>

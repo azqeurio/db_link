@@ -5,7 +5,7 @@
 Apply OM System USB tether fixes against the existing Android app without inventing new protocol behavior. Base changes on:
 
 - captured PTP logs from `C:/Users/godth/Downloads`
-- the current app code in `modern-app`
+- the current app source tree
 - strings/resources from the installed OM Capture desktop app in `OM Capture/i18n`
 
 ## Logs and sources reviewed
@@ -78,9 +78,9 @@ Verified against OM Capture resources:
 
 Files:
 
-- `app/src/main/java/dev/pl36/cameralink/core/usb/OmCaptureUsbCameraEvent.kt`
-- `app/src/main/java/dev/pl36/cameralink/core/usb/OmCaptureUsbManager.kt`
-- `app/src/main/java/dev/pl36/cameralink/ui/MainViewModel.kt`
+- `app/src/main/java/dev/dblink/core/usb/OmCaptureUsbCameraEvent.kt`
+- `app/src/main/java/dev/dblink/core/usb/OmCaptureUsbManager.kt`
+- `app/src/main/java/dev/dblink/ui/MainViewModel.kt`
 
 Changes:
 
@@ -100,7 +100,7 @@ Reason:
 
 File:
 
-- `app/src/main/java/dev/pl36/cameralink/feature/remote/RemoteScreen.kt`
+- `app/src/main/java/dev/dblink/feature/remote/RemoteScreen.kt`
 
 Changes:
 
@@ -121,7 +121,7 @@ Reason:
 
 File:
 
-- `app/src/main/java/dev/pl36/cameralink/core/usb/OlympusUsbValueFormatter.kt`
+- `app/src/main/java/dev/dblink/core/usb/OlympusUsbValueFormatter.kt`
 
 Changes:
 
@@ -144,10 +144,10 @@ Notes:
 
 Files:
 
-- `app/src/main/java/dev/pl36/cameralink/feature/remote/RemoteScreen.kt`
-- `app/src/main/java/dev/pl36/cameralink/ui/MainViewModel.kt`
-- `app/src/main/java/dev/pl36/cameralink/core/usb/OmCaptureUsbManager.kt`
-- `app/src/main/java/dev/pl36/cameralink/core/usb/OlympusUsbValueFormatter.kt`
+- `app/src/main/java/dev/dblink/feature/remote/RemoteScreen.kt`
+- `app/src/main/java/dev/dblink/ui/MainViewModel.kt`
+- `app/src/main/java/dev/dblink/core/usb/OmCaptureUsbManager.kt`
+- `app/src/main/java/dev/dblink/core/usb/OlympusUsbValueFormatter.kt`
 
 Changes:
 
@@ -206,8 +206,8 @@ The following still need real camera validation:
 
 Files:
 
-- `app/src/main/java/dev/pl36/cameralink/ui/MainViewModel.kt`
-- `app/src/main/java/dev/pl36/cameralink/core/usb/OmCaptureUsbManager.kt`
+- `app/src/main/java/dev/dblink/ui/MainViewModel.kt`
+- `app/src/main/java/dev/dblink/core/usb/OmCaptureUsbManager.kt`
 
 Changes:
 
@@ -230,7 +230,7 @@ Why:
 
 Files:
 
-- `app/src/main/java/dev/pl36/cameralink/feature/remote/RemoteScreen.kt`
+- `app/src/main/java/dev/dblink/feature/remote/RemoteScreen.kt`
 
 Evidence used:
 
@@ -273,16 +273,16 @@ Goal:
 Files:
 
 - `app/build.gradle.kts`
-- `app/src/main/java/dev/pl36/cameralink/CameraLinkApp.kt`
-- `app/src/main/java/dev/pl36/cameralink/ui/MainViewModel.kt`
-- `app/src/main/java/dev/pl36/cameralink/ui/QaRecorderUiState.kt`
-- `app/src/main/java/dev/pl36/cameralink/feature/dashboard/DashboardScreen.kt`
-- `app/src/main/java/dev/pl36/cameralink/feature/qa/QaRecorderScreen.kt`
+- `app/src/main/java/dev/dblink/DbLinkApp.kt`
+- `app/src/main/java/dev/dblink/ui/MainViewModel.kt`
+- `app/src/main/java/dev/dblink/ui/QaRecorderUiState.kt`
+- `app/src/main/java/dev/dblink/feature/dashboard/DashboardScreen.kt`
+- `app/src/main/java/dev/dblink/feature/qa/QaRecorderScreen.kt`
 
 Implementation:
 
 - added a dedicated `qa` build type with:
-  - application id `dev.pl36.cameralink.qa`
+  - application id `dev.dblink.qa`
   - version suffix `-qa`
   - QA-only build flag `BuildConfig.QA_RECORDER_BUILD`
 - added QA session state to `MainUiState`
@@ -328,7 +328,7 @@ Verification:
 
 Artifact:
 
-- `C:\Users\godth\AppData\Local\Temp\cameralink-build\PL36 Camera Link\app\outputs\apk\qa\app-qa.apk`
+- `C:\Users\godth\AppData\Local\Temp\dblink-build\db link\app\outputs\apk\qa\app-qa.apk`
 
 ## Remote-integrated recorder
 
@@ -346,10 +346,10 @@ Goal:
 Files:
 
 - `app/build.gradle.kts`
-- `app/src/main/java/dev/pl36/cameralink/CameraLinkApp.kt`
-- `app/src/main/java/dev/pl36/cameralink/feature/remote/RemoteScreen.kt`
-- `app/src/main/java/dev/pl36/cameralink/ui/MainViewModel.kt`
-- `app/src/main/java/dev/pl36/cameralink/ui/QaRecorderUiState.kt`
+- `app/src/main/java/dev/dblink/DbLinkApp.kt`
+- `app/src/main/java/dev/dblink/feature/remote/RemoteScreen.kt`
+- `app/src/main/java/dev/dblink/ui/MainViewModel.kt`
+- `app/src/main/java/dev/dblink/ui/QaRecorderUiState.kt`
 
 Implementation:
 

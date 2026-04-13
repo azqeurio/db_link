@@ -19,7 +19,7 @@
 
 #define TAG "UsbNative"
 
-static const char *USB_NATIVE_CLASS = "dev/pl36/cameralink/core/usb/UsbNative";
+static const char *USB_NATIVE_CLASS = "dev/dblink/core/usb/UsbNative";
 
 /*
  * struct usbdevfs_ioctl is used to send a sub-ioctl to a specific interface.

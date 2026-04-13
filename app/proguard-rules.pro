@@ -1,7 +1,7 @@
 # Application-specific R8 rules.
--keep class dev.pl36.cameralink.core.protocol.** { *; }
--keep class dev.pl36.cameralink.core.model.** { *; }
--keep class dev.pl36.cameralink.core.usb.UsbNative { *; }
+-keep class dev.dblink.core.protocol.** { *; }
+-keep class dev.dblink.core.model.** { *; }
+-keep class dev.dblink.core.usb.UsbNative { *; }
 -keep class androidx.camera.view.PreviewView { *; }
 -keep class androidx.camera.view.CameraController { *; }
 -keep class androidx.camera.view.LifecycleCameraController { *; }
