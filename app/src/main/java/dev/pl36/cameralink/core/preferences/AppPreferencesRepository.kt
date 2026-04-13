@@ -76,8 +76,7 @@ class AppPreferencesRepository(
         return snapshot
     }
 
-    // ── Camera Credentials ───────────────────────────────────
-
+    // Camera Credentials
     suspend fun saveCameraCredentials(
         ssid: String,
         password: String,
@@ -327,8 +326,7 @@ class AppPreferencesRepository(
         }
     }
 
-    // ── GeoTagging ──────────────────────────────────────────
-
+    // GeoTagging
     suspend fun saveGeoTagging(snapshot: GeoTaggingSnapshot) {
         D.pref("saveGeoTagging: ${snapshot.samples.size} samples, offset=${snapshot.clockOffsetMinutes}min, totalPins=${snapshot.totalPinsCaptured}")
         context.appPreferencesDataStore.edit { preferences ->

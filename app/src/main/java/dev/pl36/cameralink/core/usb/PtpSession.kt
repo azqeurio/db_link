@@ -82,8 +82,7 @@ class PtpSession(
         val response: PtpContainer?,
     )
 
-    // ── Session Lifecycle ────────────────────────────────────────
-
+    // Session Lifecycle
     /**
      * Get device information. Can be called before opening a session.
      */
@@ -210,8 +209,7 @@ class PtpSession(
         D.ptp("Session closed")
     }
 
-    // ── Device Properties ────────────────────────────────────────
-
+    // Device Properties
     /**
      * Get a device property value.
      * @param propCode the property code (standard or vendor)
@@ -691,8 +689,7 @@ class PtpSession(
 
     fun getAfResult(): Result<Int> = getDevicePropValueInt16(PtpConstants.OlympusProp.AFResult)
 
-    // ── Capture ──────────────────────────────────────────────────
-
+    // Capture
     /**
      * Initiate a standard PTP capture.
      * @param storageId storage ID (0 = default)
@@ -712,8 +709,7 @@ class PtpSession(
         }
     }
 
-    // ── Storage & Objects ────────────────────────────────────────
-
+    // Storage & Objects
     /**
      * Trigger OM-D vendor capture over USB/PTP.
      *
@@ -846,8 +842,7 @@ class PtpSession(
         }
     }
 
-    // ── Camera Workflow Operations ────────────────────────────
-
+    // Camera Workflow Operations
     /**
      * Change the camera's run mode (Olympus vendor operation 0x910B).
      *
@@ -1068,8 +1063,7 @@ class PtpSession(
         }
     }
 
-    // ── Live View ─────────────────────────────────────────────────
-
+    // Live View
     /**
      * Get a single live view frame via OM-D vendor operation 0x9484.
      *
@@ -1093,8 +1087,7 @@ class PtpSession(
         data
     }
 
-    // ── Events ───────────────────────────────────────────────────
-
+    // Events
     /**
      * Poll for a PTP event from the camera.
      * Returns null if no event is pending.
@@ -1118,8 +1111,7 @@ class PtpSession(
         return null
     }
 
-    // ── Helpers ──────────────────────────────────────────────────
-
+    // Helpers
     private fun checkOpen() {
         check(isOpen) { "PTP session is not open. Call openSession() first." }
     }

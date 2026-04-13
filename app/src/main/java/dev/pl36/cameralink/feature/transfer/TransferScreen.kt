@@ -239,7 +239,7 @@ fun TransferScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // ── Header ─────────────────────────────
+        // Header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -297,7 +297,7 @@ fun TransferScreen(
             }
         }
 
-        // ── Filter chips ─────────────────────
+        // Filter chips
         if (transferState.images.isNotEmpty()) {
             androidx.compose.foundation.lazy.LazyRow(
                 modifier = Modifier
@@ -343,7 +343,7 @@ fun TransferScreen(
             }
         }
 
-        // ── Content ──────────────────────────
+        // Content
         when {
             transferState.isLoading && transferState.images.isEmpty() -> {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -418,7 +418,7 @@ fun TransferScreen(
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         dateSections.forEach { section ->
-                            // ── Date section header (full width) ──
+                            // Date section header (full width)
                             item(
                                 key = "header_${section.dateKey}",
                                 span = { GridItemSpan(maxLineSpan) },
@@ -435,7 +435,7 @@ fun TransferScreen(
                                 )
                             }
 
-                            // ── Thumbnails ──
+                            // Thumbnails
                             items(section.images, key = { it.fullPath }) { image ->
                                 val thumbnail = transferState.thumbnails[image.fileName]
                                 val isSelected = image.fullPath in transferState.selectedImages
@@ -463,7 +463,7 @@ fun TransferScreen(
                         }
                     }
 
-                    // ── Batch download bar ──
+                    // Batch download bar
                     if (hasInlineStatus) {
                         Column(
                             modifier = Modifier
@@ -622,9 +622,7 @@ fun TransferScreen(
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 // Date section header
-// ──────────────────────────────────────────────────────────────────────────
 @Composable
 private fun TransferSummaryCard(
     label: String,
@@ -753,9 +751,7 @@ private fun DateSectionHeader(
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 // Image thumbnail cell
-// ──────────────────────────────────────────────────────────────────────────
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ImageThumbnailCell(
@@ -854,9 +850,7 @@ private fun ImageThumbnailCell(
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 // Image detail view with horizontal pager (swipe between photos)
-// ──────────────────────────────────────────────────────────────────────────
 @Composable
 private fun ImageDetailPager(
     images: List<CameraImage>,
@@ -914,7 +908,7 @@ private fun ImageDetailPager(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // ── Image pager ──
+        // Image pager
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1052,7 +1046,7 @@ private fun ImageDetailPager(
 
         }
 
-        // ── Bottom info bar ──
+        // Bottom info bar
         val selectedImage = currentImage
         if (selectedImage != null) {
             DetailBottomBar(

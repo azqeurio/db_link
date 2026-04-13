@@ -483,7 +483,7 @@ class MainViewModel(
                                     isDownloading = false,
                                 ),
                             ) }
-                            // Do NOT auto-reconnect. The user must press Reconnect manually.
+                            // Leave reconnect as an explicit user action.
                             val savedSsid = _uiState.value.selectedCameraSsid
                             D.reconnect("RECONNECT_AUTO suppressed on wifi disconnect (savedSsid=$savedSsid, liveView=$wasLiveViewActive)")
                             // Remember live-view state so manual reconnect can restore it
@@ -3614,8 +3614,7 @@ class MainViewModel(
         }
     }
 
-    // ── Live View ───────────────────────────────────────────────
-
+    // Live View
     fun toggleLiveView() {
         val starting = !_uiState.value.remoteRuntime.liveViewActive
         recordQaUiAction(
@@ -3812,8 +3811,7 @@ class MainViewModel(
         usbLiveViewFrameJob = null
     }
 
-    // ── Remote Capture ──────────────────────────────────────────
-
+    // Remote Capture
     fun captureRemotePhoto() {
         recordQaUiAction(
             title = "Capture photo",
@@ -3935,8 +3933,7 @@ class MainViewModel(
         }
     }
 
-    // ── Shooting Mode ────────────────────────────────────────────
-
+    // Shooting Mode
     private fun isCaptureReviewAfterShotEnabled(): Boolean {
         return _uiState.value.settings.firstOrNull { it.id == "capture_review_after_shot" }?.enabled == true
     }
@@ -4085,8 +4082,7 @@ class MainViewModel(
         ) }
     }
 
-    // ── Drive & Timer ───────────────────────────────────────────
-
+    // Drive & Timer
     fun setDriveMode(mode: DriveMode) {
         recordQaUiAction(title = "Set drive mode", detail = mode.label)
         D.ui("setDriveMode: $mode")
@@ -4124,8 +4120,7 @@ class MainViewModel(
         )
     }
 
-    // ── Camera Mode (P/A/S/M...) ────────────────────────────────
-
+    // Camera Mode (P/A/S/M...)
     fun setCameraExposureMode(mode: CameraExposureMode) {
         recordQaUiAction(title = "Set exposure mode", detail = mode.label)
         val current = _uiState.value.remoteRuntime.exposureMode
@@ -7055,10 +7050,8 @@ class MainViewModel(
                             desc.enumValues.any { PropertyFormatter.isAutoValue(propName, it) })
                     )
             ) {
-                // Do NOT remove from pendingPropertyTargets here.
-                // Let mergePendingPropertyCurrent in loadCameraProperties handle it.
-                // Removing eagerly here leaves a window where the user changes the value
-                // and the subsequent loadCameraProperties has no protection against stale data.
+                // Keep the pending target until the next property merge so a readback
+                // cannot briefly replace a user-selected value with stale camera data.
                 D.proto("waitForPropertyTarget: $propName confirmed at $expectedValue (pending kept for load)")
                 return desc
             }
@@ -7894,10 +7887,8 @@ class MainViewModel(
             ),
         )
         deepSkyLiveStackCoordinator.updateSkyHintContext(persistedGeoTagging.latestSample, null)
-        // Do NOT auto-connect at startup. The user will explicitly tap "Connect"
-        // or the WiFi observer will handle reconnection if already on camera WiFi.
-        // Auto-connect was removed because it races with the WiFi observer and
-        // causes unreliable reconnection to registered cameras (Priority 1).
+        // Startup connection stays user-driven. If the phone is already on camera
+        // Wi-Fi, the Wi-Fi observer handles the session without a competing launch path.
     }
 
     private fun pushGeoTagSample(

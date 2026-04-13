@@ -10,7 +10,7 @@ class CameraLinkApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // Initialize the Pro-level File Logger
+        // Initialize local file logging before the app starts work.
         FileLogger.initialize(this)
         appContainer = CameraLinkAppContainer(this)
         D.lifecycle("Application started. Environment: ${if (BuildConfig.DEBUG) "DEBUG" else "RELEASE"}")

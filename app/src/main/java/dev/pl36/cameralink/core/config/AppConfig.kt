@@ -2,10 +2,6 @@ package dev.pl36.cameralink.core.config
 
 import dev.pl36.cameralink.BuildConfig
 
-/**
- * Modern Application Configuration
- * Refined for Apple Pro UI/UX and actual Olympus Camera Protocol.
- */
 data class AppConfig(
     val cameraBaseUrl: String,
     val connectTimeoutMs: Int,
@@ -21,15 +17,14 @@ data class AppConfig(
 
 object AppEnvironment {
     /**
-     * Returns the optimized configuration for the current build environment.
-     * Defaulting to "Pro" performance settings for real-time camera interaction.
+     * Returns the default camera connection settings for the current build.
      */
     fun current(): AppConfig {
         return AppConfig(
             cameraBaseUrl = BuildConfig.CAMERA_BASE_URL,
-            connectTimeoutMs = 2500, // Optimized for responsive UI
+            connectTimeoutMs = 2500,
             readTimeoutMs = 5000,
-            liveViewPort = 65000, // Standard Olympus LiveView Port
+            liveViewPort = 65000,
             liveViewUdpEnabled = true,
             autoSyncOnLaunch = true,
             connectionRetryCount = 3,
@@ -40,7 +35,7 @@ object AppEnvironment {
     }
 
     /**
-     * Returns a "Power Saver" configuration for battery efficiency.
+     * Returns a lower-activity configuration for battery-sensitive sessions.
      */
     fun powerSaver(): AppConfig = current().copy(
         connectTimeoutMs = 5000,

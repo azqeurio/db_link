@@ -1,4 +1,4 @@
-# Codex USB/SCP Fix Log - 2026-04-04
+# USB/SCP Fix Log - 2026-04-04
 
 ## Goal
 
@@ -179,7 +179,7 @@ Evidence used:
 Notes:
 
 - `0xD005` as the OM-1 ISO fallback is still an evidence-based inference from the attached logs, not a directly labelled descriptor dump
-- I left Subject Type values aligned to OM Capture resources (`Human`, `Motorsports`, `Airplanes`, `Trains`, `Birds`) rather than inventing a different split without protocol evidence
+- Subject Type values stay aligned to OM Capture resources (`Human`, `Motorsports`, `Airplanes`, `Trains`, `Birds`) rather than using a different split without protocol evidence.
 
 ## Verification
 

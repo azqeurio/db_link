@@ -10,19 +10,19 @@ package dev.pl36.cameralink.core.usb
  */
 object PtpConstants {
 
-    // ── USB Class ────────────────────────────────────────────────
+    // USB Class
     /** USB interface class for Still Imaging (PTP) devices. */
     const val USB_CLASS_STILL_IMAGE = 6
     const val USB_SUBCLASS_STILL_IMAGE = 1
     const val USB_PROTOCOL_PTP = 1
 
-    // ── Known Vendor IDs ─────────────────────────────────────────
+    // Known Vendor IDs
     /** Legacy Olympus vendor ID. */
     const val VENDOR_ID_OLYMPUS = 0x07B4
     /** OM Digital Solutions vendor ID (used by OM-1 Mark II and newer). */
     const val VENDOR_ID_OM_DIGITAL = 0x33A2
 
-    // ── Container Types ──────────────────────────────────────────
+    // Container Types
     const val CONTAINER_TYPE_COMMAND = 1
     const val CONTAINER_TYPE_DATA = 2
     const val CONTAINER_TYPE_RESPONSE = 3
@@ -31,7 +31,7 @@ object PtpConstants {
     /** Minimum PTP container size (header only, no params). */
     const val CONTAINER_HEADER_SIZE = 12
 
-    // ── Standard PTP Operation Codes (0x1xxx) ────────────────────
+    // Standard PTP Operation Codes (0x1xxx)
     object Op {
         const val GetDeviceInfo = 0x1001
         const val OpenSession = 0x1002
@@ -58,7 +58,7 @@ object PtpConstants {
         const val InitiateOpenCapture = 0x101C
     }
 
-    // ── Standard Response Codes (0x2xxx) ─────────────────────────
+    // Standard Response Codes (0x2xxx)
     object Resp {
         const val Undefined = 0x2000
         const val OK = 0x2001
@@ -101,7 +101,7 @@ object PtpConstants {
         }
     }
 
-    // ── Standard Event Codes (0x4xxx) ────────────────────────────
+    // Standard Event Codes (0x4xxx)
     object Evt {
         const val CancelTransaction = 0x4001
         const val ObjectAdded = 0x4002
@@ -116,7 +116,7 @@ object PtpConstants {
         const val CaptureComplete = 0x400D
     }
 
-    // ── Standard Device Property Codes (0x5xxx) ──────────────────
+    // Standard Device Property Codes (0x5xxx)
     object Prop {
         const val BatteryLevel = 0x5001
         const val FunctionalMode = 0x5002
@@ -140,7 +140,7 @@ object PtpConstants {
         const val FocusMeteringMode = 0x501C
     }
 
-    // ── Object Format Codes ──────────────────────────────────────
+    // Object Format Codes
     object Format {
         const val JPEG = 0x3801
         const val TIFF = 0x380D
@@ -151,7 +151,7 @@ object PtpConstants {
         const val Association = 0x3001 // Directory
     }
 
-    // ── Olympus / OM System Vendor Extensions ────────────────────
+    // Olympus / OM System Vendor Extensions
     // Collected from observed device behavior and public protocol references.
 
     /**
@@ -248,7 +248,7 @@ object PtpConstants {
         const val RAW_RECORDING_PAUSE = 0x04
     }
 
-    // ── Olympus Vendor Device Properties ─────────────────────────
+    // Olympus Vendor Device Properties
     object OlympusProp {
         // These are vendor-specific property codes (0xD0xx range)
         const val ShutterSpeed = 0xD01C
@@ -287,8 +287,7 @@ object PtpConstants {
         const val Streaming16 = 0x0100
     }
 
-    // ── Helpers ──────────────────────────────────────────────────
-
+    // Helpers
     fun opName(code: Int): String = when (code) {
         Op.GetDeviceInfo -> "GetDeviceInfo"
         Op.OpenSession -> "OpenSession"

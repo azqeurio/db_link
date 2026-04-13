@@ -480,8 +480,7 @@ class DefaultCameraRepository(
 
     override fun sampleCommandListXml(): String = fallback.sampleCommandListXml()
 
-    // ── Image Transfer ──────────────────────────────────────────
-
+    // Image Transfer
     override suspend fun getImageList(directory: String): Result<List<CameraImage>> = withContext(Dispatchers.IO) {
         D.transfer("Getting image list for $directory")
 

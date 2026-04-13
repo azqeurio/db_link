@@ -165,7 +165,7 @@ private const val TETHER_RETRY_MODE_DIAL_VALUE = "Tether Retry"
 private const val DEEP_SKY_MODE_DIAL_VALUE = "Deep Sky"
 private const val DEEP_SKY_FOCAL_LENGTH_PROP = "deepsky_focal_length"
 
-// ── USB SCP dual-property bindings (display state vs. writable control) ──
+// USB SCP dual-property bindings (display state vs. writable control)
 private const val USB_SCP_PICTURE_MODE_STATE_PROP = 0xD00C
 private const val USB_SCP_PICTURE_MODE_CONTROL_PROP = 0xD010
 private const val USB_SCP_FACE_EYE_PROP = 0xD01A
@@ -1310,7 +1310,7 @@ private fun BoxScope.SuperControlPanelOverlay(
                 val props = usbCameraProperties
                 val hasProps = props.allProperties().isNotEmpty()
 
-                // ── Page indicator ──
+                // Page indicator
                 if (!hasProps) {
                     Text(
                         text = "Loading camera properties...",
@@ -1364,7 +1364,7 @@ private fun ScpSinglePage(
         onOpenUsbExtraProperty(property.propCode, property.label)
     }
 
-    // ── Row 1: Exposure Mode + Exposure Triangle (matches camera SCP top row) ──
+    // Row 1: Exposure Mode + Exposure Triangle (matches camera SCP top row)
     ScpRow {
         ScpCell(
             label = "Mode",
@@ -1397,7 +1397,7 @@ private fun ScpSinglePage(
         )
     }
 
-    // ── Row 2: AF + EV + WB + Picture Mode ──
+    // Row 2: AF + EV + WB + Picture Mode
     ScpRow {
         ScpCell(
             label = "AF Mode",
@@ -1429,7 +1429,7 @@ private fun ScpSinglePage(
         )
     }
 
-    // ── Row 3: Drive + Flash + Metering + Quality ──
+    // Row 3: Drive + Flash + Metering + Quality
     ScpRow {
         ScpCell(
             label = "Drive",
@@ -1461,7 +1461,7 @@ private fun ScpSinglePage(
         )
     }
 
-    // ── Row 4: Face/Eye + Aspect + Stabilizer + High Res ──
+    // Row 4: Face/Eye + Aspect + Stabilizer + High Res
     ScpRow {
         ScpCell(
             label = "Face / Eye",
@@ -1493,7 +1493,7 @@ private fun ScpSinglePage(
         )
     }
 
-    // ── Row 5: Subject + Color Space ──
+    // Row 5: Subject + Color Space
     ScpRow {
         ScpCell(
             label = "Subject",
@@ -2491,8 +2491,7 @@ private fun formatScpPtpValue(
     )
 }
 
-// ── SCP value formatters ──────────────────────────────────────
-
+// SCP value formatters
 private fun formatUsbScpIso(value: Long): String = if (value < 0) "--" else formatOlympusIso(value)
 
 private fun formatUsbScpWbValue(value: Long): String = if (value < 0) "--" else formatOlympusWhiteBalance(value)
@@ -4652,7 +4651,7 @@ private fun UsbDriveSettingsPanel(
             .wrapContentHeight(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // ── Category tabs: Single / Silent ──
+        // Category tabs: Single / Silent
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -4681,7 +4680,7 @@ private fun UsbDriveSettingsPanel(
             }
         }
 
-        // ── Sub-mode chips ──
+        // Sub-mode chips
         activeModes.chunked(3).forEach { rowValues ->
             Row(
                 modifier = Modifier.fillMaxWidth(),

@@ -3,11 +3,11 @@ package dev.pl36.cameralink.core.logging
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Debug logger for maximum log coverage.
+ * Debug logger for development and device-session traces.
  *
  * Usage: D.wifi("Connected to camera"), D.ble("Scan started"), etc.
  *
- * To remove all debug logs later:
+ * To remove debug logging from a release branch:
  *   1. Delete all lines containing "D." calls
  *   2. Delete all "import ...logging.D" lines
  *   3. Delete this file (D.kt)
@@ -37,7 +37,7 @@ object D {
     /** Categories that are always logged regardless of [usbTetherFocus]. */
     private val tetherCategories = setOf("USB", "PTP", "PERM", "LIFECYCLE", "ASTRO", "STACK", "RAW", "ACTION", "NAV")
 
-    // ── Category loggers ──────────────────────────────────────
+    // Category loggers
 
     fun wifi(msg: String) = emit("WIFI", msg)
     fun ble(msg: String) = emit("BLE", msg)
@@ -67,13 +67,13 @@ object D {
     fun raw(msg: String) = emit("RAW", msg)
 
     /**
-     * User-initiated action log — always logged regardless of focus mode.
+     * User-initiated action log. Always logged regardless of focus mode.
      * Captures what the user tapped/dragged, and what the app did in response.
      * Use this to correlate UI events with PTP/USB communication.
      */
     fun action(msg: String) = emit("ACTION", msg)
 
-    // ── Helpers ───────────────────────────────────────────────
+    // Helpers
 
     /** Log with explicit error level. Always logged regardless of focus mode. */
     fun err(tag: String, msg: String, t: Throwable? = null) {
@@ -82,7 +82,7 @@ object D {
         FileLogger.error(full, t)
     }
 
-    // ── Timing ────────────────────────────────────────────────
+    // Timing
 
     fun timeStart(key: String) {
         if (!enabled) return
@@ -99,7 +99,7 @@ object D {
         emit(tag, "$msg [${elapsedMs}ms]")
     }
 
-    // ── Scope tracking ────────────────────────────────────────
+    // Scope tracking
 
     fun scope(tag: String, name: String): Scope {
         emit(tag, "→ $name")
@@ -117,14 +117,14 @@ object D {
         fun fail(t: Throwable) = end("FAIL: ${t::class.simpleName}: ${t.message}")
     }
 
-    // ── Separator / Marker ────────────────────────────────────
+    // Marker
 
     fun marker(label: String) {
         if (!enabled) return
         FileLogger.debug("════════════════ $label ════════════════")
     }
 
-    // ── Internal ──────────────────────────────────────────────
+    // Internal
 
     @PublishedApi
     internal fun emit(tag: String, msg: String) {

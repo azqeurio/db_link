@@ -79,7 +79,7 @@ fun OmCaptureScreen(
         verticalArrangement = Arrangement.spacedBy(20.dp),
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 24.dp),
     ) {
-        // ── Live View + Capture ──────────────────────────────────
+        // Live View + Capture
         if (liveViewFrame != null) {
             item {
                 GlassCard {
@@ -128,7 +128,7 @@ fun OmCaptureScreen(
             }
         }
 
-        // ── USB Camera Properties ────────────────────────────────
+        // USB Camera Properties
         if (isUsbConnected) {
             item {
                 UsbCameraControlPanel(
@@ -140,7 +140,7 @@ fun OmCaptureScreen(
             }
         }
 
-        // ── Connection & Actions ─────────────────────────────────
+        // Connection & Actions
         item {
             GlassCard {
                 Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -181,7 +181,7 @@ fun OmCaptureScreen(
             }
         }
 
-        // ── File Save Settings ───────────────────────────────────
+        // File Save Settings
         item {
             GlassCard {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -219,7 +219,7 @@ fun OmCaptureScreen(
             }
         }
 
-        // ── Section Matrix ───────────────────────────────────────
+        // Section Matrix
         item {
             GlassCard {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

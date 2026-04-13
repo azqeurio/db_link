@@ -114,7 +114,7 @@ fun CameraLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Un
     val usbRemoteReady = uiState.omCaptureUsb.summary?.supportsLiveView == true
     val remoteSessionReady = wifiRemoteReady || usbRemoteReady
     var previousDestination by remember { mutableStateOf(currentDestination) }
-    // Permission request launcher — requests device discovery permissions on app start
+    // Request device discovery permissions at startup.
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
     ) { results ->
@@ -122,7 +122,6 @@ fun CameraLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Un
         viewModel.onPermissionsResult(results)
     }
 
-    // Request discovery permissions when app launches
     LaunchedEffect(Unit) {
         val perms = viewModel.getRequiredPermissions()
         D.perm("Requesting ${perms.size} permissions: ${perms.map { it.substringAfterLast('.') }}")
@@ -398,7 +397,7 @@ fun CameraLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Un
                                         onOpenLibrary = {
                                             val usbSaved = uiState.omCaptureUsb.lastSavedMedia
                                             if (usbSaved != null && activity != null) {
-                                                // USB capture: open the saved image directly
+                                                // Open the image saved by the USB capture flow.
                                                 viewModel.openUsbCapturedImage(activity)
                                             } else {
                                                 viewModel.openLastCapturedPreview()

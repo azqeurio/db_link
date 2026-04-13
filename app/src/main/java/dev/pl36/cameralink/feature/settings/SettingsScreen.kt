@@ -183,12 +183,12 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(20.dp),
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 24.dp),
     ) {
-        // ── Header ───────────────────────────────────────────────
+        // Header
         item {
             SectionHeader(stringResource(R.string.settings_title))
         }
 
-        // ── 1. Connection / Camera ───────────────────────────────
+        // 1. Connection / Camera
         item {
             GlassCard {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -293,7 +293,7 @@ fun SettingsScreen(
             }
         }
 
-        // ── 2. Remote Control / Dial ─────────────────────────────
+        // 2. Remote Control / Dial
         if (dialSettings.isNotEmpty()) {
             item {
                 GlassCard {
@@ -317,8 +317,8 @@ fun SettingsScreen(
             }
         }
 
-        // ── 3. Live View ─────────────────────────────────────────
-        // ── 4. Auto Import ──────────────────────────────────────
+        // 3. Live View
+        // 4. Auto Import
         if (tetheredCaptureSettings.isNotEmpty()) {
             item {
                 GlassCard {
@@ -482,7 +482,7 @@ fun SettingsScreen(
             }
         }
 
-        // ── 5. Auto Geotag ──────────────────────────────────────
+        // 5. Auto Geotag
         item {
             GlassCard {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -545,7 +545,7 @@ fun SettingsScreen(
             }
         }
 
-        // ── 6. App / Info ───────────────────────────────────────
+        // 6. App / Info
         item {
             GlassCard {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -569,7 +569,7 @@ fun SettingsScreen(
             }
         }
 
-        // ── 7. Developer ────────────────────────────────────────
+        // 7. Developer
         item {
             GlassCard {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {

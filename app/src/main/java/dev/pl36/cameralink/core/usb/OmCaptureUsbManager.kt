@@ -580,8 +580,7 @@ class OmCaptureUsbManager(
         )
     }
 
-    // ── Camera Property Control ──────────────────────────────────
-
+    // Camera Property Control
     /**
      * Descriptor for a single camera property exposed to the UI.
      */
@@ -1121,8 +1120,7 @@ class OmCaptureUsbManager(
         }
     }
 
-    // ── USB Live View ────────────────────────────────────────────
-
+    // USB Live View
     /**
      * Start USB live view.
      *
@@ -2176,8 +2174,7 @@ class OmCaptureUsbManager(
             D.err("USB", "Failed to snapshot OM camera handles before capture", throwable)
         }.getOrDefault(emptySet())
 
-        // ── Capture workflow: ChangeRunMode → Capture → event → download ──
-
+        // Capture workflow: ChangeRunMode → Capture → event → download
         // Step 1: Ensure the camera is in RECORDING mode
         if (active.info.supportsChangeRunMode()) {
             usbLog("ChangeRunMode -> RUN_MODE_RECORDING")

@@ -65,7 +65,7 @@ class PtpUsbConnection(
         /** Short pause before retrying a timed-out bulk IN read. */
         private const val BULK_IN_TIMEOUT_RETRY_DELAY_MS = 180L
 
-        // ── PTP Class-Specific USB Control Transfer constants ────
+        // PTP Class-Specific USB Control Transfer constants
         // These are defined in the PTP USB Still Image Class specification.
         // bmRequestType for class-specific requests:
         //   Host-to-Device: USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE = 0x21
@@ -445,8 +445,7 @@ class PtpUsbConnection(
         return event
     }
 
-    // ── PTP Class-Specific Control Transfers ────────────────────
-
+    // PTP Class-Specific Control Transfers
     /**
      * Send a PTP Device Reset via USB class-specific control transfer.
      *
