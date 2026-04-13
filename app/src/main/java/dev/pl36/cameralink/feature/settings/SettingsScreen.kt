@@ -24,7 +24,6 @@ import androidx.compose.material.icons.rounded.LinkOff
 import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -754,7 +753,8 @@ private fun EditablePathRow(
     currentValue: String,
     onValueChanged: (String) -> Unit,
 ) {
-    var showDialog by remember { mutableStateOf(false) }
+    val showDialogState = remember { mutableStateOf(false) }
+    val showDialog = showDialogState.value
     var editText by remember(currentValue) { mutableStateOf(currentValue) }
 
     Row(
@@ -774,7 +774,7 @@ private fun EditablePathRow(
                 color = Chalk.copy(alpha = 0.5f),
             )
         }
-        TextButton(onClick = { editText = currentValue; showDialog = true }) {
+        TextButton(onClick = { editText = currentValue; showDialogState.value = true }) {
             Text(
                 text = stringResource(R.string.common_edit),
                 style = MaterialTheme.typography.labelMedium,
@@ -785,7 +785,7 @@ private fun EditablePathRow(
 
     if (showDialog) {
         AlertDialog(
-            onDismissRequest = { showDialog = false },
+            onDismissRequest = { showDialogState.value = false },
             title = { Text(label) },
             text = {
                 OutlinedTextField(
@@ -803,14 +803,14 @@ private fun EditablePathRow(
                     onClick = {
                         val trimmed = editText.trim().ifBlank { "Pictures/db link" }
                         onValueChanged(trimmed)
-                        showDialog = false
+                        showDialogState.value = false
                     },
                 ) {
                     Text(stringResource(R.string.common_save), color = AppleBlue)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDialog = false }) {
+                TextButton(onClick = { showDialogState.value = false }) {
                     Text(stringResource(R.string.common_cancel), color = Chalk.copy(alpha = 0.6f))
                 }
             },

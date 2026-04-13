@@ -18,14 +18,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyRow
@@ -36,12 +34,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.CameraAlt
-import androidx.compose.material.icons.rounded.RadioButtonUnchecked
-import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Stop
-import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -139,7 +132,6 @@ import dev.pl36.cameralink.core.usb.formatOlympusWhiteBalance
 import dev.pl36.cameralink.core.usb.olympusUsbPropertyLabel
 import dev.pl36.cameralink.core.usb.statusChipLabel
 import dev.pl36.cameralink.ui.OmCaptureUsbUiState
-import dev.pl36.cameralink.ui.QaRecorderUiState
 import dev.pl36.cameralink.ui.theme.AppleBlue
 import dev.pl36.cameralink.ui.theme.AppleGreen
 import dev.pl36.cameralink.ui.theme.AppleOrange
@@ -173,6 +165,52 @@ private const val TETHER_RETRY_MODE_DIAL_VALUE = "Tether Retry"
 private const val DEEP_SKY_MODE_DIAL_VALUE = "Deep Sky"
 private const val DEEP_SKY_FOCAL_LENGTH_PROP = "deepsky_focal_length"
 
+// ── USB SCP dual-property bindings (display state vs. writable control) ──
+private const val USB_SCP_PICTURE_MODE_STATE_PROP = 0xD00C
+private const val USB_SCP_PICTURE_MODE_CONTROL_PROP = 0xD010
+private const val USB_SCP_FACE_EYE_PROP = 0xD01A
+private const val USB_SCP_STABILIZER_CONTROL_PROP = 0xD08E
+private const val USB_SCP_HIGH_RES_STATE_PROP = 0xD065
+private const val USB_SCP_HIGH_RES_CONTROL_PROP = 0xD0C7
+private const val USB_SCP_SUBJECT_DETECT_PROP = 0xD100
+private const val USB_SCP_SUBJECT_TYPE_PROP = 0xD101
+private const val USB_SCP_ASPECT_PROP = 0xD11A
+private const val USB_SCP_STABILIZER_STATE_PROP = 0xD11B
+private const val USB_SCP_COLOR_SPACE_PROP = 0xD11C
+
+private data class ScpExtraPropBinding(
+    val displayPropCode: Int,
+    val controlPropCode: Int = displayPropCode,
+)
+
+private val UsbScpPictureModeBinding = ScpExtraPropBinding(
+    displayPropCode = USB_SCP_PICTURE_MODE_STATE_PROP,
+    controlPropCode = USB_SCP_PICTURE_MODE_CONTROL_PROP,
+)
+private val UsbScpHighResBinding = ScpExtraPropBinding(
+    displayPropCode = USB_SCP_HIGH_RES_STATE_PROP,
+    controlPropCode = USB_SCP_HIGH_RES_CONTROL_PROP,
+)
+private val UsbScpFaceEyeBinding = ScpExtraPropBinding(
+    displayPropCode = USB_SCP_FACE_EYE_PROP,
+)
+private val UsbScpStabilizerBinding = ScpExtraPropBinding(
+    displayPropCode = USB_SCP_STABILIZER_STATE_PROP,
+    controlPropCode = USB_SCP_STABILIZER_CONTROL_PROP,
+)
+
+private fun OmCaptureUsbManager.CameraPropertiesSnapshot.findScpDisplayProperty(
+    binding: ScpExtraPropBinding,
+): OmCaptureUsbManager.CameraPropertyState? {
+    return findProperty(binding.displayPropCode) ?: findProperty(binding.controlPropCode)
+}
+
+private fun OmCaptureUsbManager.CameraPropertiesSnapshot.findScpControlProperty(
+    binding: ScpExtraPropBinding,
+): OmCaptureUsbManager.CameraPropertyState? {
+    return findProperty(binding.controlPropCode) ?: findProperty(binding.displayPropCode)
+}
+
 @Composable
 fun RemoteScreen(
     remoteRuntime: RemoteRuntimeState,
@@ -187,9 +225,7 @@ fun RemoteScreen(
     libraryStatus: String = "",
     tetherSaveTarget: TetherSaveTarget = TetherSaveTarget.SdAndPhone,
     tetherPhoneImportFormat: TetherPhoneImportFormat = TetherPhoneImportFormat.JpegOnly,
-    qaRecorder: QaRecorderUiState = QaRecorderUiState(),
     onSetPhoneImportFormat: (TetherPhoneImportFormat) -> Unit = {},
-    onFinishQaRecording: () -> Unit = {},
     onToggleLiveView: () -> Unit,
     onCapturePhoto: () -> Unit,
     onExposureChanged: (String) -> Unit,
@@ -322,6 +358,7 @@ fun RemoteScreen(
     val touchView = LocalView.current
     val usbQuickAccessEnabled = tetheredCaptureAvailable &&
         (remoteRuntime.modePickerSurface == ModePickerSurface.Tether ||
+            remoteRuntime.modePickerSurface == ModePickerSurface.TetherRetry ||
             remoteRuntime.modePickerSurface == ModePickerSurface.DeepSky) &&
         remoteRuntime.liveViewActive
     var quickAccessOpen by remember { mutableStateOf(false) }
@@ -340,23 +377,6 @@ fun RemoteScreen(
             value = System.currentTimeMillis()
         }
     }
-    val qaRecorderClockMs by produceState(
-        initialValue = System.currentTimeMillis(),
-        key1 = qaRecorder.sessionActive,
-        key2 = qaRecorder.autoStopDeadlineMs,
-    ) {
-        value = System.currentTimeMillis()
-        if (!qaRecorder.sessionActive || qaRecorder.autoStopDeadlineMs == null) {
-            return@produceState
-        }
-        while (true) {
-            delay(250L)
-            value = System.currentTimeMillis()
-        }
-    }
-    val qaRecorderRemainingSeconds = qaRecorder.autoStopDeadlineMs?.let { deadlineMs ->
-        ((deadlineMs - qaRecorderClockMs).coerceAtLeast(0L) + 999L) / 1000L
-    } ?: 0L
     val skyOverlayInfo = remember(
         latestGeoTagSample,
         liveClockMs,
@@ -574,19 +594,6 @@ fun RemoteScreen(
                 readableRotation = readableRotation,
             )
         }
-        if (qaRecorder.sessionActive) {
-            RemoteQaRecorderBanner(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                triggerTitle = qaRecorder.activeTriggerTitle,
-                statusLabel = qaRecorder.statusLabel,
-                remainingSeconds = qaRecorderRemainingSeconds,
-                onFinish = onFinishQaRecording,
-            )
-        }
     }
 
     val liveViewModifier = Modifier
@@ -692,6 +699,8 @@ fun RemoteScreen(
             remoteRuntime = remoteRuntime,
             onSetActivePicker = routedSetActivePicker,
             readableRotation = readableRotation,
+            usbTetherConnected = omCaptureUsb.summary != null,
+            usbCameraProperties = usbCameraProperties,
         )
     }
     val panelContent: @Composable () -> Unit = {
@@ -873,87 +882,6 @@ private fun scpSwipeAxis(readableRotation: Int): Offset = when (normalizedReadab
     180 -> Offset(-1f, 0f)
     270 -> Offset(0f, -1f)
     else -> Offset(1f, 0f)
-}
-
-@Composable
-private fun RemoteQaRecorderBanner(
-    modifier: Modifier = Modifier,
-    triggerTitle: String,
-    statusLabel: String,
-    remainingSeconds: Long,
-    onFinish: () -> Unit,
-) {
-    val primaryText = triggerTitle.ifBlank { "Recording camera changes" }
-    val secondaryText = buildString {
-        append("${remainingSeconds.coerceAtLeast(0L)}s left")
-        if (statusLabel.isNotBlank() && statusLabel != primaryText) {
-            append(" · ")
-            append(statusLabel)
-        }
-    }
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .clip(RoundedCornerShape(20.dp))
-                .background(Color.Black.copy(alpha = 0.8f))
-                .border(1.dp, Chalk.copy(alpha = 0.22f), RoundedCornerShape(20.dp))
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Schedule,
-                contentDescription = null,
-                tint = AppleOrange,
-                modifier = Modifier.size(18.dp),
-            )
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    text = primaryText,
-                    color = Chalk,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = secondaryText,
-                    color = Chalk.copy(alpha = 0.68f),
-                    style = MaterialTheme.typography.labelMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(18.dp))
-                .background(AppleRed)
-                .clickable(onClick = onFinish)
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Stop,
-                contentDescription = null,
-                tint = Color.Black,
-                modifier = Modifier.size(18.dp),
-            )
-            Text(
-                text = "Finish",
-                color = Color.Black,
-                fontWeight = FontWeight.Bold,
-            )
-        }
-    }
 }
 
 private fun isSubjectDetectionEnabled(
@@ -1322,11 +1250,13 @@ private fun BoxScope.SuperControlPanelOverlay(
                         // Require predominantly vertical drag (physical screen Y)
                         if (abs(totalY) > dragThresholdPx && abs(totalY) > abs(totalX) * 0.8f) {
                             if (!open && totalY < 0f) {
-                                // Drag up → open SCP
+                                D.action("SCP gesture: drag UP detected (totalY=${"%.0f".format(totalY)}, threshold=${"%.0f".format(dragThresholdPx)}) → opening")
                                 onOpenChange(true)
                             } else if (open && totalY > 0f) {
-                                // Drag down → close SCP
+                                D.action("SCP gesture: drag DOWN detected (totalY=${"%.0f".format(totalY)}) → closing")
                                 onOpenChange(false)
+                            } else {
+                                D.action("SCP gesture: drag ignored (open=$open, totalY=${"%.0f".format(totalY)})")
                             }
                             change.consume()
                             break
@@ -1409,30 +1339,18 @@ private fun ScpSinglePage(
     onOpenChange: (Boolean) -> Unit,
     onOpenUsbExtraProperty: (Int, String) -> Unit,
 ) {
-    val pictureModePropCode = 0xD00C
-    val highResPropCode = 0xD065
-    val facePriorityPropCode = 0xD0C4
-    val faceEyePropCode = 0xD0C5
-    val subjectDetectPropCode = 0xD100
-    val subjectTypePropCode = 0xD101
-    val stabilizerPropCode = 0xD11B
-    val aspectPropCode = 0xD11A
-    val colorSpacePropCode = 0xD11C
-    val pictureModeProp = props.findProperty(pictureModePropCode)
-    val highResProp = props.findProperty(highResPropCode)
-    val facePriorityProp = props.findProperty(facePriorityPropCode)
-    val faceEyeProp = props.findProperty(faceEyePropCode)
-    val subjectDetectProp = props.findProperty(subjectDetectPropCode)
-    val subjectTypeProp = props.findProperty(subjectTypePropCode)
-    val stabilizerProp = props.findProperty(stabilizerPropCode)
-    val aspectProp = props.findProperty(aspectPropCode)
-    val colorSpaceProp = props.findProperty(colorSpacePropCode)
-    val facePriorityDisplay = formatScpPtpValue(facePriorityProp)
-    val faceEyeDisplay = if (facePriorityDisplay.equals("Off", ignoreCase = true)) {
-        "Off"
-    } else {
-        formatScpPtpValue(faceEyeProp)
-    }
+    val pictureModeDisplayProp = props.findScpDisplayProperty(UsbScpPictureModeBinding)
+    val pictureModeControlProp = props.findScpControlProperty(UsbScpPictureModeBinding)
+    val highResDisplayProp = props.findScpDisplayProperty(UsbScpHighResBinding)
+    val highResControlProp = props.findScpControlProperty(UsbScpHighResBinding)
+    val faceEyeProp = props.findScpControlProperty(UsbScpFaceEyeBinding)
+    val subjectDetectProp = props.findProperty(USB_SCP_SUBJECT_DETECT_PROP)
+    val subjectTypeProp = props.findProperty(USB_SCP_SUBJECT_TYPE_PROP)
+    val stabilizerDisplayProp = props.findScpDisplayProperty(UsbScpStabilizerBinding)
+    val stabilizerControlProp = props.findScpControlProperty(UsbScpStabilizerBinding)
+    val aspectProp = props.findProperty(USB_SCP_ASPECT_PROP)
+    val colorSpaceProp = props.findProperty(USB_SCP_COLOR_SPACE_PROP)
+    val faceEyeDisplay = formatScpPtpValue(faceEyeProp)
     val subjectDetectDisplay = formatScpPtpValue(subjectDetectProp)
     val subjectTypeDisplay = if (subjectDetectDisplay.equals("Off", ignoreCase = true)) {
         "Off"
@@ -1440,9 +1358,10 @@ private fun ScpSinglePage(
         formatScpPtpValue(subjectTypeProp)
     }
 
-    fun openExtraProperty(propCode: Int) {
+    fun openExtraProperty(property: OmCaptureUsbManager.CameraPropertyState?) {
+        property ?: return
         onOpenChange(false)
-        onOpenUsbExtraProperty(propCode, olympusUsbPropertyLabel(propCode))
+        onOpenUsbExtraProperty(property.propCode, property.label)
     }
 
     // ── Row 1: Exposure Mode + Exposure Triangle (matches camera SCP top row) ──
@@ -1460,21 +1379,21 @@ private fun ScpSinglePage(
             value = formatUsbScpShutterSpeed(props.shutterSpeed?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.ShutterSpeed,
             modifier = Modifier.weight(1f),
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.ShutterSpeed) },
+            onClick = { openExtraProperty(props.shutterSpeed) },
         )
         ScpCell(
             label = "F",
             value = formatUsbScpAperture(props.aperture?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.Aperture,
             modifier = Modifier.weight(1f),
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.Aperture) },
+            onClick = { openExtraProperty(props.aperture) },
         )
         ScpCell(
             label = "ISO",
             value = formatUsbScpIso(props.iso?.currentValue ?: -1L),
-            propCode = PtpConstants.OlympusProp.ISOSpeed,
+            propCode = props.iso?.propCode ?: PtpConstants.OlympusProp.ISOSpeed,
             modifier = Modifier.weight(1f),
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.ISOSpeed) },
+            onClick = { openExtraProperty(props.iso) },
         )
     }
 
@@ -1485,28 +1404,28 @@ private fun ScpSinglePage(
             value = formatUsbScpFocusMode(props.focusMode?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.FocusMode,
             modifier = Modifier.weight(1f),
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.FocusMode) },
+            onClick = { openExtraProperty(props.focusMode) },
         )
         ScpCell(
             label = "EV",
             value = formatUsbScpExpComp(props.exposureComp?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.ExposureCompensation,
             modifier = Modifier.weight(1f),
-            onClick = props.exposureComp?.let { { openExtraProperty(PtpConstants.OlympusProp.ExposureCompensation) } },
+            onClick = props.exposureComp?.let { { openExtraProperty(it) } },
         )
         ScpCell(
             label = "WB",
             value = formatUsbScpWbValue(props.whiteBalance?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.WhiteBalance,
             modifier = Modifier.weight(1f),
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.WhiteBalance) },
+            onClick = { openExtraProperty(props.whiteBalance) },
         )
         ScpCell(
             label = "Pic Mode",
-            value = formatScpPtpValue(pictureModeProp),
-            propCode = pictureModeProp?.propCode,
+            value = formatScpPtpValue(pictureModeDisplayProp),
+            propCode = pictureModeDisplayProp?.propCode ?: pictureModeControlProp?.propCode,
             modifier = Modifier.weight(1f),
-            onClick = pictureModeProp?.let { { openExtraProperty(it.propCode) } },
+            onClick = pictureModeControlProp?.let { { openExtraProperty(it) } },
         )
     }
 
@@ -1517,28 +1436,28 @@ private fun ScpSinglePage(
             value = formatUsbScpDrive(props.driveMode),
             propCode = PtpConstants.OlympusProp.DriveMode,
             modifier = Modifier.weight(1f),
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.DriveMode) },
+            onClick = { openExtraProperty(props.driveMode) },
         )
         ScpCell(
             label = "Flash",
             value = formatUsbScpFlash(props.flashMode?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.FlashMode,
             modifier = Modifier.weight(1f),
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.FlashMode) },
+            onClick = { openExtraProperty(props.flashMode) },
         )
         ScpCell(
             label = "Metering",
             value = formatUsbScpMetering(props.meteringMode?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.MeteringMode,
             modifier = Modifier.weight(1f),
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.MeteringMode) },
+            onClick = { openExtraProperty(props.meteringMode) },
         )
         ScpCell(
             label = "Quality",
             value = formatUsbScpImageQuality(props.imageQuality?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.ImageQuality,
             modifier = Modifier.weight(1f),
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.ImageQuality) },
+            onClick = { openExtraProperty(props.imageQuality) },
         )
     }
 
@@ -1549,73 +1468,69 @@ private fun ScpSinglePage(
             value = faceEyeDisplay,
             propCode = faceEyeProp?.propCode,
             modifier = Modifier.weight(1f),
-            onClick = faceEyeProp?.let { { openExtraProperty(it.propCode) } },
+            onClick = faceEyeProp?.let { { openExtraProperty(it) } },
         )
         ScpCell(
             label = "Aspect",
             value = formatScpPtpValue(aspectProp),
             propCode = aspectProp?.propCode,
             modifier = Modifier.weight(1f),
-            onClick = aspectProp?.let { { openExtraProperty(it.propCode) } },
+            onClick = aspectProp?.let { { openExtraProperty(it) } },
         )
         ScpCell(
             label = "Stabilizer",
-            value = formatScpPtpValue(stabilizerProp),
-            propCode = stabilizerProp?.propCode,
+            value = formatScpPtpValue(stabilizerDisplayProp),
+            propCode = stabilizerDisplayProp?.propCode ?: stabilizerControlProp?.propCode,
             modifier = Modifier.weight(1f),
-            onClick = stabilizerProp?.let { { openExtraProperty(it.propCode) } },
+            onClick = stabilizerControlProp?.let { { openExtraProperty(it) } },
         )
         ScpCell(
             label = "High Res",
-            value = formatScpPtpValue(highResProp),
-            propCode = highResProp?.propCode,
+            value = formatScpPtpValue(highResDisplayProp),
+            propCode = highResDisplayProp?.propCode ?: highResControlProp?.propCode,
             modifier = Modifier.weight(1f),
-            onClick = highResProp?.let { { openExtraProperty(it.propCode) } },
+            onClick = highResControlProp?.let { { openExtraProperty(it) } },
         )
     }
 
-    // ── Row 5: Subject + Face AF + Color Space ──
+    // ── Row 5: Subject + Color Space ──
     ScpRow {
         ScpCell(
             label = "Subject",
             value = subjectDetectDisplay,
             propCode = subjectDetectProp?.propCode,
             modifier = Modifier.weight(1f),
-            onClick = subjectDetectProp?.let { { openExtraProperty(it.propCode) } },
+            onClick = subjectDetectProp?.let { { openExtraProperty(it) } },
         )
         ScpCell(
             label = "Subject Type",
             value = subjectTypeDisplay,
             propCode = subjectTypeProp?.propCode,
             modifier = Modifier.weight(1f),
-            onClick = subjectTypeProp?.let { { openExtraProperty(it.propCode) } },
-        )
-        ScpCell(
-            label = "Face AF",
-            value = facePriorityDisplay,
-            propCode = facePriorityProp?.propCode,
-            modifier = Modifier.weight(1f),
-            onClick = facePriorityProp?.let { { openExtraProperty(it.propCode) } },
+            onClick = subjectTypeProp?.let { { openExtraProperty(it) } },
         )
         ScpCell(
             label = "Color Space",
             value = formatScpPtpValue(colorSpaceProp),
             propCode = colorSpaceProp?.propCode,
             modifier = Modifier.weight(1f),
-            onClick = colorSpaceProp?.let { { openExtraProperty(it.propCode) } },
+            onClick = colorSpaceProp?.let { { openExtraProperty(it) } },
         )
+        Spacer(modifier = Modifier.weight(1f))
     }
 
     val surfacedPropCodes = setOf(
-        pictureModePropCode,
-        highResPropCode,
-        facePriorityPropCode,
-        faceEyePropCode,
-        subjectDetectPropCode,
-        subjectTypePropCode,
-        stabilizerPropCode,
-        aspectPropCode,
-        colorSpacePropCode,
+        UsbScpPictureModeBinding.displayPropCode,
+        UsbScpPictureModeBinding.controlPropCode,
+        UsbScpHighResBinding.displayPropCode,
+        UsbScpHighResBinding.controlPropCode,
+        UsbScpFaceEyeBinding.displayPropCode,
+        USB_SCP_SUBJECT_DETECT_PROP,
+        USB_SCP_SUBJECT_TYPE_PROP,
+        UsbScpStabilizerBinding.displayPropCode,
+        UsbScpStabilizerBinding.controlPropCode,
+        USB_SCP_ASPECT_PROP,
+        USB_SCP_COLOR_SPACE_PROP,
         PtpConstants.OlympusProp.DriveMode,
     )
     val extraProps = props.extraProperties
@@ -1634,7 +1549,7 @@ private fun ScpSinglePage(
                         value = formatScpPtpValue(prop),
                         propCode = prop.propCode,
                         modifier = Modifier.weight(1f),
-                        onClick = { openExtraProperty(prop.propCode) },
+                        onClick = { openExtraProperty(prop) },
                     )
                 }
             }
@@ -1758,40 +1673,28 @@ private fun AdaptiveScpSinglePage(
     onOpenChange: (Boolean) -> Unit,
     onOpenUsbExtraProperty: (Int, String) -> Unit,
 ) {
-    val pictureModePropCode = 0xD00C
-    val highResPropCode = 0xD065
-    val facePriorityPropCode = 0xD0C4
-    val faceEyePropCode = 0xD0C5
-    val subjectDetectPropCode = 0xD100
-    val subjectTypePropCode = 0xD101
-    val stabilizerPropCode = 0xD11B
-    val aspectPropCode = 0xD11A
-    val colorSpacePropCode = 0xD11C
-
-    val pictureModeProp = props.findProperty(pictureModePropCode)
-    val highResProp = props.findProperty(highResPropCode)
-    val facePriorityProp = props.findProperty(facePriorityPropCode)
-    val faceEyeProp = props.findProperty(faceEyePropCode)
-    val subjectDetectProp = props.findProperty(subjectDetectPropCode)
-    val subjectTypeProp = props.findProperty(subjectTypePropCode)
-    val stabilizerProp = props.findProperty(stabilizerPropCode)
-    val aspectProp = props.findProperty(aspectPropCode)
-    val colorSpaceProp = props.findProperty(colorSpacePropCode)
+    val pictureModeDisplayProp = props.findScpDisplayProperty(UsbScpPictureModeBinding)
+    val pictureModeControlProp = props.findScpControlProperty(UsbScpPictureModeBinding)
+    val highResDisplayProp = props.findScpDisplayProperty(UsbScpHighResBinding)
+    val highResControlProp = props.findScpControlProperty(UsbScpHighResBinding)
+    val faceEyeProp = props.findScpControlProperty(UsbScpFaceEyeBinding)
+    val subjectDetectProp = props.findProperty(USB_SCP_SUBJECT_DETECT_PROP)
+    val subjectTypeProp = props.findProperty(USB_SCP_SUBJECT_TYPE_PROP)
+    val stabilizerDisplayProp = props.findScpDisplayProperty(UsbScpStabilizerBinding)
+    val stabilizerControlProp = props.findScpControlProperty(UsbScpStabilizerBinding)
+    val aspectProp = props.findProperty(USB_SCP_ASPECT_PROP)
+    val colorSpaceProp = props.findProperty(USB_SCP_COLOR_SPACE_PROP)
     val isoPropCode = props.iso?.propCode ?: PtpConstants.OlympusProp.ISOSpeed
 
-    val facePriorityDisplay = formatScpPtpValue(facePriorityProp)
-    val faceEyeDisplay = if (facePriorityDisplay.equals("Off", ignoreCase = true)) {
-        "Off"
-    } else {
-        formatScpPtpValue(faceEyeProp)
-    }
+    val faceEyeDisplay = formatScpPtpValue(faceEyeProp)
     val subjectDetectDisplay = formatScpPtpValue(subjectDetectProp)
     val subjectDetectionEnabled = isSubjectDetectionEnabled(subjectDetectProp)
     val subjectTypeDisplay = formatScpPtpValue(subjectTypeProp)
 
-    fun openExtraProperty(propCode: Int) {
+    fun openExtraProperty(property: OmCaptureUsbManager.CameraPropertyState?) {
+        property ?: return
         onOpenChange(false)
-        onOpenUsbExtraProperty(propCode, olympusUsbPropertyLabel(propCode))
+        onOpenUsbExtraProperty(property.propCode, property.label)
     }
 
     val primaryItems = buildList {
@@ -1808,7 +1711,7 @@ private fun AdaptiveScpSinglePage(
             label = "SS",
             value = formatUsbScpShutterSpeed(props.shutterSpeed?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.ShutterSpeed,
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.ShutterSpeed) },
+            onClick = { openExtraProperty(props.shutterSpeed) },
         ),
         )
         add(
@@ -1816,7 +1719,7 @@ private fun AdaptiveScpSinglePage(
             label = "F",
             value = formatUsbScpAperture(props.aperture?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.Aperture,
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.Aperture) },
+            onClick = { openExtraProperty(props.aperture) },
         ),
         )
         add(
@@ -1824,7 +1727,7 @@ private fun AdaptiveScpSinglePage(
             label = "ISO",
             value = formatUsbScpIso(props.iso?.currentValue ?: -1L),
             propCode = isoPropCode,
-            onClick = { openExtraProperty(isoPropCode) },
+            onClick = { openExtraProperty(props.iso) },
         ),
         )
         add(
@@ -1832,7 +1735,7 @@ private fun AdaptiveScpSinglePage(
             label = "AF Mode",
             value = formatUsbScpFocusMode(props.focusMode?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.FocusMode,
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.FocusMode) },
+            onClick = { openExtraProperty(props.focusMode) },
         ),
         )
         add(
@@ -1840,7 +1743,7 @@ private fun AdaptiveScpSinglePage(
             label = "EV",
             value = formatUsbScpExpComp(props.exposureComp?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.ExposureCompensation,
-            onClick = props.exposureComp?.let { { openExtraProperty(PtpConstants.OlympusProp.ExposureCompensation) } },
+            onClick = props.exposureComp?.let { { openExtraProperty(it) } },
         ),
         )
         add(
@@ -1848,15 +1751,15 @@ private fun AdaptiveScpSinglePage(
             label = "WB",
             value = formatUsbScpWbValue(props.whiteBalance?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.WhiteBalance,
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.WhiteBalance) },
+            onClick = { openExtraProperty(props.whiteBalance) },
         ),
         )
         add(
         AdaptiveScpGridItem(
             label = "Pic Mode",
-            value = formatScpPtpValue(pictureModeProp),
-            propCode = pictureModeProp?.propCode,
-            onClick = pictureModeProp?.let { { openExtraProperty(it.propCode) } },
+            value = formatScpPtpValue(pictureModeDisplayProp),
+            propCode = pictureModeDisplayProp?.propCode ?: pictureModeControlProp?.propCode,
+            onClick = pictureModeControlProp?.let { { openExtraProperty(it) } },
         ),
         )
         add(
@@ -1864,7 +1767,7 @@ private fun AdaptiveScpSinglePage(
             label = "Drive",
             value = formatUsbScpDrive(props.driveMode),
             propCode = PtpConstants.OlympusProp.DriveMode,
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.DriveMode) },
+            onClick = { openExtraProperty(props.driveMode) },
         ),
         )
         add(
@@ -1872,7 +1775,7 @@ private fun AdaptiveScpSinglePage(
             label = "Flash",
             value = formatUsbScpFlash(props.flashMode?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.FlashMode,
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.FlashMode) },
+            onClick = { openExtraProperty(props.flashMode) },
         ),
         )
         add(
@@ -1880,7 +1783,7 @@ private fun AdaptiveScpSinglePage(
             label = "Metering",
             value = formatUsbScpMetering(props.meteringMode?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.MeteringMode,
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.MeteringMode) },
+            onClick = { openExtraProperty(props.meteringMode) },
         ),
         )
         add(
@@ -1888,7 +1791,7 @@ private fun AdaptiveScpSinglePage(
             label = "Quality",
             value = formatUsbScpImageQuality(props.imageQuality?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.ImageQuality,
-            onClick = { openExtraProperty(PtpConstants.OlympusProp.ImageQuality) },
+            onClick = { openExtraProperty(props.imageQuality) },
         ),
         )
         add(
@@ -1896,7 +1799,7 @@ private fun AdaptiveScpSinglePage(
             label = "Face / Eye",
             value = faceEyeDisplay,
             propCode = faceEyeProp?.propCode,
-            onClick = faceEyeProp?.let { { openExtraProperty(it.propCode) } },
+            onClick = faceEyeProp?.let { { openExtraProperty(it) } },
         ),
         )
         add(
@@ -1904,23 +1807,23 @@ private fun AdaptiveScpSinglePage(
             label = "Aspect",
             value = formatScpPtpValue(aspectProp),
             propCode = aspectProp?.propCode,
-            onClick = aspectProp?.let { { openExtraProperty(it.propCode) } },
+            onClick = aspectProp?.let { { openExtraProperty(it) } },
         ),
         )
         add(
         AdaptiveScpGridItem(
             label = "Stabilizer",
-            value = formatScpPtpValue(stabilizerProp),
-            propCode = stabilizerProp?.propCode,
-            onClick = stabilizerProp?.let { { openExtraProperty(it.propCode) } },
+            value = formatScpPtpValue(stabilizerDisplayProp),
+            propCode = stabilizerDisplayProp?.propCode ?: stabilizerControlProp?.propCode,
+            onClick = stabilizerControlProp?.let { { openExtraProperty(it) } },
         ),
         )
         add(
         AdaptiveScpGridItem(
             label = "High Res",
-            value = formatScpPtpValue(highResProp),
-            propCode = highResProp?.propCode,
-            onClick = highResProp?.let { { openExtraProperty(it.propCode) } },
+            value = formatScpPtpValue(highResDisplayProp),
+            propCode = highResDisplayProp?.propCode ?: highResControlProp?.propCode,
+            onClick = highResControlProp?.let { { openExtraProperty(it) } },
         ),
         )
         add(
@@ -1928,7 +1831,7 @@ private fun AdaptiveScpSinglePage(
             label = "Subject",
             value = subjectDetectDisplay,
             propCode = subjectDetectProp?.propCode,
-            onClick = subjectDetectProp?.let { { openExtraProperty(it.propCode) } },
+            onClick = subjectDetectProp?.let { { openExtraProperty(it) } },
         ),
         )
         if (subjectDetectionEnabled) {
@@ -1937,24 +1840,16 @@ private fun AdaptiveScpSinglePage(
             label = "Subject Type",
             value = subjectTypeDisplay,
             propCode = subjectTypeProp?.propCode,
-            onClick = subjectTypeProp?.let { { openExtraProperty(it.propCode) } },
+            onClick = subjectTypeProp?.let { { openExtraProperty(it) } },
         ),
             )
         }
         add(
         AdaptiveScpGridItem(
-            label = "Face AF",
-            value = facePriorityDisplay,
-            propCode = facePriorityProp?.propCode,
-            onClick = facePriorityProp?.let { { openExtraProperty(it.propCode) } },
-        ),
-        )
-        add(
-        AdaptiveScpGridItem(
             label = "Color Space",
             value = formatScpPtpValue(colorSpaceProp),
             propCode = colorSpaceProp?.propCode,
-            onClick = colorSpaceProp?.let { { openExtraProperty(it.propCode) } },
+            onClick = colorSpaceProp?.let { { openExtraProperty(it) } },
         ),
         )
     }
@@ -1966,15 +1861,17 @@ private fun AdaptiveScpSinglePage(
     )
 
     val surfacedPropCodes = setOf(
-        pictureModePropCode,
-        highResPropCode,
-        facePriorityPropCode,
-        faceEyePropCode,
-        subjectDetectPropCode,
-        subjectTypePropCode,
-        stabilizerPropCode,
-        aspectPropCode,
-        colorSpacePropCode,
+        UsbScpPictureModeBinding.displayPropCode,
+        UsbScpPictureModeBinding.controlPropCode,
+        UsbScpHighResBinding.displayPropCode,
+        UsbScpHighResBinding.controlPropCode,
+        UsbScpFaceEyeBinding.displayPropCode,
+        USB_SCP_SUBJECT_DETECT_PROP,
+        USB_SCP_SUBJECT_TYPE_PROP,
+        UsbScpStabilizerBinding.displayPropCode,
+        UsbScpStabilizerBinding.controlPropCode,
+        USB_SCP_ASPECT_PROP,
+        USB_SCP_COLOR_SPACE_PROP,
         PtpConstants.OlympusProp.DriveMode,
     )
     val extraProps = props.extraProperties
@@ -1988,7 +1885,7 @@ private fun AdaptiveScpSinglePage(
                     label = olympusUsbPropertyLabel(prop.propCode),
                     value = formatScpPtpValue(prop),
                     propCode = prop.propCode,
-                    onClick = { openExtraProperty(prop.propCode) },
+                    onClick = { openExtraProperty(prop) },
                 )
             },
             columns = columns,
@@ -2381,9 +2278,9 @@ private fun resolveScpCellVisual(
         PtpConstants.OlympusProp.DriveMode -> when {
             normalized.contains("PRO CAPTURE") -> Triple(AppleOrange, "PRO", "Pre-buffer burst")
             normalized.contains("SILENT") -> Triple(AppleBlue, "SILENT", "Electronic shutter burst")
-            normalized.contains("SEQ") -> Triple(AppleOrange, "BURST", "Continuous shooting")
-            normalized.contains("SELF TIMER") -> Triple(AppleGreen, "TIMER", "Delayed capture")
-            normalized.contains("ANTI-SHOCK") -> Triple(AppleBlue, "AS", "Vibration reduction")
+            normalized.contains("SEQ") || normalized.contains("H2") -> Triple(AppleOrange, "BURST", "Continuous shooting")
+            normalized.contains("CUSTOM SELF") -> Triple(AppleGreen, "TIMER", "Custom self-timer")
+            normalized.contains("SELF TIMER") || normalized.contains("SELF-TIMER") -> Triple(AppleGreen, "TIMER", "Delayed capture")
             normalized.contains("SINGLE") -> Triple(Chalk, "1X", "Single frame")
             else -> Triple(AppleOrange, null, "Drive behavior")
         }
@@ -2524,8 +2421,6 @@ private fun ScpInlineUsbPicker(
     val view = LocalView.current
     val values = enumerateOlympusUsbPropertyValues(prop)
     val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
-
     // Scroll to current value on first appearance
     LaunchedEffect(expandedPropCode) {
         val idx = values.indexOf(prop.currentValue)
@@ -2726,106 +2621,118 @@ private fun RemoteSelectorRow(
     remoteRuntime: RemoteRuntimeState,
     onSetActivePicker: (ActivePropertyPicker) -> Unit,
     readableRotation: Int,
+    usbTetherConnected: Boolean = false,
+    usbCameraProperties: OmCaptureUsbManager.CameraPropertiesSnapshot = OmCaptureUsbManager.CameraPropertiesSnapshot(),
 ) {
     val shutterEnabled = remoteRuntime.shutterSpeed.enabled
     val apertureEnabled = remoteRuntime.aperture.enabled
     val shutterAutoDisplayed = !shutterEnabled || isCameraReportedAutoValue("shutspeedvalue", remoteRuntime.shutterSpeed)
     val apertureAutoDisplayed = !apertureEnabled || isCameraReportedAutoValue("focalvalue", remoteRuntime.aperture)
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
-        SelectorButton(
-            modifier = Modifier.weight(1f),
-            label = "WB",
-            value = PropertyFormatter.formatForDisplay("wbvalue", remoteRuntime.whiteBalance.currentValue).ifBlank { "AWB" },
-            selected = remoteRuntime.activePicker == ActivePropertyPicker.WhiteBalance,
-            readableRotation = readableRotation,
-            onClick = {
-                onSetActivePicker(
-                    if (remoteRuntime.activePicker == ActivePropertyPicker.WhiteBalance) ActivePropertyPicker.None
-                    else ActivePropertyPicker.WhiteBalance,
-                )
-            },
-        )
-        SelectorButton(
-            modifier = Modifier.weight(1f),
-            label = "ISO",
-            value = PropertyFormatter.formatIsoDisplay(
-                remoteRuntime.iso.currentValue,
-                remoteRuntime.iso.autoActive,
-            ).ifBlank { "Auto" },
-            highlighted = remoteRuntime.iso.autoActive ||
-                PropertyFormatter.formatIsoDisplay(
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SelectorButton(
+                modifier = Modifier.weight(1f),
+                label = "WB",
+                value = PropertyFormatter.formatForDisplay("wbvalue", remoteRuntime.whiteBalance.currentValue).ifBlank { "AWB" },
+                selected = remoteRuntime.activePicker == ActivePropertyPicker.WhiteBalance,
+                readableRotation = readableRotation,
+                onClick = {
+                    onSetActivePicker(
+                        if (remoteRuntime.activePicker == ActivePropertyPicker.WhiteBalance) ActivePropertyPicker.None
+                        else ActivePropertyPicker.WhiteBalance,
+                    )
+                },
+            )
+            SelectorButton(
+                modifier = Modifier.weight(1f),
+                label = "ISO",
+                value = PropertyFormatter.formatIsoDisplay(
                     remoteRuntime.iso.currentValue,
                     remoteRuntime.iso.autoActive,
-                ).equals("Auto", ignoreCase = true),
-            selected = remoteRuntime.activePicker == ActivePropertyPicker.Iso,
-            readableRotation = readableRotation,
-            onClick = {
-                onSetActivePicker(
-                    if (remoteRuntime.activePicker == ActivePropertyPicker.Iso) ActivePropertyPicker.None
-                    else ActivePropertyPicker.Iso,
-                )
-            },
-        )
-        SelectorButton(
-            modifier = Modifier.weight(1f),
-            label = "SS",
-            value = if (shutterAutoDisplayed) {
-                "Auto"
-            } else {
-                PropertyFormatter.formatForDisplay("shutspeedvalue", remoteRuntime.shutterSpeed.currentValue)
-                    .ifBlank { remoteRuntime.shutterSpeed.currentValue }
-            },
-            highlighted = shutterAutoDisplayed,
-            selected = remoteRuntime.activePicker == ActivePropertyPicker.ShutterSpeed,
-            enabled = shutterEnabled,
-            allowWhenDisabled = true,
-            readableRotation = readableRotation,
-            onClick = {
-                onSetActivePicker(
-                    if (remoteRuntime.activePicker == ActivePropertyPicker.ShutterSpeed) ActivePropertyPicker.None
-                    else ActivePropertyPicker.ShutterSpeed,
-                )
-            },
-        )
-        SelectorButton(
-            modifier = Modifier.weight(1f),
-            label = "F",
-            value = if (apertureAutoDisplayed) {
-                "Auto"
-            } else {
-                PropertyFormatter.formatForDisplay("focalvalue", remoteRuntime.aperture.currentValue)
-                    .ifBlank { remoteRuntime.aperture.currentValue }
-            },
-            highlighted = apertureAutoDisplayed,
-            selected = remoteRuntime.activePicker == ActivePropertyPicker.Aperture,
-            enabled = apertureEnabled,
-            allowWhenDisabled = true,
-            readableRotation = readableRotation,
-            onClick = {
-                onSetActivePicker(
-                    if (remoteRuntime.activePicker == ActivePropertyPicker.Aperture) ActivePropertyPicker.None
-                    else ActivePropertyPicker.Aperture,
-                )
-            },
-        )
-        DriveSelectorButton(
-            modifier = Modifier.weight(1f),
-            summary = currentDriveSummary(remoteRuntime),
-            shootingMode = remoteRuntime.shootingMode,
-            driveMode = remoteRuntime.driveMode,
-            selected = remoteRuntime.activePicker == ActivePropertyPicker.DriveSettings,
-            readableRotation = readableRotation,
-            onClick = {
-                onSetActivePicker(
-                    if (remoteRuntime.activePicker == ActivePropertyPicker.DriveSettings) ActivePropertyPicker.None
-                    else ActivePropertyPicker.DriveSettings,
-                )
-            },
-        )
+                ).ifBlank { "Auto" },
+                highlighted = remoteRuntime.iso.autoActive ||
+                    PropertyFormatter.formatIsoDisplay(
+                        remoteRuntime.iso.currentValue,
+                        remoteRuntime.iso.autoActive,
+                    ).equals("Auto", ignoreCase = true),
+                selected = remoteRuntime.activePicker == ActivePropertyPicker.Iso,
+                readableRotation = readableRotation,
+                onClick = {
+                    onSetActivePicker(
+                        if (remoteRuntime.activePicker == ActivePropertyPicker.Iso) ActivePropertyPicker.None
+                        else ActivePropertyPicker.Iso,
+                    )
+                },
+            )
+            SelectorButton(
+                modifier = Modifier.weight(1f),
+                label = "SS",
+                value = if (shutterAutoDisplayed) {
+                    "Auto"
+                } else {
+                    PropertyFormatter.formatForDisplay("shutspeedvalue", remoteRuntime.shutterSpeed.currentValue)
+                        .ifBlank { remoteRuntime.shutterSpeed.currentValue }
+                },
+                highlighted = shutterAutoDisplayed,
+                selected = remoteRuntime.activePicker == ActivePropertyPicker.ShutterSpeed,
+                enabled = shutterEnabled,
+                allowWhenDisabled = true,
+                readableRotation = readableRotation,
+                onClick = {
+                    onSetActivePicker(
+                        if (remoteRuntime.activePicker == ActivePropertyPicker.ShutterSpeed) ActivePropertyPicker.None
+                        else ActivePropertyPicker.ShutterSpeed,
+                    )
+                },
+            )
+            SelectorButton(
+                modifier = Modifier.weight(1f),
+                label = "F",
+                value = if (apertureAutoDisplayed) {
+                    "Auto"
+                } else {
+                    PropertyFormatter.formatForDisplay("focalvalue", remoteRuntime.aperture.currentValue)
+                        .ifBlank { remoteRuntime.aperture.currentValue }
+                },
+                highlighted = apertureAutoDisplayed,
+                selected = remoteRuntime.activePicker == ActivePropertyPicker.Aperture,
+                enabled = apertureEnabled,
+                allowWhenDisabled = true,
+                readableRotation = readableRotation,
+                onClick = {
+                    onSetActivePicker(
+                        if (remoteRuntime.activePicker == ActivePropertyPicker.Aperture) ActivePropertyPicker.None
+                        else ActivePropertyPicker.Aperture,
+                    )
+                },
+            )
+            DriveSelectorButton(
+                modifier = Modifier.weight(1f),
+                summary = if (usbTetherConnected) {
+                    formatUsbScpDrive(usbCameraProperties.driveMode)
+                } else {
+                    currentDriveSummary(remoteRuntime)
+                },
+                shootingMode = remoteRuntime.shootingMode,
+                driveMode = remoteRuntime.driveMode,
+                selected = remoteRuntime.activePicker == ActivePropertyPicker.DriveSettings,
+                readableRotation = readableRotation,
+                onClick = {
+                    onSetActivePicker(
+                        if (remoteRuntime.activePicker == ActivePropertyPicker.DriveSettings) ActivePropertyPicker.None
+                        else ActivePropertyPicker.DriveSettings,
+                    )
+                },
+            )
+        }
+        // AF, PIC, HIRES, METER, QUAL removed — controlled via SCP instead
     }
 }
 
@@ -2888,21 +2795,35 @@ private fun RemoteControlPanel(
     // Each picker type determines its own height requirement.
     when (runtime.activePicker) {
         ActivePropertyPicker.DriveSettings -> {
-            // Wrap content height — drive settings should be compact, not take over the screen.
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .wrapContentHeight(),
-            ) {
-                DriveSettingsPanel(
-                    remoteRuntime = runtime,
-                    onSetShootingMode = onSetShootingMode,
-                    onSetDriveMode = onSetDriveMode,
-                    onSetTimerMode = onSetTimerMode,
-                    onSetTimerDelay = onSetTimerDelay,
-                    onSetIntervalSeconds = onSetIntervalSeconds,
-                    onSetIntervalCount = onSetIntervalCount,
-                )
+            if (usbTetherConnected) {
+                // USB mode: chip buttons for all camera-reported drive modes
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .wrapContentHeight(),
+                ) {
+                    UsbDriveSettingsPanel(
+                        driveProp = usbCameraProperties.driveMode,
+                        onSetUsbProperty = onSetUsbProperty,
+                    )
+                }
+            } else {
+                // WiFi mode: simplified drive settings panel
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .wrapContentHeight(),
+                ) {
+                    DriveSettingsPanel(
+                        remoteRuntime = runtime,
+                        onSetShootingMode = onSetShootingMode,
+                        onSetDriveMode = onSetDriveMode,
+                        onSetTimerMode = onSetTimerMode,
+                        onSetTimerDelay = onSetTimerDelay,
+                        onSetIntervalSeconds = onSetIntervalSeconds,
+                        onSetIntervalCount = onSetIntervalCount,
+                    )
+                }
             }
         }
         ActivePropertyPicker.ExposureMode -> {
@@ -3141,6 +3062,29 @@ private fun RemoteControlPanel(
                     label = "Image Quality",
                     prop = usbCameraProperties.imageQuality,
                     propCode = PtpConstants.OlympusProp.ImageQuality,
+                    readableRotation = readableRotation,
+                    onSetUsbProperty = onSetUsbProperty,
+                )
+            }
+        }
+        ActivePropertyPicker.UsbDriveMode -> Unit // handled via DriveSettings
+        ActivePropertyPicker.PictureMode -> {
+            Box(modifier = Modifier.fillMaxWidth().height(panelHeight)) {
+                UsbPropertyDialSection(
+                    label = "Picture Mode",
+                    prop = usbCameraProperties.findProperty(0xD00C),
+                    propCode = 0xD00C,
+                    readableRotation = readableRotation,
+                    onSetUsbProperty = onSetUsbProperty,
+                )
+            }
+        }
+        ActivePropertyPicker.HighRes -> {
+            Box(modifier = Modifier.fillMaxWidth().height(panelHeight)) {
+                UsbPropertyDialSection(
+                    label = "High Res Shot",
+                    prop = usbCameraProperties.findProperty(0xD065),
+                    propCode = 0xD065,
                     readableRotation = readableRotation,
                     onSetUsbProperty = onSetUsbProperty,
                 )
@@ -4310,7 +4254,8 @@ private fun LandscapeRemoteControlDeck(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(146.dp),
+                .heightIn(min = 80.dp, max = 200.dp)
+                .verticalScroll(rememberScrollState()),
             contentAlignment = Alignment.Center,
         ) {
             panelContent()
@@ -4621,6 +4566,163 @@ private fun DriveSettingsPanel(
             }
         }
     }
+}
+
+/**
+ * Categorise a drive-mode raw value as "silent" or "single/normal" based on its
+ * formatted label.  Silent modes have labels that start with "Silent".
+ */
+private fun isDriveModeRawSilent(rawValue: Long, allRawValues: List<Long>): Boolean {
+    val label = formatOlympusDriveMode(rawValue, allRawValues)
+    return label.startsWith("Silent", ignoreCase = true)
+}
+
+/**
+ * Shorten a drive-mode label for display inside a category tab.
+ * When the mode is already inside the "Silent" tab, strip the "Silent : " prefix
+ * so users see just "Single", "Seq L", etc.
+ */
+private fun usbDriveCategoryChipLabel(fullLabel: String, insideSilentTab: Boolean): String {
+    val stripped = if (insideSilentTab) {
+        fullLabel.removePrefix("Silent : ").removePrefix("Silent: ").removePrefix("Silent ")
+    } else {
+        fullLabel
+    }
+    return when {
+        stripped.contains("Single", ignoreCase = true) -> "Single"
+        stripped.contains("Sequential L", ignoreCase = true) -> "Seq L"
+        stripped.contains("Sequential H2", ignoreCase = true) -> "Seq H2"
+        stripped.contains("Sequential H", ignoreCase = true) -> "Seq H"
+        stripped.contains("Pro Capture Low", ignoreCase = true) -> "ProCap L"
+        stripped.contains("Pro Capture SH1", ignoreCase = true) -> "ProCap SH1"
+        stripped.contains("Pro Capture SH2", ignoreCase = true) -> "ProCap SH2"
+        stripped.contains("Custom Self-timer", ignoreCase = true) -> "Custom Timer"
+        stripped.contains("Self-timer Burst", ignoreCase = true) -> "Timer Burst"
+        stripped.contains("Self-timer", ignoreCase = true) -> "Timer"
+        else -> stripped
+    }
+}
+
+/**
+ * Returns true if the given raw value is a timer-type drive mode
+ * (self-timer, custom self-timer, silent self-timer, etc.)
+ */
+private fun isDriveModeTimer(rawValue: Long, allRawValues: List<Long>): Boolean {
+    val label = formatOlympusDriveMode(rawValue, allRawValues)
+    return label.contains("Self-timer", ignoreCase = true) ||
+        label.contains("Timer", ignoreCase = true)
+}
+
+@Composable
+private fun UsbDriveSettingsPanel(
+    driveProp: OmCaptureUsbManager.CameraPropertyState?,
+    onSetUsbProperty: (Int, Long) -> Unit,
+) {
+    if (driveProp == null) {
+        Text(
+            text = "Drive Mode: not available",
+            color = Chalk.copy(alpha = 0.5f),
+            style = MaterialTheme.typography.labelMedium,
+        )
+        return
+    }
+    val rawValues = remember(
+        driveProp.allowedValues,
+        driveProp.currentValue,
+        driveProp.rangeMin,
+        driveProp.rangeMax,
+        driveProp.rangeStep,
+    ) {
+        enumerateUsbDialRawValues(driveProp)
+    }
+
+    // Determine whether the currently active value is silent
+    val currentIsSilent = isDriveModeRawSilent(driveProp.currentValue, rawValues)
+    var selectedCategory by remember(currentIsSilent) { mutableStateOf(if (currentIsSilent) 1 else 0) }
+    val isSilentTab = selectedCategory == 1
+
+    // Split raw values into Normal (Single) and Silent groups
+    val normalModes = remember(rawValues) { rawValues.filter { !isDriveModeRawSilent(it, rawValues) } }
+    val silentModes = remember(rawValues) { rawValues.filter { isDriveModeRawSilent(it, rawValues) } }
+    val activeModes = if (isSilentTab) silentModes else normalModes
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .wrapContentHeight(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        // ── Category tabs: Single / Silent ──
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            DriveChip(
+                label = "Single",
+                selected = !isSilentTab,
+                modifier = Modifier.weight(1f),
+            ) {
+                selectedCategory = 0
+                // Auto-select first normal mode if current is silent
+                if (currentIsSilent && normalModes.isNotEmpty()) {
+                    onSetUsbProperty(PtpConstants.OlympusProp.DriveMode, normalModes.first())
+                }
+            }
+            DriveChip(
+                label = "Silent",
+                selected = isSilentTab,
+                modifier = Modifier.weight(1f),
+            ) {
+                selectedCategory = 1
+                // Auto-select first silent mode if current is not silent
+                if (!currentIsSilent && silentModes.isNotEmpty()) {
+                    onSetUsbProperty(PtpConstants.OlympusProp.DriveMode, silentModes.first())
+                }
+            }
+        }
+
+        // ── Sub-mode chips ──
+        activeModes.chunked(3).forEach { rowValues ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                rowValues.forEach { rawValue ->
+                    val fullLabel = formatOlympusDriveMode(rawValue, rawValues)
+                    val chipLabel = usbDriveCategoryChipLabel(fullLabel, isSilentTab)
+                    DriveChip(
+                        label = chipLabel,
+                        selected = rawValue == driveProp.currentValue,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        onSetUsbProperty(PtpConstants.OlympusProp.DriveMode, rawValue)
+                    }
+                }
+                repeat(3 - rowValues.size) {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+/** Shorten OM-1 drive mode label to fit chip buttons (used for summary display). */
+private fun usbDriveChipLabel(fullLabel: String): String = when {
+    fullLabel.contains("Single", ignoreCase = true) && fullLabel.contains("Silent", ignoreCase = true) -> "Silent"
+    fullLabel.contains("Single", ignoreCase = true) -> "Single"
+    fullLabel.contains("Sequential L", ignoreCase = true) && fullLabel.contains("Silent", ignoreCase = true) -> "S. Seq L"
+    fullLabel.contains("Sequential H2", ignoreCase = true) -> "Seq H2"
+    fullLabel.contains("Sequential H", ignoreCase = true) && fullLabel.contains("Silent", ignoreCase = true) -> "S. Seq H"
+    fullLabel.contains("Sequential L", ignoreCase = true) -> "Seq L"
+    fullLabel.contains("Sequential H", ignoreCase = true) -> "Seq H"
+    fullLabel.contains("Pro Capture Low", ignoreCase = true) -> "ProCap L"
+    fullLabel.contains("Pro Capture SH1", ignoreCase = true) -> "ProCap SH1"
+    fullLabel.contains("Pro Capture SH2", ignoreCase = true) -> "ProCap SH2"
+    fullLabel.contains("Custom Self-timer", ignoreCase = true) -> "Custom Timer"
+    fullLabel.contains("Self-timer Burst", ignoreCase = true) -> "Timer Burst"
+    fullLabel.contains("Silent") && fullLabel.contains("Self-timer", ignoreCase = true) -> "S. Timer"
+    fullLabel.contains("Self-timer", ignoreCase = true) -> "Timer"
+    else -> fullLabel
 }
 
 @Composable

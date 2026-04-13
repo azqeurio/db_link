@@ -9,7 +9,6 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 private const val THERMAL_STATUS_NONE_FALLBACK = 0
 

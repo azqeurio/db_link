@@ -67,6 +67,7 @@ import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
 import com.google.maps.android.compose.GoogleMap
 import com.google.maps.android.compose.MapEffect
+import com.google.maps.android.compose.MapsComposeExperimentalApi
 import com.google.maps.android.compose.MapProperties
 import com.google.maps.android.compose.MapUiSettings
 import com.google.maps.android.compose.MarkerState
@@ -435,6 +436,7 @@ data class PhotoPinGroup(
 )
 
 @Composable
+@OptIn(MapsComposeExperimentalApi::class)
 private fun GeoRouteMap(
     routePoints: List<LatLng>,
     photoGroups: List<PhotoPinGroup>,
@@ -503,9 +505,10 @@ private fun GeoRouteMap(
         )
     }
     val mapProperties = remember { MapProperties() }
-    var mapLoaded by remember { mutableStateOf(false) }
+    val mapLoadedState = remember { mutableStateOf(false) }
     var mapsInitialized by remember { mutableStateOf(false) }
     var googleMap by remember { mutableStateOf<GoogleMapSdk?>(null) }
+    val mapLoaded = mapLoadedState.value
     val mapInstanceReady = mapsInitialized && googleMap != null && mapLoaded
 
     LaunchedEffect(context) {
@@ -515,7 +518,7 @@ private fun GeoRouteMap(
 
     DisposableEffect(Unit) {
         onDispose {
-            mapLoaded = false
+            mapLoadedState.value = false
             googleMap = null
         }
     }
@@ -574,10 +577,10 @@ private fun GeoRouteMap(
         MapEffect(Unit) { map ->
             if (googleMap !== map) {
                 googleMap = map
-                mapLoaded = false
+                mapLoadedState.value = false
                 map.setOnMapLoadedCallback {
                     if (googleMap === map) {
-                        mapLoaded = true
+                        mapLoadedState.value = true
                     }
                 }
             }

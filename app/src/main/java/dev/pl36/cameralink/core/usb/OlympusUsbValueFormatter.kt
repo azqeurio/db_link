@@ -7,7 +7,7 @@ import kotlin.math.roundToInt
 
 internal fun olympusExposureModeFromRaw(rawValue: Long): CameraExposureMode? {
     return when (rawValue.toInt()) {
-        // Standard PTP ExposureProgramMode mapping (OM-1 / OM System)
+        // OM-1 / OM System ExposureMode (0xd01d) — enum[4]=4,1,2,3
         1 -> CameraExposureMode.M
         2 -> CameraExposureMode.P
         3 -> CameraExposureMode.A
@@ -20,7 +20,7 @@ internal fun olympusExposureModeFromRaw(rawValue: Long): CameraExposureMode? {
 
 internal fun formatOlympusExposureMode(rawValue: Long): String {
     return when (rawValue.toInt()) {
-        // Standard PTP ExposureProgramMode mapping (OM-1 / OM System)
+        // OM-1 / OM System ExposureMode (0xd01d) — enum[4]=4,1,2,3
         1 -> "M"
         2 -> "P"
         3 -> "A"
@@ -152,9 +152,21 @@ internal fun formatOlympusFocalLength(rawValue: Long): String {
 
 internal fun formatOlympusIso(rawValue: Long): String {
     val value = rawValue.toInt()
-    return when (value) {
-        0, 0xFFFF, 0xFFFE -> "AUTO"
-        else -> value.toString()
+    return when {
+        // Explicit Auto markers
+        value == 0 || value == 0xFFFF || value == 0xFFFE -> "Auto"
+        // OM-1 / OM System: 0xd005 uses small index values (1–4) for ISO sensitivity
+        // mode rather than actual ISO numbers.  The camera does not expose numeric
+        // ISO over PTP, so we show the mode.
+        value == 1 -> "Low"
+        value == 2 -> "Auto"
+        value == 3 -> "Auto"
+        // 0x8012 = 32786 observed on OM-1 in M mode — additional auto variant
+        value and 0x8000 != 0 -> "Auto"
+        // Actual ISO values from older cameras (≥ 50)
+        value >= 50 -> value.toString()
+        // Unknown small values — show as index
+        else -> "ISO($value)"
     }
 }
 
@@ -329,13 +341,17 @@ internal fun encodeOlympusAfArea(xNorm: Float, yNorm: Float): Long {
 private val olympusUsbScpPriority = listOf(
     PtpConstants.Prop.FocalLength,
     0xD00C,
+    0xD010,
     0xD065,
+    0xD0C7,
     PtpConstants.OlympusProp.AFTargetArea,
+    0xD01A,
     0xD0C4,
     0xD0C5,
     0xD100,
     0xD101,
     0xD11A,
+    0xD08E,
     0xD11B,
     0xD11C,
 )
@@ -389,14 +405,18 @@ internal fun olympusUsbPropertyLabel(propCode: Int): String = when (propCode) {
     PtpConstants.OlympusProp.ImageQuality -> "Image Quality"
     PtpConstants.OlympusProp.ExposureMode -> "Mode"
     PtpConstants.OlympusProp.AFTargetArea -> "AF Target"
-    0xD00C -> "Picture Mode"
-    0xD065 -> "High Res Shot"
+    0xD00C -> "Picture Mode State"
+    0xD010 -> "Picture Mode"
+    0xD065 -> "High Res State"
+    0xD0C7 -> "High Res Shot"
+    0xD01A -> "Face / Eye"
     0xD0C4 -> "Face Priority AF"
     0xD0C5 -> "Face / Eye"
     0xD100 -> "Subject Detection"
     0xD101 -> "Subject Type"
     0xD11A -> "Aspect Ratio"
-    0xD11B -> "Image Stabilizer"
+    0xD08E -> "Image Stabilizer"
+    0xD11B -> "Image Stabilizer State"
     0xD11C -> "Color Space"
     0xD0CB -> "Save Slot"
     0xD0CC -> "Count"
@@ -424,8 +444,11 @@ internal fun formatOlympusUsbPropertyValue(
     PtpConstants.OlympusProp.ImageQuality -> formatOlympusImageQuality(rawValue)
     PtpConstants.OlympusProp.ExposureMode -> formatOlympusExposureMode(rawValue)
     PtpConstants.OlympusProp.AFTargetArea -> formatOlympusAfTargetArea(rawValue)
-    0xD00C -> formatOlympusPictureMode(rawValue)
-    0xD065 -> formatOlympusHighRes(rawValue)
+    0xD00C -> formatOlympusPictureModeState(rawValue)
+    0xD010 -> formatOlympusPictureModeControl(rawValue)
+    0xD065 -> formatOlympusHighResState(rawValue)
+    0xD0C7 -> formatOlympusHighResControl(rawValue)
+    0xD01A -> formatOlympusFaceEyeMode(rawValue)
     0xD0C4 -> formatOlympusFacePriority(rawValue)
     0xD0C5 -> formatOlympusFaceEyeMode(rawValue)
     0xD100 -> formatOlympusSubjectDetection(rawValue)
@@ -436,6 +459,7 @@ internal fun formatOlympusUsbPropertyValue(
     0xD0EC -> "$rawValue s"
     0xD0F0, 0xD0F1, 0xD0F2 -> formatOlympusSignedAdjustment(rawValue)
     0xD11A -> formatOlympusAspectRatio(rawValue)
+    0xD08E -> formatOlympusImageStabilizerControl(rawValue)
     0xD11B -> formatOlympusImageStabilizer(rawValue)
     0xD11C -> formatOlympusColorSpace(rawValue)
     else -> rawValue.toString()
@@ -518,7 +542,7 @@ private fun enumerateOlympusRangeValues(
 private fun syntheticOlympusUsbPropertyValues(propCode: Int): List<Long> = when (propCode) {
     PtpConstants.OlympusProp.ExposureMode -> listOf(2L, 3L, 4L, 1L, 5L, 6L, 7L, 8L)
     PtpConstants.OlympusProp.ExposureCompensation -> defaultOlympusExposureCompRawValues()
-    PtpConstants.OlympusProp.FocusMode -> listOf(0x0002L, 0x8002L, 0x0001L, 0x8001L, 0x8004L, 0x8006L, 0x8007L, 0x8008L)
+    PtpConstants.OlympusProp.FocusMode -> listOf(0x0002L, 0x8002L, 0x0001L, 0x8004L, 0x8007L)
     PtpConstants.OlympusProp.MeteringMode -> listOf(0x8001L, 0x0002L, 0x0004L, 0x8011L, 0x8012L)
     PtpConstants.OlympusProp.FlashMode -> listOf(0x0000L, 0x0001L, 0x0003L, 0x0004L, 0x0005L, 0x0006L, 0x0002L)
     PtpConstants.OlympusProp.ImageQuality -> listOf(0x020L, 0x101L, 0x102L, 0x103L, 0x104L, 0x121L, 0x122L, 0x123L, 0x124L)
@@ -526,18 +550,22 @@ private fun syntheticOlympusUsbPropertyValues(propCode: Int): List<Long> = when 
     // exact raw layouts vary. Keep fallbacks conservative and prefer the
     // camera-reported allowedValues whenever available.
     0xD00C -> emptyList()
+    0xD010 -> listOf(0x8301L, 0x2L, 0x1L, 0x8003L, 0x8001L, 0x8610L)
     0xD065 -> listOf(0L, 1L, 2L)
+    0xD0C7 -> listOf(0x128L, 0x126L, 0x127L)
+    0xD01A -> listOf(0L, 0x8001L, 0x8003L, 0x8004L)
     0xD0C4 -> listOf(1L, 2L)
     0xD0C5 -> listOf(2L, 32770L, 32769L, 32771L, 32772L)
     0xD100 -> listOf(1L, 2L)
     0xD101 -> listOf(1L, 2L, 3L, 4L, 5L)
     0xD11A -> listOf(1L, 2L, 3L, 4L)
+    0xD08E -> listOf(1L, 4L)
     0xD11B -> listOf(0L, 1L, 2L, 3L, 4L, 5L, 6L)
     0xD11C -> listOf(1L, 2L)
     else -> emptyList()
 }
 
-private fun formatOlympusPictureMode(rawValue: Long): String = when (rawValue.toInt()) {
+private fun formatOlympusPictureModeState(rawValue: Long): String = when (rawValue.toInt()) {
     33024 -> "iAUTO"
     33025 -> "Vivid"
     33027 -> "Natural"
@@ -551,10 +579,33 @@ private fun formatOlympusPictureMode(rawValue: Long): String = when (rawValue.to
     else -> "Mode ${rawValue.toString(16)}"
 }
 
-private fun formatOlympusHighRes(rawValue: Long): String = when (rawValue.toInt()) {
+private fun formatOlympusPictureModeControl(rawValue: Long): String = when (rawValue.toInt()) {
+    0x8301 -> "Vivid"
+    0x0002 -> "Natural"
+    0x0001 -> "Muted"
+    0x8003 -> "Portrait"
+    0x8001 -> "Monotone"
+    0x8201, 0x8610 -> "iAUTO"
+    else -> formatOlympusPictureModeState(rawValue)
+}
+
+private fun formatOlympusHighResState(rawValue: Long): String = when (rawValue.toInt()) {
     0 -> "Off"
     1 -> "High Res Shot Tripod"
     2 -> "High Res Shot Handheld"
+    else -> rawValue.toString()
+}
+
+private fun formatOlympusHighResControl(rawValue: Long): String = when (rawValue.toInt()) {
+    0x128 -> "Off"
+    0x127 -> "High Res Shot Tripod"
+    0x126 -> "High Res Shot Handheld"
+    else -> formatOlympusHighResState(rawValue)
+}
+
+private fun formatOlympusImageStabilizerControl(rawValue: Long): String = when (rawValue.toInt()) {
+    1 -> "On"
+    4 -> "Off"
     else -> rawValue.toString()
 }
 

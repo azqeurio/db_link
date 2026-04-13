@@ -20,7 +20,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.Collections
-import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.QrCodeScanner
@@ -37,10 +36,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,8 +52,6 @@ import dev.pl36.cameralink.core.model.CameraWorkspace
 import dev.pl36.cameralink.core.model.GeoTaggingSnapshot
 import dev.pl36.cameralink.core.model.SavedCameraProfile
 import dev.pl36.cameralink.core.model.SettingItem
-import dev.pl36.cameralink.core.usb.OmCaptureUsbOperationState
-import dev.pl36.cameralink.core.usb.statusChipLabel
 import dev.pl36.cameralink.core.presentation.displayLabel
 import dev.pl36.cameralink.core.presentation.displayName
 import dev.pl36.cameralink.core.presentation.toPresentation
@@ -68,7 +61,6 @@ import dev.pl36.cameralink.core.ui.GlassCard
 import dev.pl36.cameralink.core.ui.KeyValueRow
 import dev.pl36.cameralink.core.ui.StatusBadge
 import dev.pl36.cameralink.core.wifi.WifiConnectionState
-import dev.pl36.cameralink.ui.OmCaptureUsbUiState
 import dev.pl36.cameralink.ui.theme.AppleBlue
 import dev.pl36.cameralink.ui.theme.AppleGreen
 import dev.pl36.cameralink.ui.theme.AppleOrange
@@ -95,7 +87,6 @@ fun DashboardScreen(
     onOpenTransfer: () -> Unit,
     onOpenGeoTag: () -> Unit,
     onOpenOmCapture: () -> Unit,
-    onOpenQaRecorder: (() -> Unit)? = null,
     onOpenQrScanner: () -> Unit,
     onAutoConnect: () -> Unit = {},
     onDisconnectCamera: () -> Unit = {},
@@ -408,15 +399,6 @@ fun DashboardScreen(
                         onClick = onOpenGeoTag,
                         modifier = Modifier.weight(1f),
                     )
-                    onOpenQaRecorder?.let { openQaRecorder ->
-                        ActionCard(
-                            title = dashboardLocalized("QA Recorder", "QA 기록"),
-                            icon = Icons.Rounded.CameraAlt,
-                            accent = AppleRed,
-                            onClick = openQaRecorder,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
                 }
             }
         }

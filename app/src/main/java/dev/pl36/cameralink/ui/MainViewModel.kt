@@ -27,7 +27,6 @@ import dev.pl36.cameralink.core.geotag.GeoTagTrackingState
 import dev.pl36.cameralink.core.geotag.GeoTagTrackingService
 import dev.pl36.cameralink.core.localization.AppLanguageManager
 import dev.pl36.cameralink.core.logging.D
-import dev.pl36.cameralink.core.logging.FileLogger
 import dev.pl36.cameralink.core.geotag.GeoTagLocationManager
 import dev.pl36.cameralink.core.model.CameraWorkspace
 import dev.pl36.cameralink.core.model.CameraNameNormalizer
@@ -78,14 +77,9 @@ import dev.pl36.cameralink.core.usb.formatOlympusApertureValueOnly
 import dev.pl36.cameralink.core.usb.formatOlympusDriveMode
 import dev.pl36.cameralink.core.usb.formatOlympusExposureComp
 import dev.pl36.cameralink.core.usb.formatOlympusExposureMode
-import dev.pl36.cameralink.core.usb.formatOlympusFlashMode
-import dev.pl36.cameralink.core.usb.formatOlympusFocusMode
-import dev.pl36.cameralink.core.usb.formatOlympusImageQuality
 import dev.pl36.cameralink.core.usb.formatOlympusIso
-import dev.pl36.cameralink.core.usb.formatOlympusMetering
 import dev.pl36.cameralink.core.usb.formatOlympusShutterSpeed
 import dev.pl36.cameralink.core.usb.formatOlympusShutterSpeedValueOnly
-import dev.pl36.cameralink.core.usb.formatOlympusUsbPropertyValue
 import dev.pl36.cameralink.core.usb.formatOlympusWhiteBalance
 import dev.pl36.cameralink.core.usb.isLegacyOlympusDriveLayout
 import dev.pl36.cameralink.core.usb.olympusApertureFNumber
@@ -110,7 +104,6 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.text.SimpleDateFormat
-import java.util.Date
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -179,7 +172,6 @@ data class MainUiState(
     val omCaptureUsb: OmCaptureUsbUiState = OmCaptureUsbUiState(),
     val omCaptureStudio: OmCaptureStudioUiState = OmCaptureCapabilityRegistry.defaultState(),
     val deepSkyState: DeepSkyLiveStackUiState = DeepSkyLiveStackUiState(),
-    val qaRecorder: QaRecorderUiState = QaRecorderUiState(),
 )
 
 class MainViewModel(
@@ -249,7 +241,6 @@ class MainViewModel(
         const val USB_INTERVAL_COUNT_PROP = 0xD0CC
         const val USB_INTERVAL_SECONDS_PROP = 0xD0CD
         const val USB_TIMER_DELAY_PROP = 0xD0EC
-        const val QA_RECORDER_WINDOW_MS = 20_000L
     }
     private var queuedRefreshAfterHandshake = false
     private var suppressWifiAutoRefresh = false
@@ -283,10 +274,6 @@ class MainViewModel(
     private var lastUsbModeDialEventAtMs = 0L
     private var nextDeepSkyProtectionProbeAtMs = 0L
     private val pendingUsbPropertyRefreshCodes = linkedSetOf<Int>()
-    private val qaEntryIdCounter = AtomicLong(0)
-    private var lastQaCameraProperties = OmCaptureUsbManager.CameraPropertiesSnapshot()
-    private var qaRecorderAutoStopJob: Job? = null
-
     private val _uiState = MutableStateFlow(
         MainUiState(
             workspace = initialWorkspace,
@@ -317,352 +304,16 @@ class MainViewModel(
         }
     }
 
-    private inline fun updateQaRecorder(transform: (QaRecorderUiState) -> QaRecorderUiState) {
-        updateUiState { current ->
-            current.copy(qaRecorder = transform(current.qaRecorder))
-        }
-    }
-
     private fun usbPropHex(propCode: Int): String = "0x${propCode.toString(16).uppercase(Locale.US)}"
 
-    private fun qaTimestampLabel(timestampMs: Long): String =
-        SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(timestampMs))
-
-    private fun createQaSessionLabel(timestampMs: Long): String =
-        "Remote QA ${qaTimestampLabel(timestampMs)}"
-
-    private fun nextQaEntryId(): Long = qaEntryIdCounter.incrementAndGet()
-
-    private fun recordQaEntry(
-        source: QaRecordSource,
-        title: String,
-        detail: String = "",
-    ) {
-        val timestampMs = System.currentTimeMillis()
-        updateUiState { current ->
-            val qaRecorder = current.qaRecorder
-            if (!qaRecorder.sessionActive) {
-                return@updateUiState current
-            }
-            val previousEntry = qaRecorder.entries.firstOrNull()
-            if (
-                previousEntry != null &&
-                previousEntry.source == source &&
-                previousEntry.title == title &&
-                previousEntry.detail == detail &&
-                timestampMs - previousEntry.timestampMs <= 700L
-            ) {
-                return@updateUiState current
-            }
-            current.copy(
-                qaRecorder = qaRecorder.copy(
-                    statusLabel = title,
-                    entries = listOf(
-                        QaRecordEntry(
-                            id = nextQaEntryId(),
-                            timestampMs = timestampMs,
-                            source = source,
-                            title = title,
-                            detail = detail,
-                        ),
-                    ) + qaRecorder.entries.take(399),
-                ),
-            )
-        }
-    }
-
     private fun recordQaUiAction(title: String, detail: String = "") {
-        recordQaEntry(QaRecordSource.Ui, title, detail)
+        val detailSuffix = if (detail.isNotBlank()) " | $detail" else ""
+        D.action("[UI] $title$detailSuffix")
     }
 
     private fun recordQaCameraEvent(title: String, detail: String = "") {
-        recordQaEntry(QaRecordSource.Camera, title, detail)
-    }
-
-    private fun recordQaSystemEvent(title: String, detail: String = "") {
-        recordQaEntry(QaRecordSource.System, title, detail)
-    }
-
-    private fun formatQaCameraPropertyValue(
-        property: OmCaptureUsbManager.CameraPropertyState,
-    ): String {
-        val formatted = formatOlympusUsbPropertyValue(
-            propCode = property.propCode,
-            rawValue = property.currentValue,
-            options = enumerateOlympusUsbPropertyValues(property),
-        )
-        return if (formatted.isBlank()) {
-            "${property.currentValue} (${usbPropHex(property.propCode)})"
-        } else {
-            formatted
-        }
-    }
-
-    private fun summarizeQaCameraSnapshot(
-        snapshot: OmCaptureUsbManager.CameraPropertiesSnapshot,
-    ): String {
-        return listOfNotNull(
-            snapshot.exposureMode?.let { "Mode=${formatQaCameraPropertyValue(it)}" },
-            snapshot.shutterSpeed?.let { "SS=${formatQaCameraPropertyValue(it)}" },
-            snapshot.aperture?.let { "F=${formatQaCameraPropertyValue(it)}" },
-            snapshot.iso?.let { "ISO=${formatQaCameraPropertyValue(it)}" },
-            snapshot.driveMode?.let { "Drive=${formatQaCameraPropertyValue(it)}" },
-        ).joinToString(", ")
-    }
-
-    private fun handleQaCameraPropertiesSnapshot(
-        snapshot: OmCaptureUsbManager.CameraPropertiesSnapshot,
-    ) {
-        val previousSnapshot = lastQaCameraProperties
-        lastQaCameraProperties = snapshot
-        if (!_uiState.value.qaRecorder.sessionActive) return
-        val currentProperties = snapshot.allProperties()
-        if (currentProperties.isEmpty()) return
-        val previousProperties = previousSnapshot.allProperties()
-        if (previousProperties.isEmpty()) {
-            recordQaCameraEvent(
-                title = "USB camera state loaded",
-                detail = summarizeQaCameraSnapshot(snapshot),
-            )
-            return
-        }
-        val previousMap = previousProperties.associateBy { it.propCode }
-        currentProperties.forEach { property ->
-            val previous = previousMap[property.propCode] ?: return@forEach
-            if (previous.currentValue == property.currentValue) return@forEach
-            recordQaCameraEvent(
-                title = "${property.label} changed",
-                detail =
-                    "${formatQaCameraPropertyValue(previous)} -> ${formatQaCameraPropertyValue(property)} " +
-                        "(${usbPropHex(property.propCode)})",
-            )
-        }
-    }
-
-    fun recordQaNavigation(
-        route: String?,
-        detail: String = "",
-    ) {
-        val normalizedRoute = route?.ifBlank { "unknown" } ?: "unknown"
-        updateQaRecorder { current -> current.copy(lastRoute = normalizedRoute) }
-        if (_uiState.value.qaRecorder.sessionActive) {
-            recordQaUiAction("Screen opened: $normalizedRoute", detail)
-        }
-    }
-
-    private fun scheduleQaRecorderAutoStop(
-        sessionLabel: String,
-        deadlineMs: Long,
-    ) {
-        qaRecorderAutoStopJob?.cancel()
-        qaRecorderAutoStopJob = viewModelScope.launch {
-            val remainingMs = (deadlineMs - System.currentTimeMillis()).coerceAtLeast(0L)
-            delay(remainingMs)
-            val currentRecorder = _uiState.value.qaRecorder
-            if (
-                currentRecorder.sessionActive &&
-                currentRecorder.sessionLabel == sessionLabel &&
-                currentRecorder.autoStopDeadlineMs == deadlineMs
-            ) {
-                finishQaRecorderSession("20-second window elapsed")
-            }
-        }
-    }
-
-    fun armQaRecorderFromRemote(
-        triggerTitle: String,
-        detail: String = "",
-    ) {
-        val normalizedTitle = triggerTitle.ifBlank { "Remote action" }
-        val now = System.currentTimeMillis()
-        val deadlineMs = now + QA_RECORDER_WINDOW_MS
-        val currentRecorder = _uiState.value.qaRecorder
-        if (!currentRecorder.sessionActive) {
-            lastQaCameraProperties = usbCameraProperties.value
-            updateQaRecorder {
-                QaRecorderUiState(
-                    sessionActive = true,
-                    sessionLabel = createQaSessionLabel(now),
-                    startedAtMs = now,
-                    autoStopDeadlineMs = deadlineMs,
-                    activeTriggerTitle = normalizedTitle,
-                    lastRoute = currentRecorder.lastRoute,
-                    statusLabel = "Recording after $normalizedTitle",
-                )
-            }
-            recordQaSystemEvent(
-                title = "Remote recording armed",
-                detail = buildString {
-                    append("Trigger=$normalizedTitle")
-                    append(", route=${currentRecorder.lastRoute}")
-                    append(", usbSession=${_uiState.value.omCaptureUsb.summary != null}")
-                    append(", liveView=${_uiState.value.remoteRuntime.liveViewActive}")
-                    if (detail.isNotBlank()) {
-                        append(", detail=$detail")
-                    }
-                },
-            )
-            val snapshot = usbCameraProperties.value
-            if (snapshot.allProperties().isNotEmpty()) {
-                recordQaCameraEvent(
-                    title = "Initial camera state",
-                    detail = summarizeQaCameraSnapshot(snapshot),
-                )
-            }
-        } else {
-            updateQaRecorder { recorder ->
-                recorder.copy(
-                    autoStopDeadlineMs = deadlineMs,
-                    activeTriggerTitle = normalizedTitle,
-                    statusLabel = "Recording after $normalizedTitle",
-                    finishReason = "",
-                )
-            }
-        }
-        scheduleQaRecorderAutoStop(
-            sessionLabel = _uiState.value.qaRecorder.sessionLabel,
-            deadlineMs = deadlineMs,
-        )
-    }
-
-    fun startQaRecorderSession() {
-        armQaRecorderFromRemote("Manual start")
-    }
-
-    fun finishQaRecorderSession(
-        finishReason: String = "Stopped from Remote UI",
-    ) {
-        qaRecorderAutoStopJob?.cancel()
-        qaRecorderAutoStopJob = null
-        val activeRecorder = _uiState.value.qaRecorder
-        if (!activeRecorder.sessionActive) return
-        recordQaSystemEvent(
-            title = "Remote recording finished",
-            detail = finishReason,
-        )
-        val currentRecorder = _uiState.value.qaRecorder
-        if (!currentRecorder.sessionActive) return
-        val finishedAtMs = System.currentTimeMillis()
-        val completedRecorder = currentRecorder.copy(
-            sessionActive = false,
-            finishedAtMs = finishedAtMs,
-            autoStopDeadlineMs = null,
-            finishReason = finishReason,
-            statusLabel = "Writing remote report...",
-        )
-        updateQaRecorder { current ->
-            if (current.sessionLabel == completedRecorder.sessionLabel) {
-                completedRecorder
-            } else {
-                current
-            }
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            val reportPath = runCatching { writeQaRecorderReport(completedRecorder) }
-                .getOrElse { throwable ->
-                    D.err("QA", "Failed to write QA recorder report", throwable)
-                    null
-                }
-            updateQaRecorder { current ->
-                if (current.sessionLabel != completedRecorder.sessionLabel || current.sessionActive) {
-                    current
-                } else {
-                    current.copy(
-                        sessionActive = false,
-                        finishedAtMs = finishedAtMs,
-                        reportPath = reportPath,
-                        statusLabel = if (reportPath != null) {
-                            "Remote report saved"
-                        } else {
-                            "Remote report save failed"
-                        },
-                    )
-                }
-            }
-        }
-    }
-
-    fun clearQaRecorderSession() {
-        qaRecorderAutoStopJob?.cancel()
-        qaRecorderAutoStopJob = null
-        updateQaRecorder { QaRecorderUiState(lastRoute = it.lastRoute) }
-    }
-
-    fun updateQaRecordEntry(
-        entryId: Long,
-        observedCameraValue: String,
-        note: String,
-    ) {
-        updateQaRecorder { current ->
-            current.copy(
-                entries = current.entries.map { entry ->
-                    if (entry.id != entryId) {
-                        entry
-                    } else {
-                        entry.copy(
-                            observedCameraValue = observedCameraValue,
-                            note = note,
-                        )
-                    }
-                },
-            )
-        }
-    }
-
-    fun addQaManualEntry(
-        title: String,
-        detail: String,
-    ) {
-        val normalizedTitle = title.ifBlank { "Manual note" }
-        recordQaEntry(
-            source = QaRecordSource.Manual,
-            title = normalizedTitle,
-            detail = detail,
-        )
-    }
-
-    private fun writeQaRecorderReport(
-        recorder: QaRecorderUiState,
-    ): String {
-        val reportDir = File(
-            getApplication<Application>().getExternalFilesDir(null) ?: getApplication<Application>().filesDir,
-            "qa-reports",
-        )
-        if (!reportDir.exists()) {
-            reportDir.mkdirs()
-        }
-        val safeLabel = recorder.sessionLabel
-            .replace(":", "-")
-            .replace(" ", "_")
-        val reportFile = File(reportDir, "$safeLabel.txt")
-        val reportBody = buildString {
-            appendLine("QA Session: ${recorder.sessionLabel}")
-            appendLine("Trigger: ${recorder.activeTriggerTitle.ifBlank { "n/a" }}")
-            appendLine("Started: ${recorder.startedAtMs?.let(::qaTimestampLabel) ?: "n/a"}")
-            appendLine("Finished: ${recorder.finishedAtMs?.let(::qaTimestampLabel) ?: qaTimestampLabel(System.currentTimeMillis())}")
-            appendLine("Finish reason: ${recorder.finishReason.ifBlank { "n/a" }}")
-            appendLine("Last route: ${recorder.lastRoute}")
-            appendLine("Log files:")
-            FileLogger.getAllLogFiles().forEach { file ->
-                appendLine("- ${file.absolutePath}")
-            }
-            appendLine()
-            appendLine("Entries:")
-            recorder.entries.asReversed().forEachIndexed { index, entry ->
-                appendLine("${index + 1}. [${qaTimestampLabel(entry.timestampMs)}] [${entry.source.label}] ${entry.title}")
-                if (entry.detail.isNotBlank()) {
-                    appendLine("   Detail: ${entry.detail}")
-                }
-                if (entry.observedCameraValue.isNotBlank()) {
-                    appendLine("   Camera observed: ${entry.observedCameraValue}")
-                }
-                if (entry.note.isNotBlank()) {
-                    appendLine("   Note: ${entry.note}")
-                }
-            }
-        }
-        reportFile.writeText(reportBody)
-        return reportFile.absolutePath
+        val detailSuffix = if (detail.isNotBlank()) " | $detail" else ""
+        D.action("[Camera] $title$detailSuffix")
     }
 
     private fun clearUsbAutoImportTracking(reason: String, clearCompleted: Boolean = true) {
@@ -739,7 +390,6 @@ class MainViewModel(
         omCaptureUsbManager.cameraProperties
             .onEach { snapshot ->
                 syncRemoteRuntimeFromUsbProperties(snapshot)
-                handleQaCameraPropertiesSnapshot(snapshot)
             }
             .launchIn(viewModelScope)
         omCaptureUsbManager.cameraEvents
@@ -893,7 +543,6 @@ class MainViewModel(
         deepSkyAutoCaptureJob?.cancel()
         usbAutoImportJob?.cancel()
         usbPropertySyncJob?.cancel()
-        qaRecorderAutoStopJob?.cancel()
         pendingUsbAutoImportHandles.clear()
         completedUsbAutoImportHandles.clear()
         clearPendingReconnectHandoffState(cancelCompletion = true)
@@ -1541,19 +1190,11 @@ class MainViewModel(
         value: String,
         closePicker: Boolean,
     ) {
-        val propName = when (picker) {
-            ActivePropertyPicker.Aperture -> "focalvalue"
-            ActivePropertyPicker.ShutterSpeed -> "shutspeedvalue"
-            ActivePropertyPicker.Iso -> "isospeedvalue"
-            ActivePropertyPicker.WhiteBalance -> "wbvalue"
-            else -> return
-        }
-
-        val propCode = when (picker) {
-            ActivePropertyPicker.Aperture -> PtpConstants.OlympusProp.Aperture
-            ActivePropertyPicker.ShutterSpeed -> PtpConstants.OlympusProp.ShutterSpeed
-            ActivePropertyPicker.Iso -> currentUsbIsoPropCode()
-            ActivePropertyPicker.WhiteBalance -> PtpConstants.OlympusProp.WhiteBalance
+        val (propName, propCode) = when (picker) {
+            ActivePropertyPicker.Aperture -> "focalvalue" to PtpConstants.OlympusProp.Aperture
+            ActivePropertyPicker.ShutterSpeed -> "shutspeedvalue" to PtpConstants.OlympusProp.ShutterSpeed
+            ActivePropertyPicker.Iso -> "isospeedvalue" to currentUsbIsoPropCode()
+            ActivePropertyPicker.WhiteBalance -> "wbvalue" to PtpConstants.OlympusProp.WhiteBalance
             else -> return
         }
         applyUsbPropertyValue(
@@ -1639,7 +1280,6 @@ class MainViewModel(
                     importFormat = _uiState.value.tetherPhoneImportFormat,
                 ).map { result ->
                     applyOmCaptureUsbImportSuccess(result)
-                    Unit
                 }
             }
         } else {
@@ -1762,11 +1402,35 @@ class MainViewModel(
         }
         if (propCode == USB_MODE_DIAL_EVENT_PROP) {
             lastUsbModeDialEventAtMs = SystemClock.elapsedRealtime()
+            // Mode-dial changes during live view: queue a delayed refresh
+            // instead of skipping entirely. The delay gives CameraControlOff
+            // (0xC105) time to arrive — if it does, the session reset will
+            // supersede this refresh. If it doesn't, we still pick up the
+            // new exposure mode. refreshCameraPropertiesForCodes() already
+            // handles pausing / resuming live view internally.
             if (omCaptureUsbManager.isLiveViewActive) {
                 D.usb(
-                    "Deferring USB mode-dial refresh for 0x${propCode.toString(16)} " +
-                        "while live view is active; waiting for reconnect-safe refresh",
+                    "Scheduling delayed USB mode-dial refresh for 0x${propCode.toString(16)} " +
+                        "while live view is active (will fire after ${USB_MODE_DIAL_REFRESH_SUPPRESS_MS}ms " +
+                        "unless CameraControlOff resets the session first)",
                 )
+                pendingUsbPropertyRefreshCodes += propCode
+                usbPropertySyncJob?.cancel()
+                usbPropertySyncJob = viewModelScope.launch {
+                    // Wait long enough for CameraControlOff to arrive and supersede.
+                    delay(USB_MODE_DIAL_REFRESH_SUPPRESS_MS)
+                    val refreshCodes = pendingUsbPropertyRefreshCodes.toSet()
+                    pendingUsbPropertyRefreshCodes.clear()
+                    if (refreshCodes.isEmpty()) return@launch
+                    val codesLabel = refreshCodes.joinToString { "0x${it.toString(16)}" }
+                    D.usb(
+                        "Executing delayed mode-dial property refresh codes=$codesLabel",
+                    )
+                    omCaptureUsbManager.refreshCameraPropertiesForCodes(refreshCodes)
+                        .onFailure { throwable ->
+                            D.err("USB", "Failed to refresh USB camera properties after mode-dial change", throwable)
+                        }
+                }
                 return
             }
         }
@@ -1784,7 +1448,11 @@ class MainViewModel(
         pendingUsbPropertyRefreshCodes += propCode
         usbPropertySyncJob?.cancel()
         usbPropertySyncJob = viewModelScope.launch {
-            delay(110)
+            // Debounce: batch rapid-fire camera events into a single refresh
+            // to reduce the frequency of live-view transport pauses.
+            // Optimistic updates (applyOptimisticPropertyChanged) already
+            // update the UI immediately; this is a confirmation readback.
+            delay(350)
             var remainingWaitMs = 280L
             while (propertyApplyJob?.isActive == true && remainingWaitMs > 0L) {
                 delay(70)
@@ -2071,10 +1739,8 @@ class MainViewModel(
         if (path.isBlank() || !File(path).isFile) return null
         return runCatching {
             val exif = ExifInterface(path)
-            val iso =
-                exif.getAttributeInt(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, 0)
-                    .takeIf { it > 0 }
-                    ?: exif.getAttributeInt(ExifInterface.TAG_ISO_SPEED_RATINGS, 0).takeIf { it > 0 }
+            val iso = exif.getAttributeInt(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, 0)
+                .takeIf { it > 0 }
             val exposureSec = exif.getAttributeDouble(ExifInterface.TAG_EXPOSURE_TIME, 0.0)
                 .takeIf { it > 0.0 }
             val focalLengthMm = exif.getAttributeDouble(ExifInterface.TAG_FOCAL_LENGTH, 0.0)
@@ -2519,7 +2185,7 @@ class MainViewModel(
             updateUiState { it.copy(
                 isRefreshing = false,
                 refreshStatus = "Wrong network — press Reconnect",
-                protocolError = "Connected to \"${(currentWifi as? WifiConnectionState.OtherWifi)?.ssid ?: "unknown"}\". Use the Reconnect button on the dashboard.",
+                protocolError = "Connected to \"${currentWifi.ssid ?: "unknown"}\". Use the Reconnect button on the dashboard.",
                 sessionState = CameraSessionState.Idle,
             ) }
             return
@@ -4638,19 +4304,16 @@ class MainViewModel(
             ActivePropertyPicker.ShutterSpeed -> "shutspeedvalue"
             ActivePropertyPicker.Iso -> "isospeedvalue"
             ActivePropertyPicker.WhiteBalance -> "wbvalue"
-            else -> ""
-        }
-        if (propName.isBlank()) {
-            return
+            else -> return
         }
         if (picker == ActivePropertyPicker.Iso || picker == ActivePropertyPicker.WhiteBalance) {
             val requestedValue = resolveRequestedPropertyValue(
                 propName = propName,
                 selectedValue = value,
-                currentValues = when (picker) {
-                    ActivePropertyPicker.Iso -> runtime.iso.availableValues
-                    ActivePropertyPicker.WhiteBalance -> runtime.whiteBalance.availableValues
-                    else -> emptyList()
+                currentValues = if (picker == ActivePropertyPicker.Iso) {
+                    runtime.iso.availableValues
+                } else {
+                    runtime.whiteBalance.availableValues
                 },
             )
             propertyApplyJob?.cancel()
@@ -4695,37 +4358,33 @@ class MainViewModel(
                     val transitionedRequestedValue = resolveRequestedPropertyValue(
                         propName = propName,
                         selectedValue = value,
-                        currentValues = when (picker) {
-                            ActivePropertyPicker.Aperture -> refreshedRuntime.aperture.availableValues
-                            ActivePropertyPicker.ShutterSpeed -> refreshedRuntime.shutterSpeed.availableValues
-                            else -> emptyList()
+                        currentValues = if (picker == ActivePropertyPicker.Aperture) {
+                            refreshedRuntime.aperture.availableValues
+                        } else {
+                            refreshedRuntime.shutterSpeed.availableValues
                         },
                     )
-                    val transitionedConfirmedValue = when (picker) {
-                        ActivePropertyPicker.Aperture -> refreshedRuntime.aperture.currentValue
-                        ActivePropertyPicker.ShutterSpeed -> refreshedRuntime.shutterSpeed.currentValue
-                        else -> ""
+                    val transitionedConfirmedValue = if (picker == ActivePropertyPicker.Aperture) {
+                        refreshedRuntime.aperture.currentValue
+                    } else {
+                        refreshedRuntime.shutterSpeed.currentValue
                     }
                     val now = System.currentTimeMillis()
-                    when (picker) {
-                        ActivePropertyPicker.Aperture -> {
-                            pendingPropertyTargets["focalvalue"] = transitionedRequestedValue
-                            pendingPropertyTimestamps["focalvalue"] = now
-                        }
-                        ActivePropertyPicker.ShutterSpeed -> {
-                            pendingPropertyTargets["shutspeedvalue"] = transitionedRequestedValue
-                            pendingPropertyTimestamps["shutspeedvalue"] = now
-                        }
-                        else -> Unit
+                    if (picker == ActivePropertyPicker.Aperture) {
+                        pendingPropertyTargets["focalvalue"] = transitionedRequestedValue
+                        pendingPropertyTimestamps["focalvalue"] = now
+                    } else {
+                        pendingPropertyTargets["shutspeedvalue"] = transitionedRequestedValue
+                        pendingPropertyTimestamps["shutspeedvalue"] = now
                     }
-                    val optimisticRuntime = when (picker) {
-                        ActivePropertyPicker.Aperture -> refreshedRuntime.copy(
+                    val optimisticRuntime = if (picker == ActivePropertyPicker.Aperture) {
+                        refreshedRuntime.copy(
                             aperture = refreshedRuntime.aperture.copy(currentValue = transitionedRequestedValue),
                         )
-                        ActivePropertyPicker.ShutterSpeed -> refreshedRuntime.copy(
+                    } else {
+                        refreshedRuntime.copy(
                             shutterSpeed = refreshedRuntime.shutterSpeed.copy(currentValue = transitionedRequestedValue),
                         )
-                        else -> refreshedRuntime
                     }.copy(statusLabel = "Applying...")
                     updateUiState { it.copy(remoteRuntime = optimisticRuntime) }
                     applyDirectPropertySelection(
@@ -4738,36 +4397,32 @@ class MainViewModel(
             }
         }
 
-        val confirmedValue = when (picker) {
-            ActivePropertyPicker.Aperture -> runtime.aperture.currentValue
-            ActivePropertyPicker.ShutterSpeed -> runtime.shutterSpeed.currentValue
-            else -> ""
+        val confirmedValue = if (picker == ActivePropertyPicker.Aperture) {
+            runtime.aperture.currentValue
+        } else {
+            runtime.shutterSpeed.currentValue
         }
         val requestedValue = resolveRequestedPropertyValue(
             propName = propName,
             selectedValue = value,
-            currentValues = when (picker) {
-                ActivePropertyPicker.Aperture -> runtime.aperture.availableValues
-                ActivePropertyPicker.ShutterSpeed -> runtime.shutterSpeed.availableValues
-                else -> emptyList()
+            currentValues = if (picker == ActivePropertyPicker.Aperture) {
+                runtime.aperture.availableValues
+            } else {
+                runtime.shutterSpeed.availableValues
             },
         )
         val now = System.currentTimeMillis()
-        when (picker) {
-            ActivePropertyPicker.Aperture -> {
-                pendingPropertyTargets["focalvalue"] = requestedValue
-                pendingPropertyTimestamps["focalvalue"] = now
-            }
-            ActivePropertyPicker.ShutterSpeed -> {
-                pendingPropertyTargets["shutspeedvalue"] = requestedValue
-                pendingPropertyTimestamps["shutspeedvalue"] = now
-            }
-            else -> Unit
+        if (picker == ActivePropertyPicker.Aperture) {
+            pendingPropertyTargets["focalvalue"] = requestedValue
+            pendingPropertyTimestamps["focalvalue"] = now
+        } else {
+            pendingPropertyTargets["shutspeedvalue"] = requestedValue
+            pendingPropertyTimestamps["shutspeedvalue"] = now
         }
-        val optimisticRuntime = when (picker) {
-            ActivePropertyPicker.Aperture -> runtime.copy(aperture = runtime.aperture.copy(currentValue = requestedValue))
-            ActivePropertyPicker.ShutterSpeed -> runtime.copy(shutterSpeed = runtime.shutterSpeed.copy(currentValue = requestedValue))
-            else -> runtime
+        val optimisticRuntime = if (picker == ActivePropertyPicker.Aperture) {
+            runtime.copy(aperture = runtime.aperture.copy(currentValue = requestedValue))
+        } else {
+            runtime.copy(shutterSpeed = runtime.shutterSpeed.copy(currentValue = requestedValue))
         }.copy(statusLabel = "Applying...")
 
         updateUiState { it.copy(remoteRuntime = optimisticRuntime) }
@@ -4874,7 +4529,7 @@ class MainViewModel(
             }
     }
 
-    private suspend fun applyPropertyResults(
+    private fun applyPropertyResults(
         takeModeResult: CameraPropertyDesc?,
         apertureResult: CameraPropertyDesc?,
         shutterResult: CameraPropertyDesc?,
@@ -6645,8 +6300,8 @@ class MainViewModel(
                 val exif = ExifInterface(it.fileDescriptor)
 
                 // Check if image already has embedded GPS — don't overwrite
-                val existingLatLong = FloatArray(2)
-                if (exif.getLatLong(existingLatLong) && existingLatLong[0] != 0f) {
+                val existingLatLong = exif.latLong
+                if (existingLatLong != null && existingLatLong[0] != 0.0) {
                     D.transfer("$fileName already has GPS EXIF, skipping geotag write")
                     return
                 }
@@ -8245,7 +7900,7 @@ class MainViewModel(
         // causes unreliable reconnection to registered cameras (Priority 1).
     }
 
-    private suspend fun pushGeoTagSample(
+    private fun pushGeoTagSample(
         sample: GeoTagLocationSample,
         statusLabel: String,
     ) {
@@ -8327,11 +7982,11 @@ class MainViewModel(
                 ExifInterface(inputStream)
             }
             val photoCapturedAtMillis = readExifCapturedAtMillis(exif)
-            val latLong = FloatArray(2)
-            if (exif.getLatLong(latLong)) {
+            val latLong = exif.latLong
+            if (latLong != null) {
                 return@runCatching ImageGeoTagInfo(
-                    latitude = latLong[0].toDouble(),
-                    longitude = latLong[1].toDouble(),
+                    latitude = latLong[0],
+                    longitude = latLong[1],
                     matchedSampleAtMillis = photoCapturedAtMillis ?: 0L,
                     photoCapturedAtMillis = photoCapturedAtMillis,
                     sourceLabel = "Embedded GPS metadata",

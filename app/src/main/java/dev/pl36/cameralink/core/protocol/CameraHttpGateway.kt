@@ -13,7 +13,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
 class CameraHttpGateway(
-    private val baseUrl: String = CameraProtocolCatalog.BaseUrl,
+    baseUrl: String = CameraProtocolCatalog.BaseUrl,
 ) {
     private val baseHttpUrl = baseUrl.toHttpUrl()
     private val baseClient = OkHttpClient.Builder()

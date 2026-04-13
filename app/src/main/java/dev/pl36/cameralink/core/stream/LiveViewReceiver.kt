@@ -21,7 +21,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -204,7 +203,7 @@ class LiveViewReceiver(private val port: Int = 65000) {
                             }
                         }
                         if (packetInfo.sequenceNumber != null && lastSequenceNumber != null) {
-                            val expected = (lastSequenceNumber!! + 1) and 0xFFFF
+                            val expected = (lastSequenceNumber + 1) and 0xFFFF
                             if (packetInfo.sequenceNumber != expected) {
                                 packetGapCount++
                                 frameBuffer.reset()

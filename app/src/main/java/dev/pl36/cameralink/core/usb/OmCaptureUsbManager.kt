@@ -1777,7 +1777,7 @@ class OmCaptureUsbManager(
         return null
     }
 
-    private suspend fun probeRecViewReadyDuringBootstrap(
+    private fun probeRecViewReadyDuringBootstrap(
         active: ActiveSession,
         reason: String,
     ): Boolean {
@@ -1839,7 +1839,7 @@ class OmCaptureUsbManager(
         return currentRecViewState == LIVE_VIEW_REC_VIEW_READY_VALUE
     }
 
-    private suspend fun logRecViewStateSample(
+    private fun logRecViewStateSample(
         active: ActiveSession,
         reason: String,
     ) {
@@ -2283,7 +2283,7 @@ class OmCaptureUsbManager(
         return chooseTransferSelection(candidates, importFormat)
     }
 
-    private suspend fun fallbackSelectionAfterCaptureTimeout(
+    private fun fallbackSelectionAfterCaptureTimeout(
         active: ActiveSession,
         handlesBefore: Set<Int>,
         captureStartMillis: Long,
@@ -2375,9 +2375,23 @@ class OmCaptureUsbManager(
                     PtpConstants.Evt.ObjectAdded,
                     PtpConstants.Evt.RequestObjectTransfer,
                     PtpConstants.OlympusEvt.ObjectAdded,
+                    // Also accept CameraControlOff so we can abort early
+                    // instead of waiting the full timeout when the camera drops out.
+                    PtpConstants.OlympusEvt.CameraControlOff,
                 ),
                 timeoutMs = remainingMs,
             ) ?: break
+
+            // If the camera reports CameraControlOff while we're waiting for
+            // ObjectAdded, the session is dead — abort early.
+            if (event.code == PtpConstants.OlympusEvt.CameraControlOff) {
+                usbLog("CameraControlOff received while waiting for ObjectAdded; capture aborted by camera")
+                throw ObjectAddedTimeoutException(
+                    "Camera exited remote-control mode during capture (CameraControlOff). " +
+                        "Please retry the capture.",
+                )
+            }
+
             val handle = event.param(0)
                 ?: throw IllegalStateException("Camera reported ObjectAdded without an object handle.")
             if (handle !in knownHandles) {
@@ -2392,7 +2406,7 @@ class OmCaptureUsbManager(
         throw ObjectAddedTimeoutException("Timed out waiting for ObjectAdded after USB capture.")
     }
 
-    private suspend fun latestSelection(
+    private fun latestSelection(
         active: ActiveSession,
         importFormat: TetherPhoneImportFormat,
     ): TransferSelection {
@@ -2415,7 +2429,7 @@ class OmCaptureUsbManager(
         return chooseTransferSelection(candidates, importFormat)
     }
 
-    private suspend fun specificHandleSelection(
+    private fun specificHandleSelection(
         active: ActiveSession,
         handle: Int,
         importFormat: TetherPhoneImportFormat,
@@ -2981,7 +2995,7 @@ class OmCaptureUsbManager(
         throw failure
     }
 
-    private suspend fun warmupFilesystemBeforeOlympusPcMode(
+    private fun warmupFilesystemBeforeOlympusPcMode(
         session: PtpSession,
         mtpWarmupSnapshot: MtpWarmupSnapshot?,
     ) {
@@ -3141,8 +3155,9 @@ class OmCaptureUsbManager(
         )
 
         var sawProgress = false
-        val ready = withTimeoutOrNull(SESSION_PC_MODE_READY_TIMEOUT_MS) {
-            while (true) {
+        val ready = withTimeoutOrNull<Boolean>(SESSION_PC_MODE_READY_TIMEOUT_MS) {
+            var readyObserved = false
+            while (!readyObserved) {
                 val event = session.pollEvent(250) ?: continue
                 val params = event.params()
                 val paramLabel = params.joinToString { it.toUsbHex() }
@@ -3159,7 +3174,7 @@ class OmCaptureUsbManager(
                                         "params=[$paramLabel]",
                                 )
                                 if (propValue == LIVE_VIEW_REC_VIEW_READY_VALUE) {
-                                    return@withTimeoutOrNull true
+                                    readyObserved = true
                                 }
                             }
 
@@ -3188,7 +3203,7 @@ class OmCaptureUsbManager(
                             "USB/PTP session init ready via ${PtpConstants.OlympusEvt.AfFrame.toUsbHex()} " +
                                 "params=[$paramLabel]",
                         )
-                        return@withTimeoutOrNull true
+                        readyObserved = true
                     }
 
                     else -> {
@@ -3199,7 +3214,7 @@ class OmCaptureUsbManager(
                     }
                 }
             }
-            error("Unreachable post-PC-mode ready wait exit")
+            readyObserved
         } ?: false
 
         if (ready) {
@@ -3844,8 +3859,9 @@ class OmCaptureUsbManager(
             "Waiting for PTP events ${expectedCodes.joinToString { it.toUsbHex() }} " +
                 "timeout=${timeoutMs}ms",
         )
-        val matchedEvent = withTimeoutOrNull(timeoutMs) {
-            while (true) {
+        val matchedEvent = withTimeoutOrNull<PtpContainer>(timeoutMs) {
+            var matchedEvent: PtpContainer? = null
+            while (matchedEvent == null) {
                 ensureSessionAlive(active)
                 try {
                     val event = active.eventChannel.receive()
@@ -3854,7 +3870,8 @@ class OmCaptureUsbManager(
                             "Matched expected event code=${event.code.toUsbHex()} " +
                                 "handle=${event.param(0)?.toUsbHex() ?: "n/a"}",
                         )
-                        return@withTimeoutOrNull event
+                        matchedEvent = event
+                        continue
                     }
                     usbLog(
                         "Ignoring event code=${event.code.toUsbHex()} while waiting for " +
@@ -3864,7 +3881,7 @@ class OmCaptureUsbManager(
                     throw UsbDisconnectedException("USB camera disconnected while waiting for a PTP event.")
                 }
             }
-            error("Unreachable event wait loop exit")
+            checkNotNull(matchedEvent)
         }
         if (matchedEvent == null) {
             usbLog(
@@ -3883,8 +3900,9 @@ class OmCaptureUsbManager(
     ): PtpContainer? {
         if (timeoutMs <= 0L) return null
         usbLog("Waiting for $waitLabel timeout=${timeoutMs}ms")
-        val matchedEvent = withTimeoutOrNull(timeoutMs) {
-            while (true) {
+        val matchedEvent = withTimeoutOrNull<PtpContainer>(timeoutMs) {
+            var matchedEvent: PtpContainer? = null
+            while (matchedEvent == null) {
                 ensureSessionAlive(active)
                 try {
                     val event = active.eventChannel.receive()
@@ -3893,7 +3911,8 @@ class OmCaptureUsbManager(
                             "Matched $waitLabel code=${event.code.toUsbHex()} " +
                                 "handle=${event.param(0)?.toUsbHex() ?: "n/a"}",
                         )
-                        return@withTimeoutOrNull event
+                        matchedEvent = event
+                        continue
                     }
                     usbLog(
                         "Ignoring event code=${event.code.toUsbHex()} while waiting for $waitLabel",
@@ -3902,7 +3921,7 @@ class OmCaptureUsbManager(
                     throw UsbDisconnectedException("USB camera disconnected while waiting for $waitLabel.")
                 }
             }
-            error("Unreachable event wait loop exit")
+            checkNotNull(matchedEvent)
         }
         if (matchedEvent == null) {
             usbLog("Timed out waiting for $waitLabel after ${timeoutMs}ms")

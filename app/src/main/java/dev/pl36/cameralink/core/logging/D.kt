@@ -35,7 +35,7 @@ object D {
     private val timers = ConcurrentHashMap<String, Long>()
 
     /** Categories that are always logged regardless of [usbTetherFocus]. */
-    private val tetherCategories = setOf("USB", "PTP", "PERM", "LIFECYCLE", "ASTRO", "STACK", "RAW")
+    private val tetherCategories = setOf("USB", "PTP", "PERM", "LIFECYCLE", "ASTRO", "STACK", "RAW", "ACTION", "NAV")
 
     // ── Category loggers ──────────────────────────────────────
 
@@ -65,6 +65,13 @@ object D {
     fun astro(msg: String) = emit("ASTRO", msg)
     fun stack(msg: String) = emit("STACK", msg)
     fun raw(msg: String) = emit("RAW", msg)
+
+    /**
+     * User-initiated action log — always logged regardless of focus mode.
+     * Captures what the user tapped/dragged, and what the app did in response.
+     * Use this to correlate UI events with PTP/USB communication.
+     */
+    fun action(msg: String) = emit("ACTION", msg)
 
     // ── Helpers ───────────────────────────────────────────────
 

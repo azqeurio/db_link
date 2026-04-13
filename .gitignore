@@ -19,3 +19,8 @@ captures/
 *.key
 release-assets/
 /.gradle-tmp/
+
+# Generated IDE inspection report. The local index.html is too large for GitHub.
+/index.html
+/script.js
+/styles.css

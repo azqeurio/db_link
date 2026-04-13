@@ -49,6 +49,9 @@ enum class ActivePropertyPicker {
     Metering,
     Flash,
     ImageQuality,
+    UsbDriveMode,
+    PictureMode,
+    HighRes,
 }
 
 /** State for a single camera property with current value and available options. */

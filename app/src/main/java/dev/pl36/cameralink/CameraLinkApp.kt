@@ -26,14 +26,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.NavigationRailItemDefaults
@@ -53,7 +49,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -77,7 +72,6 @@ import dev.pl36.cameralink.feature.transfer.TransferSourceKind
 import dev.pl36.cameralink.feature.transfer.TransferScreen
 import dev.pl36.cameralink.core.logging.D
 import dev.pl36.cameralink.core.model.ModePickerSurface
-import dev.pl36.cameralink.core.usb.olympusUsbPropertyLabel
 import dev.pl36.cameralink.ui.AppDestination
 import dev.pl36.cameralink.ui.MainViewModel
 import dev.pl36.cameralink.ui.theme.AppleBlue
@@ -120,13 +114,6 @@ fun CameraLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Un
     val usbRemoteReady = uiState.omCaptureUsb.summary?.supportsLiveView == true
     val remoteSessionReady = wifiRemoteReady || usbRemoteReady
     var previousDestination by remember { mutableStateOf(currentDestination) }
-    val armRemoteQaRecorder: (String, String) -> Unit = { title, detail ->
-        viewModel.armQaRecorderFromRemote(
-            triggerTitle = title,
-            detail = detail,
-        )
-    }
-
     // Permission request launcher — requests device discovery permissions on app start
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
@@ -143,12 +130,6 @@ fun CameraLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Un
     }
 
     LaunchedEffect(currentDestination) {
-        viewModel.recordQaNavigation(
-            route = currentRoute,
-            detail =
-                "remoteReady=$remoteSessionReady " +
-                    "usbSession=${uiState.omCaptureUsb.summary != null}",
-        )
         if (previousDestination == AppDestination.Remote && currentDestination != AppDestination.Remote) {
             viewModel.onNavigateAwayFromRemote()
         }
@@ -378,77 +359,27 @@ fun CameraLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Un
                                         libraryStatus = uiState.transferState.downloadProgress,
                                         tetherSaveTarget = uiState.tetherSaveTarget,
                                         tetherPhoneImportFormat = uiState.tetherPhoneImportFormat,
-                                        qaRecorder = uiState.qaRecorder,
                                         onSetPhoneImportFormat = viewModel::updateTetherPhoneImportFormat,
-                                        onFinishQaRecording = {
-                                            viewModel.finishQaRecorderSession()
-                                        },
-                                        onToggleLiveView = {
-                                            armRemoteQaRecorder("Toggle live view", "")
-                                            viewModel.toggleLiveView()
-                                        },
-                                        onCapturePhoto = {
-                                            armRemoteQaRecorder("Capture photo", "")
-                                            viewModel.captureRemotePhoto()
-                                        },
-                                        onExposureChanged = { value ->
-                                            armRemoteQaRecorder("Set exposure compensation", value)
-                                            viewModel.setExposureCompensationValue(value)
-                                        },
+                                        onToggleLiveView = viewModel::toggleLiveView,
+                                        onCapturePhoto = viewModel::captureRemotePhoto,
+                                        onExposureChanged = viewModel::setExposureCompensationValue,
                                         onSetShootingMode = viewModel::setShootingMode,
-                                        onSetIntervalSeconds = { seconds ->
-                                            armRemoteQaRecorder("Set interval seconds", "${seconds}s")
-                                            viewModel.setIntervalSeconds(seconds)
-                                        },
-                                        onSetIntervalCount = { count ->
-                                            armRemoteQaRecorder("Set interval count", count.toString())
-                                            viewModel.setIntervalCount(count)
-                                        },
-                                        onStartInterval = {
-                                            armRemoteQaRecorder("Start interval", "")
-                                            viewModel.startInterval()
-                                        },
-                                        onStopInterval = {
-                                            armRemoteQaRecorder("Stop interval", "")
-                                            viewModel.stopInterval()
-                                        },
+                                        onSetIntervalSeconds = viewModel::setIntervalSeconds,
+                                        onSetIntervalCount = viewModel::setIntervalCount,
+                                        onStartInterval = viewModel::startInterval,
+                                        onStopInterval = viewModel::stopInterval,
                                         onSetActivePicker = viewModel::setActivePicker,
                                         onSetModePickerSurface = viewModel::setModePickerSurface,
                                         onSetPropertyValue = { picker, value, closePicker ->
-                                            armRemoteQaRecorder(
-                                                "Set ${picker.name}",
-                                                "value=$value, close=$closePicker",
-                                            )
                                             viewModel.setPropertyValue(picker, value, closePicker)
                                         },
-                                        onTouchFocus = { request ->
-                                            armRemoteQaRecorder(
-                                                "Touch focus",
-                                                "x=${request.focusPlaneX}, y=${request.focusPlaneY}",
-                                            )
-                                            viewModel.touchFocus(request)
-                                        },
-                                        onSetCameraExposureMode = { mode ->
-                                            armRemoteQaRecorder("Set exposure mode", mode.label)
-                                            viewModel.setCameraExposureMode(mode)
-                                        },
-                                        onSetDriveMode = { mode ->
-                                            armRemoteQaRecorder("Set drive mode", mode.label)
-                                            viewModel.setDriveMode(mode)
-                                        },
-                                        onSetTimerMode = { mode ->
-                                            armRemoteQaRecorder("Set timer mode", mode.label)
-                                            viewModel.setTimerMode(mode)
-                                        },
-                                        onSetTimerDelay = { seconds ->
-                                            armRemoteQaRecorder("Set timer delay", "${seconds}s")
-                                            viewModel.setTimerDelay(seconds)
-                                        },
+                                        onTouchFocus = viewModel::touchFocus,
+                                        onSetCameraExposureMode = viewModel::setCameraExposureMode,
+                                        onSetDriveMode = viewModel::setDriveMode,
+                                        onSetTimerMode = viewModel::setTimerMode,
+                                        onSetTimerDelay = viewModel::setTimerDelay,
                                         onRefreshOmCaptureUsb = viewModel::refreshOmCaptureUsb,
-                                        onCaptureOmCaptureUsb = {
-                                            armRemoteQaRecorder("Capture OM USB photo", "")
-                                            viewModel.captureOmCaptureUsbPhoto()
-                                        },
+                                        onCaptureOmCaptureUsb = viewModel::captureOmCaptureUsbPhoto,
                                         onImportLatestOmCaptureUsb = viewModel::importLatestOmCaptureUsbImage,
                                         onClearOmCaptureUsb = viewModel::clearOmCaptureUsbState,
                                         onOpenOmCapture = {
@@ -475,16 +406,11 @@ fun CameraLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Un
                                             }
                                         },
                                         onSetUsbProperty = { propCode, value ->
-                                            armRemoteQaRecorder(
-                                                "Set ${olympusUsbPropertyLabel(propCode)}",
-                                                "0x${propCode.toString(16).uppercase()}=$value",
-                                            )
                                             viewModel.dispatchOmCaptureAction(
                                                 dev.pl36.cameralink.core.omcapture.OmCaptureAction.SetUsbProperty(propCode, value)
                                             )
                                         },
                                         onManualFocusDrive = { steps ->
-                                            armRemoteQaRecorder("Manual focus drive", steps.toString())
                                             viewModel.dispatchOmCaptureAction(
                                                 dev.pl36.cameralink.core.omcapture.OmCaptureAction.ManualFocusDrive(steps)
                                             )

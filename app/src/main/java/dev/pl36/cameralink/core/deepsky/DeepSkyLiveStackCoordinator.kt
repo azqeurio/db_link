@@ -18,7 +18,6 @@ import java.util.ArrayDeque
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.math.abs
 import kotlin.math.atan
 import kotlin.math.hypot
 import kotlin.math.max
@@ -37,7 +36,7 @@ class DeepSkyLiveStackCoordinator(
     private val stackEngine: StackEngine = StackEngine(),
     private val stackRenderer: StackRenderer = StackRenderer(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val processingDispatcher: CoroutineDispatcher =
+    processingDispatcher: CoroutineDispatcher =
         Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "DeepSkyLiveStack").apply { isDaemon = true }
         }.asCoroutineDispatcher(),

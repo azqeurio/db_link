@@ -22,7 +22,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 
 class GeoTagLocationManager(
-    private val context: Context,
+    context: Context,
 ) {
     private val client: FusedLocationProviderClient = LocationServices.getFusedLocationProviderClient(context)
     private var callback: LocationCallback? = null

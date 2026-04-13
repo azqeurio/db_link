@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -48,7 +47,6 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Movie
-import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Refresh
@@ -73,7 +71,6 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -85,7 +82,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -177,9 +173,10 @@ fun TransferScreen(
     onToggleDateSelection: (String) -> Unit = {},
     onSelectUsbSource: (Set<Int>?) -> Unit = {},
 ) {
-    var showUsbSourceDialog by remember(transferState.sourceKind, transferState.usbAvailableStorageIds) {
+    val showUsbSourceDialogState = remember(transferState.sourceKind, transferState.usbAvailableStorageIds) {
         mutableStateOf(false)
     }
+    val showUsbSourceDialog = showUsbSourceDialogState.value
     val primaryActionLabel = if (transferState.sourceKind == TransferSourceKind.OmCaptureUsb) {
         "Import"
     } else {
@@ -286,7 +283,7 @@ fun TransferScreen(
                     value = transferState.sourceLabel,
                     clickable = transferState.sourceKind == TransferSourceKind.OmCaptureUsb &&
                         transferState.usbAvailableStorageIds.isNotEmpty(),
-                    onClick = { showUsbSourceDialog = true },
+                    onClick = { showUsbSourceDialogState.value = true },
                 )
                 if (transferState.downloadedCount > 0) {
                     TransferSummaryCard(
@@ -592,7 +589,7 @@ fun TransferScreen(
     if (showUsbSourceDialog && transferState.sourceKind == TransferSourceKind.OmCaptureUsb) {
         val storageIds = transferState.usbAvailableStorageIds.distinct()
         AlertDialog(
-            onDismissRequest = { showUsbSourceDialog = false },
+            onDismissRequest = { showUsbSourceDialogState.value = false },
             confirmButton = {},
             title = { Text("Source", fontWeight = FontWeight.Bold) },
             text = {
@@ -600,10 +597,10 @@ fun TransferScreen(
                     UsbSourceOption(
                         label = if (storageIds.size > 1) "Both" else "Slot 1",
                         selected = transferState.selectedUsbStorageIds.isNullOrEmpty() ||
-                            transferState.selectedUsbStorageIds!!.size >= storageIds.size,
+                            transferState.selectedUsbStorageIds.size >= storageIds.size,
                     ) {
                         onSelectUsbSource(null)
-                        showUsbSourceDialog = false
+                        showUsbSourceDialogState.value = false
                     }
                     storageIds.forEachIndexed { index, storageId ->
                         UsbSourceOption(
@@ -611,13 +608,13 @@ fun TransferScreen(
                             selected = transferState.selectedUsbStorageIds == setOf(storageId),
                         ) {
                             onSelectUsbSource(setOf(storageId))
-                            showUsbSourceDialog = false
+                            showUsbSourceDialogState.value = false
                         }
                     }
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showUsbSourceDialog = false }) {
+                TextButton(onClick = { showUsbSourceDialogState.value = false }) {
                     Text("Close")
                 }
             },

@@ -11,7 +11,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
-import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import javax.xml.parsers.DocumentBuilderFactory
 import java.util.Date
@@ -29,7 +28,7 @@ class DefaultCameraRepository(
     override fun initialWorkspace(): CameraWorkspace = fallback.initialWorkspace()
 
     override suspend fun probeConnectionReady(): Result<String> = withContext(Dispatchers.IO) {
-        suspend fun attempt(attempt: Int): Result<String> {
+        fun attempt(attempt: Int): Result<String> {
             D.proto("Connection readiness probe attempt $attempt via get_connectmode")
             return gateway.getText(
                 path = "/get_connectmode.cgi",
