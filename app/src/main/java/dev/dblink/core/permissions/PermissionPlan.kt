@@ -25,9 +25,10 @@ object PermissionPlanner {
             feature = "remote",
             title = "Remote shooting",
             permissions = listOf(
+                "android.permission.CAMERA",
                 "android.permission.RECORD_AUDIO",
             ),
-            rationale = "The microphone is only needed for voice-triggered timer flows. QR setup now uses Google Code Scanner and does not request camera permission.",
+            rationale = "Camera and microphone access support QR setup and voice-triggered timer flows.",
         ),
         PermissionPlan(
             feature = "transfer",
@@ -36,6 +37,7 @@ object PermissionPlanner {
                 "android.permission.READ_MEDIA_IMAGES",
                 "android.permission.READ_MEDIA_VIDEO",
                 "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+                "android.permission.READ_EXTERNAL_STORAGE",
             ),
             rationale = "The modern app reads and saves media through scoped APIs and can handle Android 14 partial photo access.",
         ),

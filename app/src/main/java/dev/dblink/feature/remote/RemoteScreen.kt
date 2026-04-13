@@ -2937,27 +2937,12 @@ private fun RemoteControlPanel(
                         .fillMaxWidth()
                         .height(panelHeight),
                 ) {
-                    if (usbTetherSurface) {
-                        ExposureScalePanel(
-                            values = evValues,
-                            currentValue = evCurrentValue,
-                            onExposureChanged = onExposureChanged,
-                            readableRotation = readableRotation,
-                        )
-                    } else {
-                        DialSection(
-                            label = "Exposure Compensation",
-                            values = runtime.exposureCompensationValues.copy(
-                                currentValue = evCurrentValue,
-                                availableValues = evValues,
-                            ),
-                            propName = "expcomp",
-                            reverseDial = reverseDialMap["expcomp"] == true,
-                            readableRotation = readableRotation,
-                        ) { value, _ ->
-                            onExposureChanged(value)
-                        }
-                    }
+                    ExposureScalePanel(
+                        values = evValues,
+                        currentValue = evCurrentValue,
+                        onExposureChanged = onExposureChanged,
+                        readableRotation = readableRotation,
+                    )
                 }
             }
             // No placeholder when EV is hidden — 0 height

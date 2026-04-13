@@ -114,18 +114,38 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
     val usbRemoteReady = uiState.omCaptureUsb.summary?.supportsLiveView == true
     val remoteSessionReady = wifiRemoteReady || usbRemoteReady
     var previousDestination by remember { mutableStateOf(currentDestination) }
-    // Request device discovery permissions at startup.
+    val backgroundLocationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+    ) { results ->
+        D.perm("Background permission results: ${results.entries.joinToString { "${it.key.substringAfterLast('.')}=${it.value}" }}")
+        viewModel.onPermissionsResult(results)
+    }
+    fun requestBackgroundLocationPermissionIfReady(reason: String) {
+        val perms = viewModel.getStartupBackgroundLocationPermissions()
+        if (perms.isEmpty()) {
+            return
+        }
+        D.perm("Requesting ${perms.size} background permissions ($reason): ${perms.map { it.substringAfterLast('.') }}")
+        backgroundLocationPermissionLauncher.launch(perms)
+    }
+
+    // Request startup runtime permissions in Android's required foreground/background order.
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
     ) { results ->
         D.perm("Permission results: ${results.entries.joinToString { "${it.key.substringAfterLast('.')}=${it.value}" }}")
         viewModel.onPermissionsResult(results)
+        requestBackgroundLocationPermissionIfReady("foreground_result")
     }
 
     LaunchedEffect(Unit) {
-        val perms = viewModel.getRequiredPermissions()
-        D.perm("Requesting ${perms.size} permissions: ${perms.map { it.substringAfterLast('.') }}")
-        permissionLauncher.launch(perms)
+        val perms = viewModel.getStartupForegroundPermissions()
+        if (perms.isNotEmpty()) {
+            D.perm("Requesting ${perms.size} startup permissions: ${perms.map { it.substringAfterLast('.') }}")
+            permissionLauncher.launch(perms)
+        } else {
+            requestBackgroundLocationPermissionIfReady("startup")
+        }
     }
 
     LaunchedEffect(currentDestination) {

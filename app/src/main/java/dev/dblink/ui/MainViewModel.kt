@@ -2,6 +2,7 @@ package dev.dblink.ui
 
 import android.app.Application
 import android.content.ContentValues
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
@@ -10,6 +11,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.SystemClock
 import android.provider.MediaStore
+import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.exifinterface.media.ExifInterface
 import androidx.lifecycle.AndroidViewModel
@@ -589,10 +591,54 @@ class MainViewModel(
     }
 
     fun getRequiredPermissions(): Array<String> {
+        return getStartupForegroundPermissions()
+    }
+
+    fun getStartupForegroundPermissions(): Array<String> {
         return PermissionPlanner.plans
             .flatMap { it.permissions }
             .distinct()
+            .filterNot { it == "android.permission.ACCESS_BACKGROUND_LOCATION" }
+            .filter(::isRuntimePermissionSupported)
+            .filterNot(::isPermissionGranted)
             .toTypedArray()
+    }
+
+    fun getStartupBackgroundLocationPermissions(): Array<String> {
+        val permission = "android.permission.ACCESS_BACKGROUND_LOCATION"
+        if (!isRuntimePermissionSupported(permission) || isPermissionGranted(permission)) {
+            return emptyArray()
+        }
+        val foregroundLocationGranted =
+            isPermissionGranted("android.permission.ACCESS_FINE_LOCATION") ||
+                isPermissionGranted("android.permission.ACCESS_COARSE_LOCATION")
+        return if (foregroundLocationGranted) arrayOf(permission) else emptyArray()
+    }
+
+    private fun isRuntimePermissionSupported(permission: String): Boolean {
+        return when (permission) {
+            "android.permission.BLUETOOTH_SCAN", "android.permission.BLUETOOTH_CONNECT" ->
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            "android.permission.NEARBY_WIFI_DEVICES",
+            "android.permission.POST_NOTIFICATIONS",
+            "android.permission.READ_MEDIA_IMAGES",
+            "android.permission.READ_MEDIA_VIDEO" ->
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+            "android.permission.READ_MEDIA_VISUAL_USER_SELECTED" ->
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+            "android.permission.READ_EXTERNAL_STORAGE" ->
+                Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2
+            "android.permission.ACCESS_BACKGROUND_LOCATION" ->
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+            else -> true
+        }
+    }
+
+    private fun isPermissionGranted(permission: String): Boolean {
+        return ContextCompat.checkSelfPermission(
+            getApplication(),
+            permission,
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     fun onPermissionsResult(results: Map<String, Boolean>) {
