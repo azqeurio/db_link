@@ -13,18 +13,19 @@ val buildRootProvider = providers
         providers.provider {
             File(
                 System.getProperty("java.io.tmpdir"),
-                "dblink-build/${rootProject.name}/${project.name}",
+                "dblink-build/dblink/${project.name}",
             ).absolutePath
         },
     )
 
 layout.buildDirectory.set(file(buildRootProvider.get()))
+val nativeSourceRoot = layout.projectDirectory.dir("src/main/cpp")
 val stagedNativeRoot = layout.buildDirectory.dir("native-src")
 val nativeBuildStagingDirProvider = providers.provider {
     File(buildRootProvider.get()).parentFile.resolve("${project.name}-native-staging").absolutePath
 }
 val stageNativeSources = tasks.register<Sync>("stageNativeSources") {
-    from("src/main/cpp")
+    from(nativeSourceRoot)
     into(stagedNativeRoot)
 }
 
@@ -32,6 +33,13 @@ tasks.matching { task ->
     task.name.startsWith("configureCMake") || task.name.startsWith("buildCMake")
 }.configureEach {
     dependsOn(stageNativeSources)
+}
+
+// Android Studio can configure CMake before Gradle's CMake tasks run, so keep
+// the staged source tree available during sync as well.
+sync {
+    from(nativeSourceRoot)
+    into(stagedNativeRoot)
 }
 
 fun loadGoogleMapsApiKeyFromXml(): String {
