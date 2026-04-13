@@ -1,50 +1,42 @@
-# PL36 Camera Link
+# db link
 
-Android camera control app for compatible Olympus / OM SYSTEM cameras.
+db link is an Android camera companion app for compatible Olympus and OM SYSTEM cameras.
 
-This project implements camera control functionality based on observed device behavior and standard communication protocols.
-
-## Windows Path Note
-
-On this machine, open the project from the ASCII-only junction path below instead of the original OneDrive path with Korean characters:
-
-- `C:\dev\pl36-modern-app`
-
-This avoids the Android Gradle Plugin Windows path check that can fail on non-ASCII project paths.
+It provides camera connection, remote capture, live view, image transfer, USB tethering, geotagging, and deep-sky live stacking tools in a modern Android app.
 
 ## Goals
 
-- provide a modern single-activity Compose app for camera control
-- modernize permissions, storage, Bluetooth, and startup behavior
-- isolate camera communication into testable protocol and transport layers
-- keep feature coverage clear across:
+- provide a reliable camera-control workflow on Android
+- support Wi-Fi and USB/PTP connection paths where the camera exposes them
+- keep camera protocol handling separate from UI state and presentation
+- keep the main feature areas clear:
   - device onboarding
   - remote capture and live preview
   - image transfer
-  - firmware-related utilities
-  - settings, diagnostics, and location workflows
+  - tethered capture
+  - geotagging
+  - deep-sky live stacking
+  - settings and diagnostics
 
 ## What Is Implemented
 
-- Kotlin DSL Android project scaffold
-- Compose-first UI shell with adaptive navigation
-- custom design system and dashboard-style UI
-- protocol models for camera CGI endpoints on the default camera network
-- XML command-list parser for `get_commandlist.cgi`
-- capability resolver that turns protocol support into product features
-- repository and UI scaffolding for camera session workflows
-- architecture notes for setup, feature surfaces, and implementation direction
+- Kotlin and Jetpack Compose Android app
+- adaptive dashboard, remote, transfer, geotagging, settings, and tethering screens
+- Wi-Fi camera protocol support for compatible camera CGI endpoints
+- USB/PTP support for OM Capture style tethering workflows
+- camera property parsing, formatting, and capability mapping
+- background image import and local geotagging support
+- deep-sky capture and live stacking workflow
 
 ## Notes
 
-- compatibility depends on the camera model and the protocol surface exposed by the device
-- debug builds include protocol inspection tools intended for development and testing
+- camera compatibility depends on the model, firmware, and protocol features exposed by the device
+- debug builds include development diagnostics
 - release builds hide development-only protocol tooling
 
 ## Next Steps
 
-1. finish QR / BLE onboarding and device discovery
-2. complete live preview rendering and camera property writes
-3. wire command execution and binary transfer through the network and USB layers
-4. expand media import, geotagging, and background work support
-5. add more device-backed tests for protocol parsing and recovery behavior
+1. broaden device-backed validation across more camera bodies
+2. refine USB property coverage where descriptors differ by model
+3. improve transfer and tethering recovery flows
+4. expand geotagging and deep-sky workflow tests
