@@ -129,6 +129,7 @@ import dev.dblink.core.usb.formatOlympusIso
 import dev.dblink.core.usb.formatOlympusMetering
 import dev.dblink.core.usb.formatOlympusShutterSpeed
 import dev.dblink.core.usb.formatOlympusWhiteBalance
+import dev.dblink.core.usb.isLegacyOlympusDriveLayout
 import dev.dblink.core.usb.olympusUsbPropertyLabel
 import dev.dblink.core.usb.statusChipLabel
 import dev.dblink.ui.OmCaptureUsbUiState
@@ -4547,13 +4548,43 @@ private fun DriveSettingsPanel(
     }
 }
 
-/**
- * Categorise a drive-mode raw value as "silent" or "single/normal" based on its
- * formatted label.  Silent modes have labels that start with "Silent".
- */
-private fun isDriveModeRawSilent(rawValue: Long, allRawValues: List<Long>): Boolean {
+private fun usesElectronicShutterDriveMode(rawValue: Long, allRawValues: List<Long>): Boolean {
     val label = formatOlympusDriveMode(rawValue, allRawValues)
-    return label.startsWith("Silent", ignoreCase = true)
+    return label.contains("Silent", ignoreCase = true) ||
+        label.contains("Anti-Shock", ignoreCase = true) ||
+        if (isLegacyOlympusDriveLayout(allRawValues)) {
+            false
+        } else {
+            rawValue in setOf(
+                72L, // Pro Capture SH1
+                73L, // Pro Capture SH2
+            )
+        }
+}
+
+private fun sortUsbDriveModesForDisplay(rawValues: List<Long>, allRawValues: List<Long>): List<Long> {
+    fun rank(rawValue: Long): Int {
+        val label = formatOlympusDriveMode(rawValue, allRawValues)
+        return when {
+            label.contains("Single", ignoreCase = true) -> 0
+            label.contains("Sequential L", ignoreCase = true) -> 10
+            label.contains("Sequential H2", ignoreCase = true) -> 20
+            label.contains("Sequential H", ignoreCase = true) -> 21
+            label.contains("Pro Capture Low", ignoreCase = true) -> 30
+            label.contains("Pro Capture SH1", ignoreCase = true) -> 31
+            label.contains("Pro Capture SH2", ignoreCase = true) -> 32
+            label.contains("Self-timer Burst", ignoreCase = true) -> 40
+            label.contains("Custom Self-timer", ignoreCase = true) -> 41
+            label.contains("Self-timer", ignoreCase = true) -> 42
+            label.contains("Anti-Shock", ignoreCase = true) -> 50
+            else -> 90
+        }
+    }
+
+    return rawValues.sortedWith(
+        compareBy<Long> { rank(it) }
+            .thenBy { allRawValues.indexOf(it).takeIf { index -> index >= 0 } ?: Int.MAX_VALUE },
+    )
 }
 
 /**
@@ -4615,15 +4646,25 @@ private fun UsbDriveSettingsPanel(
         enumerateUsbDialRawValues(driveProp)
     }
 
-    // Determine whether the currently active value is silent
-    val currentIsSilent = isDriveModeRawSilent(driveProp.currentValue, rawValues)
-    var selectedCategory by remember(currentIsSilent) { mutableStateOf(if (currentIsSilent) 1 else 0) }
+    val currentUsesElectronicShutter = usesElectronicShutterDriveMode(driveProp.currentValue, rawValues)
+    var selectedCategory by remember(currentUsesElectronicShutter) {
+        mutableStateOf(if (currentUsesElectronicShutter) 1 else 0)
+    }
     val isSilentTab = selectedCategory == 1
 
-    // Split raw values into Normal (Single) and Silent groups
-    val normalModes = remember(rawValues) { rawValues.filter { !isDriveModeRawSilent(it, rawValues) } }
-    val silentModes = remember(rawValues) { rawValues.filter { isDriveModeRawSilent(it, rawValues) } }
-    val activeModes = if (isSilentTab) silentModes else normalModes
+    val physicalShutterModes = remember(rawValues) {
+        sortUsbDriveModesForDisplay(
+            rawValues.filterNot { usesElectronicShutterDriveMode(it, rawValues) },
+            rawValues,
+        )
+    }
+    val electronicShutterModes = remember(rawValues) {
+        sortUsbDriveModesForDisplay(
+            rawValues.filter { usesElectronicShutterDriveMode(it, rawValues) },
+            rawValues,
+        )
+    }
+    val activeModes = if (isSilentTab) electronicShutterModes else physicalShutterModes
 
     Column(
         modifier = Modifier
@@ -4642,9 +4683,8 @@ private fun UsbDriveSettingsPanel(
                 modifier = Modifier.weight(1f),
             ) {
                 selectedCategory = 0
-                // Auto-select first normal mode if current is silent
-                if (currentIsSilent && normalModes.isNotEmpty()) {
-                    onSetUsbProperty(PtpConstants.OlympusProp.DriveMode, normalModes.first())
+                if (currentUsesElectronicShutter && physicalShutterModes.isNotEmpty()) {
+                    onSetUsbProperty(PtpConstants.OlympusProp.DriveMode, physicalShutterModes.first())
                 }
             }
             DriveChip(
@@ -4653,9 +4693,8 @@ private fun UsbDriveSettingsPanel(
                 modifier = Modifier.weight(1f),
             ) {
                 selectedCategory = 1
-                // Auto-select first silent mode if current is not silent
-                if (!currentIsSilent && silentModes.isNotEmpty()) {
-                    onSetUsbProperty(PtpConstants.OlympusProp.DriveMode, silentModes.first())
+                if (!currentUsesElectronicShutter && electronicShutterModes.isNotEmpty()) {
+                    onSetUsbProperty(PtpConstants.OlympusProp.DriveMode, electronicShutterModes.first())
                 }
             }
         }
