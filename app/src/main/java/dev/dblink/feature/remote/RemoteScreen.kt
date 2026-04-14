@@ -2829,14 +2829,9 @@ private fun RemoteControlPanel(
             val modeDialValues = buildModeDialValues(
                 takeMode = runtime.takeMode,
                 fallbackMode = runtime.exposureMode,
-                includeTetherOption = tetheredCaptureAvailable && !usbTetherSurface,
-                includeTetherRetryOption = usbTetherConnected ||
-                    omCaptureUsb.canRetry ||
-                    runtime.modePickerSurface == ModePickerSurface.Tether ||
-                    runtime.modePickerSurface == ModePickerSurface.TetherRetry ||
-                    runtime.modePickerSurface == ModePickerSurface.DeepSky,
-                includeDeepSkyOption = usbTetherConnected ||
-                    runtime.modePickerSurface == ModePickerSurface.DeepSky,
+                includeTetherOption = tetheredCaptureAvailable && usbTetherConnected && !usbTetherSurface,
+                includeTetherRetryOption = usbTetherSurface && (usbTetherConnected || omCaptureUsb.canRetry),
+                includeDeepSkyOption = usbTetherConnected && runtime.modePickerSurface == ModePickerSurface.DeepSky,
                 preferFullModeFallback = usbTetherSurface,
                 usbTetherActionOnly = usbTetherSurface,
             )
@@ -5135,7 +5130,7 @@ private fun buildModeDialValues(
         .mapNotNull(::modeFromTakeModeRaw)
         .distinct()
         .map(CameraExposureMode::label)
-        .ifEmpty { listOf(fallbackMode.label) }
+        .ifEmpty { CameraExposureMode.entries.map(CameraExposureMode::label) }
         .let { resolved ->
             if (preferFullModeFallback && resolved.size <= 1) {
                 CameraExposureMode.entries.map(CameraExposureMode::label)
@@ -5147,11 +5142,15 @@ private fun buildModeDialValues(
     if (usbTetherActionOnly) {
         return CameraPropertyValues(
             currentValue = currentMode,
-            availableValues = listOf(
-                currentMode,
-                TETHER_RETRY_MODE_DIAL_VALUE,
-                DEEP_SKY_MODE_DIAL_VALUE,
-            ).distinct(),
+            availableValues = buildList {
+                add(currentMode)
+                if (includeTetherRetryOption) {
+                    add(TETHER_RETRY_MODE_DIAL_VALUE)
+                }
+                if (includeDeepSkyOption) {
+                    add(DEEP_SKY_MODE_DIAL_VALUE)
+                }
+            }.distinct(),
         )
     }
     val surfacedModes = buildList {

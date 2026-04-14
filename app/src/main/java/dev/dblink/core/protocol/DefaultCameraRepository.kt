@@ -736,14 +736,7 @@ class DefaultCameraRepository(
 
     private fun parsePropertyDescXml(xml: String): ParsedPropertyDesc {
         return runCatching {
-            val factory = DocumentBuilderFactory.newInstance().apply {
-                isNamespaceAware = false
-                isIgnoringComments = true
-                isCoalescing = true
-                isExpandEntityReferences = false
-                setFeature("http://xml.org/sax/features/external-general-entities", false)
-                setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-            }
+            val factory = newCameraXmlFactory()
             val builder = factory.newDocumentBuilder()
             val document = ByteArrayInputStream(xml.toByteArray(Charsets.UTF_8)).use(builder::parse)
             parsePropertyDescElement(document.documentElement)
@@ -793,14 +786,7 @@ class DefaultCameraRepository(
 
     private fun parsePropertyDescListXml(xml: String): Map<String, CameraPropertyDesc> {
         return runCatching {
-            val factory = DocumentBuilderFactory.newInstance().apply {
-                isNamespaceAware = false
-                isIgnoringComments = true
-                isCoalescing = true
-                isExpandEntityReferences = false
-                setFeature("http://xml.org/sax/features/external-general-entities", false)
-                setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-            }
+            val factory = newCameraXmlFactory()
             val builder = factory.newDocumentBuilder()
             val document = ByteArrayInputStream(xml.toByteArray(Charsets.UTF_8)).use(builder::parse)
             val root = document.documentElement
@@ -883,14 +869,7 @@ class DefaultCameraRepository(
     private fun parseCamInfo(xml: String?): ParsedCamInfo {
         if (xml.isNullOrBlank()) return ParsedCamInfo(cameraName = null, firmwareVersion = null, batteryPercent = null)
         return runCatching {
-            val factory = DocumentBuilderFactory.newInstance().apply {
-                isNamespaceAware = false
-                isIgnoringComments = true
-                isCoalescing = true
-                isExpandEntityReferences = false
-                setFeature("http://xml.org/sax/features/external-general-entities", false)
-                setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-            }
+            val factory = newCameraXmlFactory()
             val builder = factory.newDocumentBuilder()
             val document = ByteArrayInputStream(xml.toByteArray(Charsets.UTF_8)).use(builder::parse)
             val root = document.documentElement
@@ -924,6 +903,22 @@ class DefaultCameraRepository(
             D.err("PROTO", "Failed to parse get_caminfo response", throwable)
             ParsedCamInfo(cameraName = null, firmwareVersion = null, batteryPercent = null)
         }
+    }
+
+    private fun newCameraXmlFactory(): DocumentBuilderFactory {
+        return DocumentBuilderFactory.newInstance().apply {
+            isNamespaceAware = false
+            isIgnoringComments = true
+            isCoalescing = true
+            isExpandEntityReferences = false
+            setFeatureIfSupported("http://xml.org/sax/features/external-general-entities", false)
+            setFeatureIfSupported("http://xml.org/sax/features/external-parameter-entities", false)
+        }
+    }
+
+    private fun DocumentBuilderFactory.setFeatureIfSupported(feature: String, value: Boolean) {
+        runCatching { setFeature(feature, value) }
+            .onFailure { D.proto("XML parser feature unsupported: $feature") }
     }
 
     private fun parsePlayTargetSlot(response: String): Int {

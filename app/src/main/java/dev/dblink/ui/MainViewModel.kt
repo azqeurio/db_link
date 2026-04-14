@@ -206,6 +206,7 @@ class MainViewModel(
     private var propertyApplyJob: Job? = null
     private var propertyLoadJob: Job? = null
     private var propertyRefreshJob: Job? = null
+    private var emptyPropertyLoadRetries = 0
     private var reconnectJob: Job? = null
     private var handshakeJob: Job? = null
     private var sessionKeepAliveJob: Job? = null
@@ -239,6 +240,7 @@ class MainViewModel(
         const val DEEP_SKY_PROTECTION_PROBE_BACKOFF_MS = 15_000L
         const val USB_MODE_DIAL_EVENT_PROP = 0xD062
         const val USB_MODE_DIAL_REFRESH_SUPPRESS_MS = 800L
+        const val EMPTY_PROPERTY_LOAD_RETRY_LIMIT = 5
         const val USB_OM1_ISO_PROP = 0xD005
         const val USB_INTERVAL_COUNT_PROP = 0xD0CC
         const val USB_INTERVAL_SECONDS_PROP = 0xD0CD
@@ -552,9 +554,17 @@ class MainViewModel(
     }
 
     fun onNavigateAwayFromRemote() {
+        val leavingUsbRemote = isUsbRemoteTransportActive() && _uiState.value.omCaptureUsb.summary != null
+        if (!leavingUsbRemote) {
+            updateUiState { current -> current.copy(
+                remoteRuntime = current.remoteRuntime.copy(
+                    activePicker = ActivePropertyPicker.None,
+                    modePickerSurface = ModePickerSurface.CameraModes,
+                ),
+            ) }
+        }
         if (_uiState.value.remoteRuntime.liveViewActive) {
             D.ui("Navigating away from Remote — stopping live view")
-            val leavingUsbRemote = isUsbRemoteTransportActive()
             stopLiveViewInternal()
             if (!leavingUsbRemote) {
                 viewModelScope.launch {
@@ -2393,6 +2403,7 @@ class MainViewModel(
 
     private fun commitConnectedWorkspace(workspace: CameraWorkspace) {
         activePlayTargetSlot = null
+        emptyPropertyLoadRetries = 0
         updateUiState { current ->
             val connectedSessionState = sessionStateMachine.reduce(
                 current.sessionState,
@@ -2781,6 +2792,7 @@ class MainViewModel(
         isAutoConnecting = false
         autoImportArmed = false
         activePlayTargetSlot = null
+        emptyPropertyLoadRetries = 0
         stopSessionKeepAlive()
         stopLiveViewInternal()
         reconnectJob?.cancel()
@@ -4781,6 +4793,38 @@ class MainViewModel(
             D.ui("loadCameraPropertiesInternal: ignoring stale generation=$generation")
             return
         }
+        val loadedAnyProperty = listOf(
+            takeModeResult,
+            apertureResult,
+            shutterResult,
+            isoResult,
+            wbResult,
+            expCompResult,
+            driveResult,
+        ).any { it != null }
+        if (!loadedAnyProperty) {
+            emptyPropertyLoadRetries += 1
+            val retryDelay = (900L + emptyPropertyLoadRetries * 450L).coerceAtMost(3_000L)
+            D.proto(
+                "Camera property load returned no values " +
+                    "(attempt=$emptyPropertyLoadRetries/$EMPTY_PROPERTY_LOAD_RETRY_LIMIT)",
+            )
+            updateUiState { current -> current.copy(
+                remoteRuntime = current.remoteRuntime.copy(
+                    propertiesLoaded = false,
+                    statusLabel = if (current.remoteRuntime.liveViewActive) {
+                        "Live view ready"
+                    } else {
+                        "Loading camera controls..."
+                    },
+                ),
+            ) }
+            if (emptyPropertyLoadRetries <= EMPTY_PROPERTY_LOAD_RETRY_LIMIT && isRemoteSessionReady()) {
+                schedulePropertyRefresh(delayMillis = retryDelay)
+            }
+            return
+        }
+        emptyPropertyLoadRetries = 0
 
         applyPropertyResults(takeModeResult, apertureResult, shutterResult, isoResult, wbResult, expCompResult, driveResult)
     }
