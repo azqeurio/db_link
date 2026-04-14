@@ -50,3 +50,14 @@ target_link_libraries(
     libraw
     log
 )
+
+add_library(
+    usbnative
+    SHARED
+    usb_native.c
+)
+
+target_link_libraries(
+    usbnative
+    log
+)
