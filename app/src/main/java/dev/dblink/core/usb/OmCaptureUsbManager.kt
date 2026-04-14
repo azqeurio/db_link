@@ -120,6 +120,8 @@ class OmCaptureUsbManager(
         const val MODE_DIAL_EVENT_PROP = 0xD062
         const val ISO_SPEED_OM1_FALLBACK_PROP = 0xD005
         const val PERMISSION_TIMEOUT_MS = 15_000L
+        const val USB_DISCOVERY_SETTLE_TIMEOUT_MS = 3_000L
+        const val USB_DISCOVERY_POLL_INTERVAL_MS = 250L
         const val RAW_PAIR_WINDOW_MS = 1_500L
     }
 
@@ -3988,20 +3990,33 @@ class OmCaptureUsbManager(
             findPtpInterfaceBundleOrNull(device) != null
     }
 
-    private fun findCandidateDevice(): UsbDevice {
-        val allDevices = usbManager.deviceList.values.toList()
-        val candidates = allDevices.filter { isCandidateUsbDevice(it) }
-        val storageModeDevices = allDevices.filter { isLikelyStorageModeDevice(it, allDevices.size) }
-        return when {
-            candidates.isEmpty() -> error(
-                if (storageModeDevices.isNotEmpty()) {
-                    "Camera is in Storage mode. Switch to PTP/Tether mode."
-                } else {
-                    "No OM camera detected over USB/PTP. If the camera is connected in storage mode, switch it to PTP/MTP and reconnect."
-                },
-            )
-            candidates.size > 1 -> error("Multiple USB cameras are connected. Disconnect extras and try again.")
-            else -> candidates.first()
+    private suspend fun findCandidateDevice(): UsbDevice {
+        val deadline = SystemClock.elapsedRealtime() + USB_DISCOVERY_SETTLE_TIMEOUT_MS
+        var attempt = 0
+        while (true) {
+            attempt += 1
+            val allDevices = usbManager.deviceList.values.toList()
+            val candidates = allDevices.filter { isCandidateUsbDevice(it) }
+            val storageModeDevices = allDevices.filter { isLikelyStorageModeDevice(it, allDevices.size) }
+            when {
+                candidates.size == 1 -> {
+                    if (attempt > 1) {
+                        usbLog("USB candidate appeared after ${attempt - 1} discovery wait checks")
+                    }
+                    return candidates.first()
+                }
+                candidates.size > 1 -> error("Multiple USB cameras are connected. Disconnect extras and try again.")
+                storageModeDevices.isNotEmpty() -> error("Camera is in Storage mode. Switch to PTP/Tether mode.")
+                SystemClock.elapsedRealtime() >= deadline -> error(
+                    "No OM camera detected over USB/PTP. If the camera is connected in storage mode, switch it to PTP/MTP and reconnect.",
+                )
+                else -> {
+                    if (attempt == 1) {
+                        usbLog("No USB/PTP candidate yet; waiting for Android USB discovery")
+                    }
+                    delay(USB_DISCOVERY_POLL_INTERVAL_MS)
+                }
+            }
         }
     }
 

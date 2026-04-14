@@ -556,6 +556,7 @@ class MainViewModel(
     fun onNavigateAwayFromRemote() {
         val leavingUsbRemote = isUsbRemoteTransportActive() && _uiState.value.omCaptureUsb.summary != null
         if (!leavingUsbRemote) {
+            suppressWifiAutoRefresh = false
             updateUiState { current -> current.copy(
                 remoteRuntime = current.remoteRuntime.copy(
                     activePicker = ActivePropertyPicker.None,
@@ -4242,6 +4243,12 @@ class MainViewModel(
         recordQaUiAction(title = "Change mode surface", detail = surface.name)
         val runtime = _uiState.value.remoteRuntime
         val previousSurface = runtime.modePickerSurface
+        val enteringUsbSurface = !isUsbModeSurface(previousSurface) && isUsbModeSurface(surface)
+        if (enteringUsbSurface) {
+            suppressWifiAutoRefresh = true
+        } else if (!isUsbModeSurface(surface)) {
+            suppressWifiAutoRefresh = false
+        }
         D.ui(
             "MODE_PICKER_SURFACE: ${runtime.modePickerSurface} -> $surface " +
                 "(activePicker=${runtime.activePicker})",
@@ -4267,10 +4274,12 @@ class MainViewModel(
                 liveViewActive = if (surface == ModePickerSurface.TetherRetry) {
                     false
                 } else {
-                    runtime.liveViewActive
+                    runtime.liveViewActive && !enteringUsbSurface
                 },
                 statusLabel = if (surface == ModePickerSurface.TetherRetry) {
                     "Reconnect USB tether..."
+                } else if (enteringUsbSurface) {
+                    "Preparing USB tether..."
                 } else {
                     runtime.statusLabel
                 },
@@ -4283,25 +4292,99 @@ class MainViewModel(
             startDeepSkySession()
         }
         if (isUsbModeSurface(surface)) {
-            if (surface == ModePickerSurface.TetherRetry) {
-                refreshOmCaptureUsb()
-            } else if (
-                shouldAutoConnectUsbTether() ||
-                (usbLiveViewDesired && _uiState.value.omCaptureUsb.summary == null)
-            ) {
-                refreshOmCaptureUsb()
-            } else if (_uiState.value.omCaptureUsb.summary != null) {
-                refreshUsbProperties(includeExtras = surface == ModePickerSurface.DeepSky)
-                if (
-                    surface != ModePickerSurface.TetherRetry &&
-                    usbLiveViewDesired &&
-                    _uiState.value.omCaptureUsb.summary?.supportsLiveView == true &&
-                    !omCaptureUsbManager.isLiveViewActive
+            viewModelScope.launch {
+                if (enteringUsbSurface) {
+                    prepareWifiRemoteForUsbTether(previousLiveViewActive = runtime.liveViewActive)
+                }
+                if (_uiState.value.remoteRuntime.modePickerSurface != surface) {
+                    return@launch
+                }
+                if (surface == ModePickerSurface.TetherRetry) {
+                    refreshOmCaptureUsb()
+                } else if (
+                    shouldAutoConnectUsbTether() ||
+                    (usbLiveViewDesired && _uiState.value.omCaptureUsb.summary == null)
                 ) {
-                    startUsbLiveViewSession(waitingStatus = "Waiting for USB live view frame...")
+                    refreshOmCaptureUsb()
+                } else if (_uiState.value.omCaptureUsb.summary != null) {
+                    refreshUsbProperties(includeExtras = surface == ModePickerSurface.DeepSky)
+                    if (
+                        surface != ModePickerSurface.TetherRetry &&
+                        usbLiveViewDesired &&
+                        _uiState.value.omCaptureUsb.summary?.supportsLiveView == true &&
+                        !omCaptureUsbManager.isLiveViewActive
+                    ) {
+                        startUsbLiveViewSession(waitingStatus = "Waiting for USB live view frame...")
+                    }
                 }
             }
         }
+    }
+
+    private suspend fun prepareWifiRemoteForUsbTether(previousLiveViewActive: Boolean) {
+        val state = _uiState.value
+        val hadWifiLiveView = previousLiveViewActive ||
+            state.sessionState is CameraSessionState.LiveView ||
+            (state.remoteRuntime.liveViewActive && !isUsbRemoteTransportActive())
+        val hadWifiSession = state.sessionState is CameraSessionState.Connected ||
+            state.sessionState is CameraSessionState.LiveView
+
+        if (!hadWifiLiveView && !hadWifiSession) {
+            cameraWifiManager.clearRequestedCameraConnection(clearBinding = true)
+            return
+        }
+
+        D.ui(
+            "Preparing Wi-Fi remote session for USB tether " +
+                "(liveView=$hadWifiLiveView, session=${state.sessionState})",
+        )
+        recoverLiveViewAfterReconnect = false
+        queuedRefreshAfterHandshake = false
+        reconnectJob?.cancel()
+        handshakeJob?.cancel()
+        propertyApplyJob?.cancel()
+        propertyLoadJob?.cancel()
+        propertyRefreshJob?.cancel()
+        stopSessionKeepAlive()
+        _liveViewFrame.value = null
+
+        if (hadWifiLiveView) {
+            stopLiveViewInternal()
+            val stopResult = withTimeoutOrNull(2_200L) { repository.stopLiveView() }
+            if (stopResult == null) {
+                D.proto("Timed out stopping Wi-Fi live view before USB tether; continuing with USB scan")
+            } else {
+                stopResult.onFailure { throwable ->
+                    D.err("PROTO", "Failed to stop Wi-Fi live view before USB tether", throwable)
+                }
+            }
+        } else if (hadWifiSession) {
+            val parkResult = withTimeoutOrNull(2_200L) { repository.switchCameraMode(ConnectMode.Play) }
+            if (parkResult == null) {
+                D.proto("Timed out parking Wi-Fi camera session before USB tether; continuing with USB scan")
+            } else {
+                parkResult.onFailure { throwable ->
+                    D.err("PROTO", "Failed to park Wi-Fi camera session before USB tether", throwable)
+                }
+            }
+        }
+
+        cameraWifiManager.clearRequestedCameraConnection(clearBinding = true)
+        updateUiState { current -> current.copy(
+            isRefreshing = false,
+            refreshStatus = "USB tether mode",
+            protocolError = null,
+            sessionState = CameraSessionState.Idle,
+            remoteRuntime = current.remoteRuntime.copy(
+                liveViewActive = false,
+                focusHeld = false,
+                isFocusing = false,
+                touchFocusPoint = null,
+                propertiesLoaded = false,
+                statusLabel = "Connect the camera over USB",
+            ),
+        ) }
+        delay(650L)
     }
 
     fun startDeepSkySession() {
