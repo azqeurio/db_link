@@ -165,6 +165,12 @@ private const val TETHER_MODE_DIAL_VALUE = "Tether"
 private const val TETHER_RETRY_MODE_DIAL_VALUE = "Tether Retry"
 private const val DEEP_SKY_MODE_DIAL_VALUE = "Deep Sky"
 private const val DEEP_SKY_FOCAL_LENGTH_PROP = "deepsky_focal_length"
+private val Om1SilentBurstDriveRawValues = setOf(
+    41L, // Pro Capture SH2 on OM-1 tether reports
+    67L, // Pro Capture Low
+    72L, // Pro Capture SH1
+    73L, // Pro Capture SH2
+)
 
 // USB SCP dual-property bindings (display state vs. writable control)
 private const val USB_SCP_PICTURE_MODE_STATE_PROP = 0xD00C
@@ -2804,6 +2810,13 @@ private fun RemoteControlPanel(
                 ) {
                     UsbDriveSettingsPanel(
                         driveProp = usbCameraProperties.driveMode,
+                        remoteRuntime = runtime,
+                        onSetShootingMode = onSetShootingMode,
+                        onSetDriveMode = onSetDriveMode,
+                        onSetTimerMode = onSetTimerMode,
+                        onSetTimerDelay = onSetTimerDelay,
+                        onSetIntervalSeconds = onSetIntervalSeconds,
+                        onSetIntervalCount = onSetIntervalCount,
                         onSetUsbProperty = onSetUsbProperty,
                     )
                 }
@@ -4551,15 +4564,7 @@ private fun DriveSettingsPanel(
 private fun usesElectronicShutterDriveMode(rawValue: Long, allRawValues: List<Long>): Boolean {
     val label = formatOlympusDriveMode(rawValue, allRawValues)
     return label.contains("Silent", ignoreCase = true) ||
-        if (isLegacyOlympusDriveLayout(allRawValues)) {
-            false
-        } else {
-            rawValue in setOf(
-                67L, // Pro Capture Low
-                72L, // Pro Capture SH1
-                73L, // Pro Capture SH2
-            )
-        }
+        (!isLegacyOlympusDriveLayout(allRawValues) && rawValue in Om1SilentBurstDriveRawValues)
 }
 
 private fun sortUsbDriveModesForDisplay(rawValues: List<Long>, allRawValues: List<Long>): List<Long> {
@@ -4573,6 +4578,7 @@ private fun sortUsbDriveModesForDisplay(rawValues: List<Long>, allRawValues: Lis
             label.contains("Pro Capture Low", ignoreCase = true) -> 30
             label.contains("Pro Capture SH1", ignoreCase = true) -> 31
             label.contains("Pro Capture SH2", ignoreCase = true) -> 32
+            label.contains("SH2", ignoreCase = true) -> 32
             label.contains("Self-timer Burst", ignoreCase = true) -> 40
             label.contains("Custom Self-timer", ignoreCase = true) -> 41
             label.contains("Timer C", ignoreCase = true) -> 41
@@ -4624,9 +4630,38 @@ private fun isDriveModeTimer(rawValue: Long, allRawValues: List<Long>): Boolean 
         label.contains("Timer", ignoreCase = true)
 }
 
+private fun isUsbDriveBurstRaw(rawValue: Long, allRawValues: List<Long>): Boolean {
+    val label = formatOlympusDriveMode(rawValue, allRawValues)
+    return !isDriveModeTimer(rawValue, allRawValues) &&
+        !label.contains("Single", ignoreCase = true) &&
+        (
+            label.contains("Sequential", ignoreCase = true) ||
+                label.contains("Burst", ignoreCase = true) ||
+                label.contains("Pro Capture", ignoreCase = true) ||
+                label.contains("SH1", ignoreCase = true) ||
+                label.contains("SH2", ignoreCase = true)
+            )
+}
+
+private fun usbBurstDriveOptions(driveMode: DriveMode, rawValues: List<Long>): List<Long> {
+    val electronic = driveMode == DriveMode.SilentBurst
+    val candidates = rawValues.filter { raw ->
+        isUsbDriveBurstRaw(raw, rawValues) &&
+            usesElectronicShutterDriveMode(raw, rawValues) == electronic
+    }
+    return sortUsbDriveModesForDisplay(candidates, rawValues)
+}
+
 @Composable
 private fun UsbDriveSettingsPanel(
     driveProp: OmCaptureUsbManager.CameraPropertyState?,
+    remoteRuntime: RemoteRuntimeState,
+    onSetShootingMode: (RemoteShootingMode) -> Unit,
+    onSetDriveMode: (DriveMode) -> Unit,
+    onSetTimerMode: (TimerMode) -> Unit,
+    onSetTimerDelay: (Int) -> Unit,
+    onSetIntervalSeconds: (Int) -> Unit,
+    onSetIntervalCount: (Int) -> Unit,
     onSetUsbProperty: (Int, Long) -> Unit,
 ) {
     if (driveProp == null) {
@@ -4647,25 +4682,13 @@ private fun UsbDriveSettingsPanel(
         enumerateUsbDialRawValues(driveProp)
     }
 
-    val currentUsesElectronicShutter = usesElectronicShutterDriveMode(driveProp.currentValue, rawValues)
-    var selectedCategory by remember(currentUsesElectronicShutter) {
-        mutableStateOf(if (currentUsesElectronicShutter) 1 else 0)
+    val selectedBurstModes = remember(remoteRuntime.driveMode, rawValues) {
+        usbBurstDriveOptions(remoteRuntime.driveMode, rawValues)
     }
-    val isSilentTab = selectedCategory == 1
-
-    val physicalShutterModes = remember(rawValues) {
-        sortUsbDriveModesForDisplay(
-            rawValues.filterNot { usesElectronicShutterDriveMode(it, rawValues) },
-            rawValues,
-        )
-    }
-    val electronicShutterModes = remember(rawValues) {
-        sortUsbDriveModesForDisplay(
-            rawValues.filter { usesElectronicShutterDriveMode(it, rawValues) },
-            rawValues,
-        )
-    }
-    val activeModes = if (isSilentTab) electronicShutterModes else physicalShutterModes
+    val visibleBurstModes = selectedBurstModes.take(4)
+    val showBurstModes = remoteRuntime.shootingMode != RemoteShootingMode.Interval &&
+        remoteRuntime.driveMode in setOf(DriveMode.Burst, DriveMode.SilentBurst) &&
+        visibleBurstModes.isNotEmpty()
 
     Column(
         modifier = Modifier
@@ -4673,42 +4696,45 @@ private fun UsbDriveSettingsPanel(
             .wrapContentHeight(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // Category tabs: Single / Silent
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            DriveChip(
-                label = "Single",
-                selected = !isSilentTab,
-                modifier = Modifier.weight(1f),
-            ) {
-                selectedCategory = 0
-                if (currentUsesElectronicShutter && physicalShutterModes.isNotEmpty()) {
-                    onSetUsbProperty(PtpConstants.OlympusProp.DriveMode, physicalShutterModes.first())
-                }
+            DriveChip("Single", remoteRuntime.shootingMode == RemoteShootingMode.Single, Modifier.weight(1f)) {
+                onSetShootingMode(RemoteShootingMode.Single)
             }
-            DriveChip(
-                label = "Silent",
-                selected = isSilentTab,
-                modifier = Modifier.weight(1f),
-            ) {
-                selectedCategory = 1
-                if (!currentUsesElectronicShutter && electronicShutterModes.isNotEmpty()) {
-                    onSetUsbProperty(PtpConstants.OlympusProp.DriveMode, electronicShutterModes.first())
+            DriveChip("Interval", remoteRuntime.shootingMode == RemoteShootingMode.Interval, Modifier.weight(1f)) {
+                onSetShootingMode(RemoteShootingMode.Interval)
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            DriveMode.entries.forEach { mode ->
+                DriveChip(driveLabel(mode), remoteRuntime.driveMode == mode, Modifier.weight(1f)) {
+                    onSetDriveMode(mode)
                 }
             }
         }
-
-        // Sub-mode chips
-        activeModes.chunked(3).forEach { rowValues ->
+        if (remoteRuntime.shootingMode == RemoteShootingMode.Interval) {
+            ValueSlider("Interval", "${remoteRuntime.intervalSeconds}s", remoteRuntime.intervalSeconds.toFloat(), 2f..60f, 57) {
+                onSetIntervalSeconds(it.roundToInt())
+            }
+            ValueSlider("Count", remoteRuntime.intervalCount.toString(), remoteRuntime.intervalCount.toFloat(), 2f..99f, 96) {
+                onSetIntervalCount(it.roundToInt())
+            }
+        } else if (showBurstModes) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                rowValues.forEach { rawValue ->
+                visibleBurstModes.forEach { rawValue ->
                     val fullLabel = formatOlympusDriveMode(rawValue, rawValues)
-                    val chipLabel = usbDriveCategoryChipLabel(fullLabel, isSilentTab)
+                    val chipLabel = usbDriveCategoryChipLabel(
+                        fullLabel,
+                        remoteRuntime.driveMode == DriveMode.SilentBurst,
+                    )
                     DriveChip(
                         label = chipLabel,
                         selected = rawValue == driveProp.currentValue,
@@ -4717,8 +4743,24 @@ private fun UsbDriveSettingsPanel(
                         onSetUsbProperty(PtpConstants.OlympusProp.DriveMode, rawValue)
                     }
                 }
-                repeat(3 - rowValues.size) {
+                repeat(4 - visibleBurstModes.size) {
                     Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                TimerMode.entries.forEach { mode ->
+                    DriveChip(timerLabel(mode, remoteRuntime.timerDelay), remoteRuntime.timerMode == mode, Modifier.weight(1f)) {
+                        onSetTimerMode(mode)
+                    }
+                }
+            }
+            if (remoteRuntime.timerMode != TimerMode.Off) {
+                ValueSlider("Delay", "${remoteRuntime.timerDelay}s", remoteRuntime.timerDelay.toFloat(), 1f..30f, 28) {
+                    onSetTimerDelay(it.roundToInt())
                 }
             }
         }

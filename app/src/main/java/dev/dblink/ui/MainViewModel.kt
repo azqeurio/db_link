@@ -388,6 +388,7 @@ class MainViewModel(
                         reason = "usb-runtime-${runtimeState.operationState.name.lowercase()}",
                     )
                     clearUsbLibraryCache()
+                    resetTransferSourceFromUsbToWifi()
                 }
             }
             .launchIn(viewModelScope)
@@ -1834,6 +1835,47 @@ class MainViewModel(
     private fun clearUsbLibraryCache() {
         usbLibraryCache = emptyList()
         usbLibraryCacheUpdatedAtMs = 0L
+    }
+
+    private fun wifiTransferSourceLabel(slot: Int?, ssid: String?): String {
+        return when (slot) {
+            1 -> "Slot 1"
+            2 -> "Slot 2"
+            else -> ssid ?: "Wi-Fi"
+        }
+    }
+
+    private fun resetTransferSourceFromUsbToWifi() {
+        val selectedSsid = _uiState.value.selectedCameraSsid
+        updateUiState { current ->
+            if (current.transferState.sourceKind != TransferSourceKind.OmCaptureUsb) {
+                current
+            } else {
+                current.copy(
+                    transferState = current.transferState.copy(
+                        images = emptyList(),
+                        thumbnails = emptyMap(),
+                        isLoading = false,
+                        isDownloading = false,
+                        downloadProgress = "",
+                        errorMessage = null,
+                        selectedImage = null,
+                        selectedImages = emptySet(),
+                        isSelectionMode = false,
+                        matchedGeoTags = emptyMap(),
+                        previewUnavailable = emptySet(),
+                        sourceCameraSsid = selectedSsid,
+                        sourceKind = TransferSourceKind.WifiCamera,
+                        sourceLabel = wifiTransferSourceLabel(current.selectedCardSlotSource, selectedSsid),
+                        supportsDelete = true,
+                        usbObjectHandlesByPath = emptyMap(),
+                        usbAvailableStorageIds = emptyList(),
+                        selectedUsbStorageIds = null,
+                    ),
+                )
+            }
+        }
+        previewThumbnailUpgrades.clear()
     }
 
     /**
@@ -3416,6 +3458,7 @@ class MainViewModel(
         if (slot !in 1..2) return
         val selectedSsid = _uiState.value.selectedCameraSsid ?: return
         val currentTransfer = _uiState.value.transferState
+        val switchingWifiLibrary = currentTransfer.sourceKind == TransferSourceKind.WifiCamera
         updateUiState { it.copy(
             selectedCardSlotSource = slot,
             transferState = currentTransfer.copy(
@@ -3429,6 +3472,11 @@ class MainViewModel(
                 isLoading = false,
                 errorMessage = null,
                 sourceCameraSsid = null,
+                sourceLabel = if (switchingWifiLibrary) {
+                    wifiTransferSourceLabel(slot, selectedSsid)
+                } else {
+                    currentTransfer.sourceLabel
+                },
             ),
         ) }
         previewThumbnailUpgrades.clear()
@@ -3440,6 +3488,11 @@ class MainViewModel(
             }
             refreshSavedCamerasState()
         }
+    }
+
+    fun selectWifiLibrarySourceSlot(slot: Int) {
+        updateSelectedCardSlotSource(slot)
+        loadCameraImages()
     }
 
     fun updateGeotagConfig(config: GeotagConfig) {
@@ -4033,7 +4086,10 @@ class MainViewModel(
             errorMessage = null,
             sourceCameraSsid = _uiState.value.selectedCameraSsid,
             sourceKind = TransferSourceKind.WifiCamera,
-            sourceLabel = _uiState.value.selectedCameraSsid ?: "Wi-Fi",
+            sourceLabel = wifiTransferSourceLabel(
+                _uiState.value.selectedCardSlotSource,
+                _uiState.value.selectedCameraSsid,
+            ),
             supportsDelete = true,
             usbObjectHandlesByPath = emptyMap(),
         )
@@ -5256,7 +5312,6 @@ class MainViewModel(
         val usbState = _uiState.value.omCaptureUsb
         val status = usbState.statusLabel
         return usbState.summary != null ||
-            _uiState.value.transferState.sourceKind == TransferSourceKind.OmCaptureUsb ||
             usbState.lastActionLabel == "USB camera attached" ||
             status.contains("Select Tether to connect", ignoreCase = true) ||
             status.contains("ready over USB/PTP", ignoreCase = true) ||
@@ -5522,7 +5577,7 @@ class MainViewModel(
                     errorMessage = null,
                     sourceCameraSsid = requestSsid,
                     sourceKind = TransferSourceKind.WifiCamera,
-                    sourceLabel = requestSsid ?: "Wi-Fi",
+                    sourceLabel = wifiTransferSourceLabel(_uiState.value.selectedCardSlotSource, requestSsid),
                     supportsDelete = true,
                     usbObjectHandlesByPath = emptyMap(),
                     usbAvailableStorageIds = emptyList(),
@@ -5751,7 +5806,10 @@ class MainViewModel(
                 errorMessage = errorMessage,
                 sourceCameraSsid = _uiState.value.selectedCameraSsid,
                 sourceKind = TransferSourceKind.WifiCamera,
-                sourceLabel = _uiState.value.selectedCameraSsid ?: "Wi-Fi",
+                sourceLabel = wifiTransferSourceLabel(
+                    _uiState.value.selectedCardSlotSource,
+                    _uiState.value.selectedCameraSsid,
+                ),
                 supportsDelete = true,
                 usbObjectHandlesByPath = emptyMap(),
                 usbAvailableStorageIds = emptyList(),
@@ -7770,7 +7828,8 @@ class MainViewModel(
             when (rawValue.toInt()) {
                 1 -> DriveMode.Single to TimerMode.Off
                 33, 7 -> DriveMode.Burst to TimerMode.Off
-                39, 40, 67, 72, 73 -> DriveMode.SilentBurst to TimerMode.Off
+                39 -> DriveMode.Silent to TimerMode.Off
+                40, 41, 67, 72, 73 -> DriveMode.SilentBurst to TimerMode.Off
                 4 -> DriveMode.Single to TimerMode.Timer
                 5 -> DriveMode.Burst to TimerMode.BurstTimer
                 36 -> DriveMode.Silent to TimerMode.Timer
@@ -7824,9 +7883,9 @@ class MainViewModel(
             }
             TimerMode.Off -> when (driveMode) {
                 DriveMode.Single -> firstAvailable(1L)
-                DriveMode.Silent -> firstAvailable(41L, 36L)
+                DriveMode.Silent -> firstAvailable(39L, 36L)
                 DriveMode.Burst -> firstAvailable(33L, 7L)
-                DriveMode.SilentBurst -> firstAvailable(39L, 40L, 67L, 72L, 73L, 36L)
+                DriveMode.SilentBurst -> firstAvailable(40L, 67L, 72L, 73L, 41L, 36L)
             }
         }
         return preferred ?: currentRaw.takeIf { it in options }

@@ -483,6 +483,14 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                     )
                                 }
                                 composable(AppDestination.Transfer.route) {
+                                    val supportsWifiSourceSelection =
+                                        uiState.selectedCameraSsid != null &&
+                                            uiState.workspace.protocol.commandList.commands.any {
+                                                it.supported && it.name.equals("get_playtargetslot", ignoreCase = true)
+                                            } &&
+                                            uiState.workspace.protocol.commandList.commands.any {
+                                                it.supported && it.name.equals("set_playtargetslot", ignoreCase = true)
+                                            }
                                     LaunchedEffect(
                                         uiState.sessionState,
                                         uiState.selectedCameraSsid,
@@ -532,6 +540,9 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                         onSetTypeFilter = viewModel::setTypeFilter,
                                         onToggleDateSelection = viewModel::toggleDateSelection,
                                         onSelectUsbSource = viewModel::setUsbLibrarySourceSelection,
+                                        selectedCardSlotSource = uiState.selectedCardSlotSource,
+                                        wifiSourceSelectionAvailable = supportsWifiSourceSelection,
+                                        onSelectWifiSource = viewModel::selectWifiLibrarySourceSlot,
                                     )
                                 }
                                 composable(AppDestination.GeoTag.route) {

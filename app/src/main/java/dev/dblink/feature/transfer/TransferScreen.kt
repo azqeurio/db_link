@@ -172,15 +172,30 @@ fun TransferScreen(
     onSetTypeFilter: (ImageTypeFilter) -> Unit = {},
     onToggleDateSelection: (String) -> Unit = {},
     onSelectUsbSource: (Set<Int>?) -> Unit = {},
+    selectedCardSlotSource: Int? = null,
+    wifiSourceSelectionAvailable: Boolean = false,
+    onSelectWifiSource: (Int) -> Unit = {},
 ) {
-    val showUsbSourceDialogState = remember(transferState.sourceKind, transferState.usbAvailableStorageIds) {
+    val showSourceDialogState = remember(transferState.sourceKind, transferState.usbAvailableStorageIds) {
         mutableStateOf(false)
     }
-    val showUsbSourceDialog = showUsbSourceDialogState.value
+    val showSourceDialog = showSourceDialogState.value
     val primaryActionLabel = if (transferState.sourceKind == TransferSourceKind.OmCaptureUsb) {
         "Import"
     } else {
         "Save"
+    }
+    val sourceValue = if (
+        transferState.sourceKind == TransferSourceKind.WifiCamera &&
+        selectedCardSlotSource in 1..2
+    ) {
+        "Slot $selectedCardSlotSource"
+    } else {
+        transferState.sourceLabel
+    }
+    val sourceClickable = when (transferState.sourceKind) {
+        TransferSourceKind.OmCaptureUsb -> transferState.usbAvailableStorageIds.isNotEmpty()
+        TransferSourceKind.WifiCamera -> wifiSourceSelectionAvailable
     }
 
     // Apply type filter (needed for both detail view pager and grid)
@@ -280,10 +295,9 @@ fun TransferScreen(
             ) {
                 TransferSummaryCard(
                     label = "Source",
-                    value = transferState.sourceLabel,
-                    clickable = transferState.sourceKind == TransferSourceKind.OmCaptureUsb &&
-                        transferState.usbAvailableStorageIds.isNotEmpty(),
-                    onClick = { showUsbSourceDialogState.value = true },
+                    value = sourceValue,
+                    clickable = sourceClickable,
+                    onClick = { showSourceDialogState.value = true },
                 )
                 if (transferState.downloadedCount > 0) {
                     TransferSummaryCard(
@@ -586,10 +600,10 @@ fun TransferScreen(
         }
     }
 
-    if (showUsbSourceDialog && transferState.sourceKind == TransferSourceKind.OmCaptureUsb) {
+    if (showSourceDialog && transferState.sourceKind == TransferSourceKind.OmCaptureUsb) {
         val storageIds = transferState.usbAvailableStorageIds.distinct()
         AlertDialog(
-            onDismissRequest = { showUsbSourceDialogState.value = false },
+            onDismissRequest = { showSourceDialogState.value = false },
             confirmButton = {},
             title = { Text("Source", fontWeight = FontWeight.Bold) },
             text = {
@@ -600,7 +614,7 @@ fun TransferScreen(
                             transferState.selectedUsbStorageIds.size >= storageIds.size,
                     ) {
                         onSelectUsbSource(null)
-                        showUsbSourceDialogState.value = false
+                        showSourceDialogState.value = false
                     }
                     storageIds.forEachIndexed { index, storageId ->
                         UsbSourceOption(
@@ -608,13 +622,38 @@ fun TransferScreen(
                             selected = transferState.selectedUsbStorageIds == setOf(storageId),
                         ) {
                             onSelectUsbSource(setOf(storageId))
-                            showUsbSourceDialogState.value = false
+                            showSourceDialogState.value = false
                         }
                     }
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showUsbSourceDialogState.value = false }) {
+                TextButton(onClick = { showSourceDialogState.value = false }) {
+                    Text("Close")
+                }
+            },
+        )
+    }
+    if (showSourceDialog && transferState.sourceKind == TransferSourceKind.WifiCamera && wifiSourceSelectionAvailable) {
+        AlertDialog(
+            onDismissRequest = { showSourceDialogState.value = false },
+            confirmButton = {},
+            title = { Text("Source", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    (1..2).forEach { slot ->
+                        UsbSourceOption(
+                            label = "Slot $slot",
+                            selected = selectedCardSlotSource == slot,
+                        ) {
+                            onSelectWifiSource(slot)
+                            showSourceDialogState.value = false
+                        }
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSourceDialogState.value = false }) {
                     Text("Close")
                 }
             },
