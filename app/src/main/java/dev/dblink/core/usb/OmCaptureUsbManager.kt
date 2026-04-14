@@ -195,14 +195,23 @@ class OmCaptureUsbManager(
                     transferCandidateCache.clear()
                     if (!matchesActiveDevice(device)) return
                     usbLog("USB detach detected for ${device.deviceName}")
+                    val wasOperationBusy = _runtimeState.value.isBusy
                     closeActiveSession("usb-detached:${device.deviceName}")
                     updateRuntimeState(
-                        nextState = OmCaptureUsbOperationState.Error,
-                        statusLabel = "USB camera disconnected during transfer",
+                        nextState = if (wasOperationBusy) {
+                            OmCaptureUsbOperationState.Error
+                        } else {
+                            OmCaptureUsbOperationState.Idle
+                        },
+                        statusLabel = if (wasOperationBusy) {
+                            "USB camera disconnected during transfer"
+                        } else {
+                            "USB camera disconnected"
+                        },
                     ) { state ->
                         state.copy(
                             summary = null,
-                            canRetry = true,
+                            canRetry = wasOperationBusy,
                             lastActionLabel = "USB device detached",
                         )
                     }
