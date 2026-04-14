@@ -7,11 +7,19 @@ import androidx.core.content.edit
 import java.util.Locale
 
 object AppLanguageManager {
+    const val LANGUAGE_SYSTEM = "system"
     const val LANGUAGE_ENGLISH = "en"
     const val LANGUAGE_KOREAN = "ko"
 
     private const val PREFS_NAME = "app_language_prefs"
     private const val KEY_LANGUAGE = "selected_language"
+
+    fun selectedLanguageTag(context: Context): String {
+        val stored = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_LANGUAGE, null)
+            ?.takeIf { it == LANGUAGE_ENGLISH || it == LANGUAGE_KOREAN }
+        return stored ?: LANGUAGE_SYSTEM
+    }
 
     fun currentLanguageTag(context: Context): String {
         val stored = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -31,11 +39,19 @@ object AppLanguageManager {
     fun persistLanguage(context: Context, languageTag: String) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit {
-                putString(KEY_LANGUAGE, languageTag)
+                if (languageTag == LANGUAGE_SYSTEM) {
+                    remove(KEY_LANGUAGE)
+                } else {
+                    putString(KEY_LANGUAGE, languageTag)
+                }
             }
     }
 
     fun wrapContext(base: Context): Context {
+        if (selectedLanguageTag(base) == LANGUAGE_SYSTEM) {
+            Locale.setDefault(Resources.getSystem().configuration.locales[0])
+            return base
+        }
         val locale = Locale.forLanguageTag(currentLanguageTag(base))
         Locale.setDefault(locale)
         val configuration = Configuration(base.resources.configuration)

@@ -74,6 +74,7 @@
     <string name="settings_camera_base_url">카메라 주소</string>
     <string name="settings_language">언어</string>
     <string name="settings_language_summary">앱에 표시할 언어를 선택합니다.</string>
+    <string name="settings_language_system">시스템</string>
     <string name="settings_language_english">영어</string>
     <string name="settings_language_korean">한국어</string>
 

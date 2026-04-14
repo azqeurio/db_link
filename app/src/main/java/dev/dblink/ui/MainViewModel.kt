@@ -165,7 +165,7 @@ data class MainUiState(
     val selectedCameraSsid: String? = null,
     val selectedCardSlotSource: Int? = null,
     val lastCaptureThumbnail: Bitmap? = null,
-    val selectedLanguageTag: String = AppLanguageManager.LANGUAGE_ENGLISH,
+    val selectedLanguageTag: String = AppLanguageManager.LANGUAGE_SYSTEM,
     val autoImportConfig: AutoImportConfig = AutoImportConfig(),
     val geotagConfig: GeotagConfig = GeotagConfig(),
     val tetherSaveTarget: TetherSaveTarget = TetherSaveTarget.SdAndPhone,
@@ -288,7 +288,7 @@ class MainViewModel(
             geoTagging = GeoTaggingSnapshot(),
             remoteRuntime = RemoteRuntimeState(),
             sessionState = CameraSessionState.Idle,
-            selectedLanguageTag = AppLanguageManager.currentLanguageTag(application),
+            selectedLanguageTag = AppLanguageManager.selectedLanguageTag(application),
         ),
     )
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -3502,7 +3502,8 @@ class MainViewModel(
     }
 
     fun setAppLanguage(languageTag: String) {
-        if (languageTag != AppLanguageManager.LANGUAGE_ENGLISH &&
+        if (languageTag != AppLanguageManager.LANGUAGE_SYSTEM &&
+            languageTag != AppLanguageManager.LANGUAGE_ENGLISH &&
             languageTag != AppLanguageManager.LANGUAGE_KOREAN
         ) {
             return
@@ -7936,7 +7937,7 @@ class MainViewModel(
         val savedCameras = preferencesRepository.loadSavedCameraProfiles()
         val selectedCameraSsid = preferencesRepository.loadSelectedCameraSsid()
         val selectedCardSlotSource = savedCameras.firstOrNull { it.ssid == selectedCameraSsid }?.playTargetSlot
-        val selectedLanguageTag = AppLanguageManager.currentLanguageTag(getApplication())
+        val selectedLanguageTag = AppLanguageManager.selectedLanguageTag(getApplication())
         val importConfig = AutoImportConfig(
             saveLocation = preferencesRepository.loadStringPref("import_save_location", "Pictures/db link"),
             fileFormat = preferencesRepository.loadStringPref("import_file_format", "jpeg"),

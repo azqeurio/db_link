@@ -48,6 +48,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.dblink.BuildConfig
 import dev.dblink.R
 import dev.dblink.core.config.AppConfig
 import dev.dblink.core.localization.AppLanguageManager
@@ -150,7 +151,8 @@ fun SettingsScreen(
     savedCameras: List<SavedCameraProfile> = emptyList(),
     selectedCameraSsid: String? = null,
     selectedCardSlotSource: Int? = null,
-    selectedLanguageTag: String = AppLanguageManager.LANGUAGE_ENGLISH,
+    selectedLanguageTag: String = AppLanguageManager.LANGUAGE_SYSTEM,
+    appVersion: String = BuildConfig.VERSION_NAME.removeSuffix("-debug"),
     autoImportConfig: AutoImportConfig = AutoImportConfig(),
     geotagConfig: GeotagConfig = GeotagConfig(),
     tetherSaveTarget: TetherSaveTarget = TetherSaveTarget.SdAndPhone,
@@ -254,6 +256,13 @@ fun SettingsScreen(
                         color = Chalk.copy(alpha = 0.58f),
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        LanguageButton(
+                            modifier = Modifier.weight(1f),
+                            selected = selectedLanguageTag == AppLanguageManager.LANGUAGE_SYSTEM,
+                            label = stringResource(R.string.settings_language_system),
+                        ) {
+                            onSelectLanguage(AppLanguageManager.LANGUAGE_SYSTEM)
+                        }
                         LanguageButton(
                             modifier = Modifier.weight(1f),
                             selected = selectedLanguageTag == AppLanguageManager.LANGUAGE_ENGLISH,
@@ -550,7 +559,7 @@ fun SettingsScreen(
             GlassCard {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SectionIcon(Icons.Rounded.Info, stringResource(R.string.settings_section_app_info))
-                    KeyValueRow(stringResource(R.string.settings_app_version_label), "0.1.0")
+                    KeyValueRow(stringResource(R.string.settings_app_version_label), appVersion)
                     KeyValueRow(stringResource(R.string.settings_camera_base_url), appConfig.cameraBaseUrl)
                     Spacer(modifier = Modifier.size(4.dp))
                     Text(

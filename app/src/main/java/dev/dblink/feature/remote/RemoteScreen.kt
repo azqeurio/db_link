@@ -2829,7 +2829,7 @@ private fun RemoteControlPanel(
             val modeDialValues = buildModeDialValues(
                 takeMode = runtime.takeMode,
                 fallbackMode = runtime.exposureMode,
-                includeTetherOption = tetheredCaptureAvailable && usbTetherConnected && !usbTetherSurface,
+                includeTetherOption = tetheredCaptureAvailable && !usbTetherSurface,
                 includeTetherRetryOption = usbTetherSurface && (usbTetherConnected || omCaptureUsb.canRetry),
                 includeDeepSkyOption = usbTetherConnected && runtime.modePickerSurface == ModePickerSurface.DeepSky,
                 preferFullModeFallback = usbTetherSurface,
