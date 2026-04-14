@@ -8044,22 +8044,27 @@ class MainViewModel(
             locationSource = preferencesRepository.loadStringPref("geotag_location_source", "device_gps"),
             writeAltitude = preferencesRepository.loadStringPref("geotag_write_altitude", "true") == "true",
         )
-        refreshOmCaptureStudioState(
-            _uiState.value.copy(
-            settings = persistedSettings,
-            geoTagging = persistedGeoTagging,
-            showProtocolWorkbench = resolveWorkbenchVisibility(persistedSettings),
-            hasSavedCamera = savedCameras.isNotEmpty(),
-            savedCameras = savedCameras,
-            selectedCameraSsid = selectedCameraSsid,
-            selectedCardSlotSource = selectedCardSlotSource,
-            selectedLanguageTag = selectedLanguageTag,
-            autoImportConfig = importConfig,
-            geotagConfig = geoConfig,
-            tetherSaveTarget = tetherSaveTarget,
-            tetherPhoneImportFormat = tetherPhoneImportFormat,
-            ),
+        D.pref(
+            "loadPersistedUiState: savedCameras=${savedCameras.size}, " +
+                "selectedCameraSsid=${selectedCameraSsid ?: "<none>"}",
         )
+        updateUiState { current ->
+            current.copy(
+                settings = persistedSettings,
+                geoTagging = persistedGeoTagging,
+                showProtocolWorkbench = resolveWorkbenchVisibility(persistedSettings),
+                hasSavedCamera = savedCameras.isNotEmpty(),
+                savedCameras = savedCameras,
+                selectedCameraSsid = selectedCameraSsid,
+                selectedCardSlotSource = selectedCardSlotSource,
+                selectedLanguageTag = selectedLanguageTag,
+                autoImportConfig = importConfig,
+                geotagConfig = geoConfig,
+                tetherSaveTarget = tetherSaveTarget,
+                tetherPhoneImportFormat = tetherPhoneImportFormat,
+            )
+        }
+        refreshOmCaptureStudioState()
         deepSkyLiveStackCoordinator.updateSkyHintContext(persistedGeoTagging.latestSample, null)
         // Startup connection stays user-driven. If the phone is already on camera
         // Wi-Fi, the Wi-Fi observer handles the session without a competing launch path.
