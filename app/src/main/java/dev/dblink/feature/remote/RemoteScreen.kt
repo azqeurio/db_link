@@ -4682,12 +4682,13 @@ private fun UsbDriveSettingsPanel(
         enumerateUsbDialRawValues(driveProp)
     }
 
-    val selectedBurstModes = remember(remoteRuntime.driveMode, rawValues) {
-        usbBurstDriveOptions(remoteRuntime.driveMode, rawValues)
+    var expandedBurstMode by remember { mutableStateOf<DriveMode?>(null) }
+    val selectedBurstModes = remember(expandedBurstMode, rawValues) {
+        expandedBurstMode?.let { mode -> usbBurstDriveOptions(mode, rawValues) }.orEmpty()
     }
     val visibleBurstModes = selectedBurstModes.take(4)
     val showBurstModes = remoteRuntime.shootingMode != RemoteShootingMode.Interval &&
-        remoteRuntime.driveMode in setOf(DriveMode.Burst, DriveMode.SilentBurst) &&
+        expandedBurstMode in setOf(DriveMode.Burst, DriveMode.SilentBurst) &&
         visibleBurstModes.isNotEmpty()
 
     Column(
@@ -4701,9 +4702,11 @@ private fun UsbDriveSettingsPanel(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             DriveChip("Single", remoteRuntime.shootingMode == RemoteShootingMode.Single, Modifier.weight(1f)) {
+                expandedBurstMode = null
                 onSetShootingMode(RemoteShootingMode.Single)
             }
             DriveChip("Interval", remoteRuntime.shootingMode == RemoteShootingMode.Interval, Modifier.weight(1f)) {
+                expandedBurstMode = null
                 onSetShootingMode(RemoteShootingMode.Interval)
             }
         }
@@ -4713,6 +4716,7 @@ private fun UsbDriveSettingsPanel(
         ) {
             DriveMode.entries.forEach { mode ->
                 DriveChip(driveLabel(mode), remoteRuntime.driveMode == mode, Modifier.weight(1f)) {
+                    expandedBurstMode = mode.takeIf { it == DriveMode.Burst || it == DriveMode.SilentBurst }
                     onSetDriveMode(mode)
                 }
             }
@@ -4733,13 +4737,14 @@ private fun UsbDriveSettingsPanel(
                     val fullLabel = formatOlympusDriveMode(rawValue, rawValues)
                     val chipLabel = usbDriveCategoryChipLabel(
                         fullLabel,
-                        remoteRuntime.driveMode == DriveMode.SilentBurst,
+                        expandedBurstMode == DriveMode.SilentBurst,
                     )
                     DriveChip(
                         label = chipLabel,
                         selected = rawValue == driveProp.currentValue,
                         modifier = Modifier.weight(1f),
                     ) {
+                        expandedBurstMode = null
                         onSetUsbProperty(PtpConstants.OlympusProp.DriveMode, rawValue)
                     }
                 }
@@ -4754,6 +4759,7 @@ private fun UsbDriveSettingsPanel(
             ) {
                 TimerMode.entries.forEach { mode ->
                     DriveChip(timerLabel(mode, remoteRuntime.timerDelay), remoteRuntime.timerMode == mode, Modifier.weight(1f)) {
+                        expandedBurstMode = null
                         onSetTimerMode(mode)
                     }
                 }
