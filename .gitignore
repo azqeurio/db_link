@@ -2,6 +2,14 @@
 .idea/
 .kotlin/
 local.properties
+com.google.android.geo.API_KEY.xml
+google_maps_api_key.xml
+google_maps_api_key.properties
+google_maps_api_key.txt
+gmap_api_key.properties
+gmap_api_key.txt
+maps_api_key.properties
+maps_api_key.txt
 build/
 app/build/
 app/.cxx/

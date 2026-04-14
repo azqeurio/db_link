@@ -42,23 +42,90 @@ sync {
     into(stagedNativeRoot)
 }
 
-fun loadGoogleMapsApiKeyFromXml(): String {
-    val candidateFiles = listOf(
-        rootProject.layout.projectDirectory.file("../../com.google.android.geo.API_KEY.xml").asFile,
-        rootProject.layout.projectDirectory.file("../com.google.android.geo.API_KEY.xml").asFile,
+val googleMapsApiKeyPropertyNames = listOf(
+    "GOOGLE_MAPS_API_KEY",
+    "googleMapsApiKey",
+    "google.maps.api.key",
+    "gmap.api.key",
+    "maps.api.key",
+)
+val googleMapsApiKeyFileNames = listOf(
+    "com.google.android.geo.API_KEY.xml",
+    "google_maps_api_key.xml",
+    "google_maps_api_key.properties",
+    "google_maps_api_key.txt",
+    "gmap_api_key.properties",
+    "gmap_api_key.txt",
+    "maps_api_key.properties",
+    "maps_api_key.txt",
+)
+val googleMapsApiKeyPropertyPattern = Regex(
+    """(?m)^\s*(?:${googleMapsApiKeyPropertyNames.joinToString("|") { Regex.escape(it) }})\s*[:=]\s*(.+?)\s*$""",
+)
+val googleMapsApiKeyResourcePattern = Regex(
+    """(?s)<string\b[^>]*name\s*=\s*["'](?:google_maps_key|google_maps_api_key|maps_api_key|GOOGLE_MAPS_API_KEY)["'][^>]*>\s*([^<]+)\s*</string>""",
+)
+val googleMapsApiKeyValuePattern = Regex("""android:value\s*=\s*["']([^"']+)["']""")
+val googleMapsApiKeyLiteralPattern = Regex("""AIza[0-9A-Za-z_\-]+""")
+
+fun normalizeGoogleMapsApiKey(value: String?): String = value
+    ?.trim()
+    ?.trim('"', '\'')
+    ?.takeUnless { it.isBlank() || it == "YOUR_GOOGLE_MAPS_API_KEY" }
+    .orEmpty()
+
+fun readGoogleMapsApiKeyFromFile(file: File): String {
+    if (!file.isFile) return ""
+
+    val contents = runCatching { file.readText().trim() }.getOrDefault("")
+    if (contents.isBlank()) return ""
+
+    val rawSingleLineKey = contents
+        .takeIf {
+            it.lineSequence().filter(String::isNotBlank).count() == 1 &&
+                !it.contains("=") &&
+                !it.contains("<") &&
+                it.length in 20..200
+        }
+
+    return sequenceOf(
+        googleMapsApiKeyPropertyPattern.find(contents)?.groupValues?.getOrNull(1),
+        googleMapsApiKeyResourcePattern.find(contents)?.groupValues?.getOrNull(1),
+        googleMapsApiKeyValuePattern.find(contents)?.groupValues?.getOrNull(1),
+        googleMapsApiKeyLiteralPattern.find(contents)?.value,
+        rawSingleLineKey,
     )
-    val apiKeyPattern = Regex("""android:value\s*=\s*"([^"]+)"""")
+        .map(::normalizeGoogleMapsApiKey)
+        .firstOrNull { it.isNotBlank() }
+        .orEmpty()
+}
+
+fun loadGoogleMapsApiKeyFromLocalFiles(): String {
+    val repoRoot = rootProject.layout.projectDirectory.asFile
+    val parentRoot = repoRoot.parentFile
+    val candidateDirectories = listOfNotNull(
+        repoRoot,
+        parentRoot,
+        parentRoot?.parentFile,
+    ).distinctBy { it.absolutePath }
+    val candidateFiles = candidateDirectories.flatMap { directory ->
+        googleMapsApiKeyFileNames.map { fileName -> directory.resolve(fileName) }
+    } + listOfNotNull(
+        repoRoot.resolve("local.properties"),
+        parentRoot?.resolve("local.properties"),
+    )
+
     return candidateFiles
-        .firstOrNull { it.isFile }
-        ?.readText()
-        ?.let { contents -> apiKeyPattern.find(contents)?.groupValues?.getOrNull(1) }
+        .firstNotNullOfOrNull { file ->
+            readGoogleMapsApiKeyFromFile(file).takeIf { it.isNotBlank() }
+        }
         .orEmpty()
 }
 
 val googleMapsApiKeyProvider = providers
     .gradleProperty("GOOGLE_MAPS_API_KEY")
     .orElse(providers.environmentVariable("GOOGLE_MAPS_API_KEY"))
-    .orElse(loadGoogleMapsApiKeyFromXml())
+    .orElse(providers.provider { loadGoogleMapsApiKeyFromLocalFiles() })
 val googleMapsApiKey = googleMapsApiKeyProvider.get().trim()
 val escapedGoogleMapsApiKey = googleMapsApiKey
     .replace("\\", "\\\\")
