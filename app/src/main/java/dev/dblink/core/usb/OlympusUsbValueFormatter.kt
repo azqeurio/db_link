@@ -298,7 +298,7 @@ internal fun formatOlympusDriveMode(
             4 -> "Self-timer"
             5 -> "Self-timer Burst"
             36 -> "Silent : Self-timer"
-            6 -> "Anti-Shock"
+            6 -> "Timer C"
             else -> "0x${rawValue.toString(16)}"
         }
     }

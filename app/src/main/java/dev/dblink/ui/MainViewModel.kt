@@ -7769,12 +7769,12 @@ class MainViewModel(
         } else {
             when (rawValue.toInt()) {
                 1 -> DriveMode.Single to TimerMode.Off
-                33, 7, 67, 72 -> DriveMode.Burst to TimerMode.Off
-                39, 40 -> DriveMode.SilentBurst to TimerMode.Off
+                33, 7 -> DriveMode.Burst to TimerMode.Off
+                39, 40, 67, 72, 73 -> DriveMode.SilentBurst to TimerMode.Off
                 4 -> DriveMode.Single to TimerMode.Timer
                 5 -> DriveMode.Burst to TimerMode.BurstTimer
                 36 -> DriveMode.Silent to TimerMode.Timer
-                6 -> DriveMode.Silent to TimerMode.Off
+                6 -> DriveMode.Single to TimerMode.Timer
                 else -> driveAndTimerFromRaw(formatOlympusDriveMode(rawValue, options))
             }
         }
@@ -7824,9 +7824,9 @@ class MainViewModel(
             }
             TimerMode.Off -> when (driveMode) {
                 DriveMode.Single -> firstAvailable(1L)
-                DriveMode.Silent -> firstAvailable(6L, 1L, 36L)
-                DriveMode.Burst -> firstAvailable(33L, 7L, 67L, 72L)
-                DriveMode.SilentBurst -> firstAvailable(39L, 40L, 36L, 6L)
+                DriveMode.Silent -> firstAvailable(41L, 36L)
+                DriveMode.Burst -> firstAvailable(33L, 7L)
+                DriveMode.SilentBurst -> firstAvailable(39L, 40L, 67L, 72L, 73L, 36L)
             }
         }
         return preferred ?: currentRaw.takeIf { it in options }

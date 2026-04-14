@@ -4551,11 +4551,11 @@ private fun DriveSettingsPanel(
 private fun usesElectronicShutterDriveMode(rawValue: Long, allRawValues: List<Long>): Boolean {
     val label = formatOlympusDriveMode(rawValue, allRawValues)
     return label.contains("Silent", ignoreCase = true) ||
-        label.contains("Anti-Shock", ignoreCase = true) ||
         if (isLegacyOlympusDriveLayout(allRawValues)) {
             false
         } else {
             rawValue in setOf(
+                67L, // Pro Capture Low
                 72L, // Pro Capture SH1
                 73L, // Pro Capture SH2
             )
@@ -4575,6 +4575,7 @@ private fun sortUsbDriveModesForDisplay(rawValues: List<Long>, allRawValues: Lis
             label.contains("Pro Capture SH2", ignoreCase = true) -> 32
             label.contains("Self-timer Burst", ignoreCase = true) -> 40
             label.contains("Custom Self-timer", ignoreCase = true) -> 41
+            label.contains("Timer C", ignoreCase = true) -> 41
             label.contains("Self-timer", ignoreCase = true) -> 42
             label.contains("Anti-Shock", ignoreCase = true) -> 50
             else -> 90

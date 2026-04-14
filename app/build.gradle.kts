@@ -74,10 +74,8 @@ fun normalizeGoogleMapsApiKey(value: String?): String = value
     ?.takeUnless { it.isBlank() || it == "YOUR_GOOGLE_MAPS_API_KEY" }
     .orEmpty()
 
-fun readGoogleMapsApiKeyFromFile(file: File): String {
-    if (!file.isFile) return ""
-
-    val contents = runCatching { file.readText().trim() }.getOrDefault("")
+fun readGoogleMapsApiKeyFromText(text: String): String {
+    val contents = text.trim()
     if (contents.isBlank()) return ""
 
     val rawSingleLineKey = contents
@@ -98,6 +96,12 @@ fun readGoogleMapsApiKeyFromFile(file: File): String {
         .map(::normalizeGoogleMapsApiKey)
         .firstOrNull { it.isNotBlank() }
         .orEmpty()
+}
+
+fun readGoogleMapsApiKeyFromFile(file: File): String {
+    if (!file.isFile) return ""
+    val contents = runCatching { file.readText() }.getOrDefault("")
+    return readGoogleMapsApiKeyFromText(contents)
 }
 
 fun loadGoogleMapsApiKeyFromLocalFiles(): String {
@@ -122,9 +126,15 @@ fun loadGoogleMapsApiKeyFromLocalFiles(): String {
         .orEmpty()
 }
 
+val googleMapsApiKeyFromLocalProperties = providers
+    .fileContents(rootProject.layout.projectDirectory.file("local.properties"))
+    .asText
+    .map(::readGoogleMapsApiKeyFromText)
+
 val googleMapsApiKeyProvider = providers
     .gradleProperty("GOOGLE_MAPS_API_KEY")
     .orElse(providers.environmentVariable("GOOGLE_MAPS_API_KEY"))
+    .orElse(googleMapsApiKeyFromLocalProperties)
     .orElse(providers.provider { loadGoogleMapsApiKeyFromLocalFiles() })
 val googleMapsApiKey = googleMapsApiKeyProvider.get().trim()
 val escapedGoogleMapsApiKey = googleMapsApiKey
@@ -147,8 +157,6 @@ android {
         buildConfigField("int", "CAMERA_CONNECT_TIMEOUT_MS", "10000")
         buildConfigField("int", "CAMERA_READ_TIMEOUT_MS", "30000")
         buildConfigField("int", "CAMERA_LIVE_VIEW_PORT", "65000")
-        buildConfigField("String", "GOOGLE_MAPS_API_KEY", "\"$escapedGoogleMapsApiKey\"")
-        manifestPlaceholders["GOOGLE_MAPS_API_KEY"] = googleMapsApiKey
 
         externalNativeBuild {
             cmake {
@@ -163,6 +171,8 @@ android {
             versionNameSuffix = "-debug"
             buildConfigField("boolean", "DEBUG_PROTOCOL_LOGS", "true")
             buildConfigField("boolean", "DEBUG_PROTOCOL_WORKBENCH", "true")
+            buildConfigField("String", "GOOGLE_MAPS_API_KEY", "\"\"")
+            manifestPlaceholders["GOOGLE_MAPS_API_KEY"] = ""
         }
         release {
             // Keep CameraX/ML Kit scanner internals stable with explicit keep rules
@@ -172,6 +182,8 @@ android {
             ndk.debugSymbolLevel = "NONE"
             buildConfigField("boolean", "DEBUG_PROTOCOL_LOGS", "false")
             buildConfigField("boolean", "DEBUG_PROTOCOL_WORKBENCH", "false")
+            buildConfigField("String", "GOOGLE_MAPS_API_KEY", "\"$escapedGoogleMapsApiKey\"")
+            manifestPlaceholders["GOOGLE_MAPS_API_KEY"] = googleMapsApiKey
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
