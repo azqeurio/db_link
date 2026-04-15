@@ -23,43 +23,57 @@ The goal is to make the main OI.Share workflows available with a more stable imp
 
 ## Compatibility
 
-Compatibility is currently validated against a Galaxy S25+ and an OM-1. Other devices may work when they expose the same camera protocol features, but they are not guaranteed yet.
+Android 14+ is supported. The app is currently validated on OM-1; other camera bodies are listed by expected protocol support and still need device-backed testing.
 
-### Device Matrix
+Legend:
 
-| Device setup | Wi-Fi connection | Remote controls | Live view | Library import | Source switching | USB tethering | USB controls | Status |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Galaxy S25+ + OM-1 | Supported | Supported | Supported | Supported | Supported | Supported | Partial | Primary test setup |
-| Other Android phones + OM-1 | Untested | Untested | Untested | Untested | Untested | Experimental | Experimental | Not guaranteed |
-| Galaxy S25+ + other Olympus / OM SYSTEM cameras | Experimental | Experimental | Experimental | Experimental | Depends on camera support | Experimental | Experimental | Needs device validation |
-| Other Android phones + other Olympus / OM SYSTEM cameras | Untested | Untested | Untested | Untested | Untested | Untested | Untested | Not guaranteed |
+- Tested: verified in db link
+- Expected: the camera should expose the required Wi-Fi/OI.Share-style workflow, but needs db link validation
+- Target: the camera is in the OM Capture tether-compatible family, but needs db link validation
+- No target: the feature is not currently targeted for that body
+- N/A: not applicable, usually because the body has a single card slot
 
-### Feature Status
-
-| Feature | Current support | Notes |
-| --- | --- | --- |
-| Wi-Fi pairing and reconnect | Supported on OM-1 test setup | Reconnect behavior has been stabilized, but should be validated on more phones. |
-| Remote capture over Wi-Fi | Supported on OM-1 test setup | Camera mode and drive mode availability depends on the camera command list. |
-| Live view over Wi-Fi | Supported on OM-1 test setup | Stream stability may vary by phone Wi-Fi behavior. |
-| Library browsing and transfer | Supported on OM-1 test setup | High Speed and Slow Mode are available for different camera server tolerance levels. |
-| Card/source switching | Supported on OM-1 test setup | Requires camera support for play target slot commands. |
-| USB tethering connection | Supported on OM-1 test setup | Stability is still being improved. |
-| USB tethering controls | Partial | Some control mappings still need correction against camera values. |
-| USB library/import | Experimental | Behavior can differ by camera storage descriptors. |
-| Geotagging | Supported on phone-side location data | Requires location permission and device location services. |
-| Deep-sky workflow | Experimental | Available in-app, but not broadly validated across devices. |
+| Camera body | Release year | Wi-Fi remote / live view | Library import | Source switching | USB tethering | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| Olympus PEN E-PL6 | 2013 | No target | No target | N/A | No target | No built-in Wi-Fi workflow targeted by db link |
+| Olympus PEN E-P5 | 2013 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| Olympus OM-D E-M1 | 2013 | Expected | Expected | N/A | Target, firmware 2.0+ | Official tether-compatible family |
+| Olympus OM-D E-M10 | 2014 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| Olympus PEN E-PL7 | 2014 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| Olympus OM-D E-M5 Mark II | 2015 | Expected | Expected | N/A | Target | Official tether-compatible family |
+| Olympus OM-D E-M10 Mark II | 2015 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| Olympus PEN-F | 2016 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| Olympus OM-D E-M1 Mark II | 2016 | Expected | Expected | Expected | Target | Dual-card source switching needs validation |
+| Olympus PEN E-PL8 | 2016 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| Olympus OM-D E-M10 Mark III | 2017 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| Olympus PEN E-PL9 | 2018 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| Olympus OM-D E-M1X | 2019 | Expected | Expected | Expected | Target | Dual-card source switching needs validation |
+| Olympus OM-D E-M5 Mark III | 2019 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| Olympus PEN E-PL10 | 2019 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| Olympus OM-D E-M1 Mark III | 2020 | Expected | Expected | Expected | Target | Dual-card source switching needs validation |
+| Olympus OM-D E-M10 Mark III S | 2020 | Expected | Expected | N/A | No target | Regional E-M10 Mark III variant |
+| Olympus OM-D E-M10 Mark IV | 2020 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| Olympus PEN E-P7 | 2021 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| OM SYSTEM OM-1 | 2022 | Tested | Tested | Tested | Tested, partial controls | Primary validated camera body |
+| OM SYSTEM OM-5 | 2022 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| OM SYSTEM OM-1 Mark II | 2024 | Expected | Expected | Expected | Target | Dual-card source switching needs validation |
+| OM SYSTEM E-M1 Mark III ASTRO | 2024 | Expected | Expected | Expected | Target | Same app target as E-M1 Mark III |
+| OM SYSTEM OM-3 | 2025 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| OM SYSTEM OM-5 Mark II | 2025 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| OM SYSTEM OM-3 ASTRO | 2026 | Expected | Expected | N/A | No target | Same app target as OM-3 |
 
 ## Notes
 
-- development and testing are currently based on a Galaxy S25+ and an OM-1 camera
-- behavior on other phones, Android versions, camera bodies, and firmware versions is not guaranteed
+- Android 14+ is supported
+- development and testing are currently based on an OM-1 camera
+- behavior on other camera bodies and firmware versions is not guaranteed
 - camera compatibility depends on the protocol features exposed by the device
 
 ## Next Steps
 
 1. fix remaining USB tethering control mappings that do not yet line up with the camera values
 2. improve USB tethering stability and recovery behavior
-3. broaden device-backed validation across more camera bodies and Android devices
+3. broaden device-backed validation across more camera bodies and firmware versions
 4. refine USB property coverage where descriptors differ by model
 
 ## support
