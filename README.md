@@ -34,7 +34,6 @@ Legend:
 
 | Camera body | Wi-Fi remote / live view | Library import | Source switching | USB tethering |
 | --- | --- | --- | --- | --- |
-| Olympus PEN E-PL6 | N/A | N/A | N/A | N/A |
 | Olympus PEN E-P5 | Expected | Expected | N/A | N/A |
 | Olympus OM-D E-M1 | Expected | Expected | N/A | Target, firmware 2.0+ |
 | Olympus OM-D E-M10 | Expected | Expected | N/A | N/A |
