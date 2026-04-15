@@ -35,7 +35,6 @@ Legend:
 
 | Camera body | Release year | Wi-Fi remote / live view | Library import | Source switching | USB tethering | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Olympus PEN E-PL6 | 2013 | No target | No target | N/A | No target | No built-in Wi-Fi workflow targeted by db link |
 | Olympus PEN E-P5 | 2013 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
 | Olympus OM-D E-M1 | 2013 | Expected | Expected | N/A | Target, firmware 2.0+ | Official tether-compatible family |
 | Olympus OM-D E-M10 | 2014 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
