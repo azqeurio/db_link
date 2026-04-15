@@ -149,8 +149,8 @@ android {
         applicationId = "dev.dblink"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 4
+        versionName = "0.2.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
         buildConfigField("String", "CAMERA_BASE_URL", "\"http://192.168.0.10\"")
