@@ -33,3 +33,7 @@ The goal is to make the main OI.Share workflows available with a more stable imp
 2. improve USB tethering stability and recovery behavior
 3. broaden device-backed validation across more camera bodies and Android devices
 4. refine USB property coverage where descriptors differ by model
+
+## support
+https://buymeacoffee.com/modang
+
