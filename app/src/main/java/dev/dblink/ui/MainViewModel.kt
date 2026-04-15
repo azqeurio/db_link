@@ -202,6 +202,7 @@ class MainViewModel(
     private var imageListJob: Job? = null
     private var thumbnailJob: Job? = null
     private var detailPreviewJob: Job? = null
+    private var wifiMediaRequestCooldownUntilMs: Long = 0L
     private var downloadProgressJob: Job? = null
     private var propertyApplyJob: Job? = null
     private var propertyLoadJob: Job? = null
@@ -232,6 +233,11 @@ class MainViewModel(
         const val RECONNECT_WIFI_STATUS = "Connecting Wi-Fi..."
         const val AUTO_IMPORT_MARKER_PREFIX = "auto_import_last_"
         const val TRANSFER_PREVIEW_PREFETCH_LIMIT = 12
+        const val WIFI_THUMBNAIL_PREFETCH_LIMIT = 96
+        const val WIFI_THUMBNAIL_REQUEST_DELAY_MS = 140L
+        const val WIFI_THUMBNAIL_FAILURE_BACKOFF_MS = 650L
+        const val WIFI_THUMBNAIL_FAILURE_LIMIT = 5
+        const val WIFI_MEDIA_REQUEST_COOLDOWN_MS = 3_000L
         const val CAPTURE_FOLLOWUP_MAX_ATTEMPTS = 6
         const val CAPTURE_FOLLOWUP_POLL_DELAY_MS = 700L
         const val USB_AUTO_IMPORT_RETRY_MS = 250L
@@ -5645,39 +5651,85 @@ class MainViewModel(
             if (ensureSelectedPlayTargetSlotApplied().isFailure) {
                 return@launch
             }
-            val toLoad = images.filter { it.fileName !in _uiState.value.transferState.thumbnails }
-            toLoad.chunked(6).forEach { batch ->
-                if (!canSendRemoteCommand()) return@launch
-                val deferred = batch.map { image ->
-                    async(Dispatchers.IO) {
-                        repository.getThumbnail(image).getOrNull()?.let { bytes ->
-                            decodeTransferPreviewBitmap(bytes)?.let { bitmap ->
-                                image.fileName to bitmap
-                            }
-                        }
-                    }
-                }
-                val results = deferred.awaitAll().filterNotNull()
-
-                updateTransferThumbnails(results, overwriteExisting = false)
-            }
-
-            buildPreviewThumbnailTargets(images)
-                .filterNot { it.fileName in previewThumbnailUpgrades }
-                .forEach { image ->
+            waitForWifiMediaRequestCooldown()
+            val toLoad = images
+                .filter { it.fileName !in _uiState.value.transferState.thumbnails }
+                .take(WIFI_THUMBNAIL_PREFETCH_LIMIT)
+            var consecutiveFailures = 0
+            var shouldLoadPreviewUpgrades = true
+            for (image in toLoad) {
                 ensureActive()
                 if (!canSendRemoteCommand()) return@launch
+                val result = loadWifiThumbnail(image)
+                if (result != null) {
+                    consecutiveFailures = 0
+                    updateTransferThumbnails(listOf(result), overwriteExisting = false)
+                    delay(WIFI_THUMBNAIL_REQUEST_DELAY_MS)
+                } else {
+                    consecutiveFailures += 1
+                    if (consecutiveFailures >= WIFI_THUMBNAIL_FAILURE_LIMIT) {
+                        shouldLoadPreviewUpgrades = false
+                        startWifiMediaRequestCooldown("thumbnail failures")
+                        break
+                    }
+                    delay(WIFI_THUMBNAIL_FAILURE_BACKOFF_MS * consecutiveFailures)
+                }
+            }
+
+            if (!shouldLoadPreviewUpgrades) {
+                return@launch
+            }
+            consecutiveFailures = 0
+            val previewTargets = buildPreviewThumbnailTargets(images)
+                .filterNot { it.fileName in previewThumbnailUpgrades }
+            for (image in previewTargets) {
+                ensureActive()
+                if (!canSendRemoteCommand()) return@launch
+                waitForWifiMediaRequestCooldown()
                 val preview = withContext(Dispatchers.IO) {
                     repository.getPreviewThumbnail(image).getOrNull()?.let { bytes ->
                         updatePreviewDetails(image, bytes)
                         decodeTransferPreviewBitmap(bytes)
                     }
-                } ?: return@forEach
+                }
+                if (preview == null) {
+                    consecutiveFailures += 1
+                    if (consecutiveFailures >= WIFI_THUMBNAIL_FAILURE_LIMIT) {
+                        startWifiMediaRequestCooldown("preview thumbnail failures")
+                        return@launch
+                    }
+                    delay(WIFI_THUMBNAIL_FAILURE_BACKOFF_MS * consecutiveFailures)
+                    continue
+                }
+                consecutiveFailures = 0
                 previewThumbnailUpgrades += image.fileName
                 clearPreviewUnavailable(image.fileName)
                 updateTransferThumbnails(listOf(image.fileName to preview), overwriteExisting = true)
+                delay(WIFI_THUMBNAIL_REQUEST_DELAY_MS)
             }
         }
+    }
+
+    private suspend fun loadWifiThumbnail(image: CameraImage): Pair<String, Bitmap>? {
+        val bytes = withContext(Dispatchers.IO) {
+            repository.getThumbnail(image).getOrNull()
+        } ?: return null
+        val bitmap = withContext(Dispatchers.Default) {
+            decodeTransferPreviewBitmap(bytes)
+        } ?: return null
+        return image.fileName to bitmap
+    }
+
+    private suspend fun waitForWifiMediaRequestCooldown() {
+        val remaining = wifiMediaRequestCooldownUntilMs - SystemClock.elapsedRealtime()
+        if (remaining > 0L) {
+            delay(remaining)
+        }
+    }
+
+    private fun startWifiMediaRequestCooldown(reason: String) {
+        wifiMediaRequestCooldownUntilMs = SystemClock.elapsedRealtime() + WIFI_MEDIA_REQUEST_COOLDOWN_MS
+        D.transfer("Pausing Wi-Fi library media requests after $reason")
     }
 
     private fun scanDownloadedFiles() {
@@ -5945,6 +5997,7 @@ class MainViewModel(
                 markPreviewUnavailable(image.fileName)
                 return@launch
             }
+            waitForWifiMediaRequestCooldown()
             var bitmap = decodeSelectedPreviewCandidate(
                 image = image,
                 label = "resizeimg_witherr(1920)",
