@@ -30,35 +30,35 @@ Legend:
 - Tested: verified in db link
 - Expected: the camera should expose the required Wi-Fi/OI.Share-style workflow, but needs db link validation
 - Target: the camera is in the OM Capture tether-compatible family, but needs db link validation
-- No target: the feature is not currently targeted for that body
-- N/A: not applicable, usually because the body has a single card slot
+- N/A: not applicable or not currently targeted for that body
 
-| Camera body | Release year | Wi-Fi remote / live view | Library import | Source switching | USB tethering | Notes |
-| --- | --- | --- | --- | --- | --- | --- |
-| Olympus PEN E-P5 | 2013 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| Olympus OM-D E-M1 | 2013 | Expected | Expected | N/A | Target, firmware 2.0+ | Official tether-compatible family |
-| Olympus OM-D E-M10 | 2014 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| Olympus PEN E-PL7 | 2014 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| Olympus OM-D E-M5 Mark II | 2015 | Expected | Expected | N/A | Target | Official tether-compatible family |
-| Olympus OM-D E-M10 Mark II | 2015 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| Olympus PEN-F | 2016 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| Olympus OM-D E-M1 Mark II | 2016 | Expected | Expected | Expected | Target | Dual-card source switching needs validation |
-| Olympus PEN E-PL8 | 2016 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| Olympus OM-D E-M10 Mark III | 2017 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| Olympus PEN E-PL9 | 2018 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| Olympus OM-D E-M1X | 2019 | Expected | Expected | Expected | Target | Dual-card source switching needs validation |
-| Olympus OM-D E-M5 Mark III | 2019 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| Olympus PEN E-PL10 | 2019 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| Olympus OM-D E-M1 Mark III | 2020 | Expected | Expected | Expected | Target | Dual-card source switching needs validation |
-| Olympus OM-D E-M10 Mark III S | 2020 | Expected | Expected | N/A | No target | Regional E-M10 Mark III variant |
-| Olympus OM-D E-M10 Mark IV | 2020 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| Olympus PEN E-P7 | 2021 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| OM SYSTEM OM-1 | 2022 | Tested | Tested | Tested | Tested, partial controls | Primary validated camera body |
-| OM SYSTEM OM-5 | 2022 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| OM SYSTEM OM-1 Mark II | 2024 | Expected | Expected | Expected | Target | Dual-card source switching needs validation |
-| OM SYSTEM E-M1 Mark III ASTRO | 2024 | Expected | Expected | Expected | Target | Same app target as E-M1 Mark III |
-| OM SYSTEM OM-3 | 2025 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| OM SYSTEM OM-5 Mark II | 2025 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
+| Camera body | Wi-Fi remote / live view | Library import | Source switching | USB tethering |
+| --- | --- | --- | --- | --- |
+| Olympus PEN E-PL6 | N/A | N/A | N/A | N/A |
+| Olympus PEN E-P5 | Expected | Expected | N/A | N/A |
+| Olympus OM-D E-M1 | Expected | Expected | N/A | Target, firmware 2.0+ |
+| Olympus OM-D E-M10 | Expected | Expected | N/A | N/A |
+| Olympus PEN E-PL7 | Expected | Expected | N/A | N/A |
+| Olympus OM-D E-M5 Mark II | Expected | Expected | N/A | Target |
+| Olympus OM-D E-M10 Mark II | Expected | Expected | N/A | N/A |
+| Olympus PEN-F | Expected | Expected | N/A | N/A |
+| Olympus OM-D E-M1 Mark II | Expected | Expected | Expected | Target |
+| Olympus PEN E-PL8 | Expected | Expected | N/A | N/A |
+| Olympus OM-D E-M10 Mark III | Expected | Expected | N/A | N/A |
+| Olympus PEN E-PL9 | Expected | Expected | N/A | N/A |
+| Olympus OM-D E-M1X | Expected | Expected | Expected | Target |
+| Olympus OM-D E-M5 Mark III | Expected | Expected | N/A | N/A |
+| Olympus PEN E-PL10 | Expected | Expected | N/A | N/A |
+| Olympus OM-D E-M1 Mark III | Expected | Expected | Expected | Target |
+| Olympus OM-D E-M10 Mark III S | Expected | Expected | N/A | N/A |
+| Olympus OM-D E-M10 Mark IV | Expected | Expected | N/A | N/A |
+| Olympus PEN E-P7 | Tested | Tested | Tested | N/A |
+| OM SYSTEM OM-1 | Tested | Tested | Tested | Tested, partial controls |
+| OM SYSTEM OM-5 | Expected | Expected | N/A | N/A |
+| OM SYSTEM OM-1 Mark II | Expected | Expected | Expected | Target |
+| OM SYSTEM E-M1 Mark III ASTRO | Expected | Expected | Expected | Target |
+| OM SYSTEM OM-3 | Expected | Expected | N/A | N/A |
+| OM SYSTEM OM-5 Mark II | Expected | Expected | N/A | N/A |
 
 ## Notes
 
