@@ -286,74 +286,68 @@ fun TransferScreen(
             }
         }
         if (!transferState.isSelectionMode) {
+            if (transferState.images.isNotEmpty()) {
+                androidx.compose.foundation.lazy.LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(horizontal = 20.dp),
+                ) {
+                    items(ImageTypeFilter.entries.size) { index ->
+                        val filter = ImageTypeFilter.entries[index]
+                        val count = when (filter) {
+                            ImageTypeFilter.ALL -> transferState.images.size
+                            ImageTypeFilter.JPG -> transferState.images.count { it.isJpeg }
+                            ImageTypeFilter.RAW -> transferState.images.count { it.isRaw }
+                            ImageTypeFilter.VIDEO -> transferState.images.count { it.isMovie }
+                        }
+                        FilterChip(
+                            selected = transferState.typeFilter == filter,
+                            onClick = { onSetTypeFilter(filter) },
+                            label = {
+                                Text(
+                                    "${filter.label} ($count)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    softWrap = false,
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = AppleBlue,
+                                selectedLabelColor = Color.White,
+                                containerColor = Graphite,
+                                labelColor = Color.White.copy(alpha = 0.7f),
+                            ),
+                            border = FilterChipDefaults.filterChipBorder(
+                                borderColor = Color.Transparent,
+                                selectedBorderColor = Color.Transparent,
+                                enabled = true,
+                                selected = transferState.typeFilter == filter,
+                            ),
+                        )
+                    }
+                }
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp),
+                    .padding(horizontal = 20.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TransferSummaryCard(
+                LibraryToolbarChip(
                     label = "Source",
                     value = sourceValue,
                     clickable = sourceClickable,
+                    modifier = Modifier.weight(1f),
                     onClick = { showSourceDialogState.value = true },
                 )
-                if (transferState.downloadedCount > 0) {
-                    TransferSummaryCard(
-                        label = "Saved",
-                        value = transferState.downloadedCount.toString(),
-                    )
-                }
-                IconButton(onClick = onLoadImages) {
-                    Icon(Icons.Rounded.Refresh, "Reload", tint = Color.White.copy(alpha = 0.7f))
-                }
-            }
-        }
-
-        // Filter chips
-        if (transferState.images.isNotEmpty()) {
-            androidx.compose.foundation.lazy.LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(horizontal = 20.dp),
-            ) {
-                items(ImageTypeFilter.entries.size) { index ->
-                    val filter = ImageTypeFilter.entries[index]
-                    val count = when (filter) {
-                        ImageTypeFilter.ALL -> transferState.images.size
-                        ImageTypeFilter.JPG -> transferState.images.count { it.isJpeg }
-                        ImageTypeFilter.RAW -> transferState.images.count { it.isRaw }
-                        ImageTypeFilter.VIDEO -> transferState.images.count { it.isMovie }
-                    }
-                    FilterChip(
-                        selected = transferState.typeFilter == filter,
-                        onClick = { onSetTypeFilter(filter) },
-                        label = {
-                            Text(
-                                "${filter.label} ($count)",
-                                style = MaterialTheme.typography.labelMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                softWrap = false,
-                            )
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = AppleBlue,
-                            selectedLabelColor = Color.White,
-                            containerColor = Graphite,
-                            labelColor = Color.White.copy(alpha = 0.7f),
-                        ),
-                        border = FilterChipDefaults.filterChipBorder(
-                            borderColor = Color.Transparent,
-                            selectedBorderColor = Color.Transparent,
-                            enabled = true,
-                            selected = transferState.typeFilter == filter,
-                        ),
-                    )
-                }
+                LibraryRefreshChip(
+                    isLoading = transferState.isLoading,
+                    onClick = onLoadImages,
+                )
             }
         }
 
@@ -661,35 +655,78 @@ fun TransferScreen(
     }
 }
 
-// Date section header
 @Composable
-private fun TransferSummaryCard(
+private fun LibraryToolbarChip(
     label: String,
     value: String,
     clickable: Boolean = false,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit = {},
 ) {
-    GlassCard(
-        modifier = Modifier.then(if (clickable) Modifier.clickable(onClick = onClick) else Modifier),
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Graphite.copy(alpha = 0.78f))
+            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(8.dp))
+            .then(if (clickable) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            Text(
-                text = label,
-                color = Color.White.copy(alpha = 0.56f),
-                style = MaterialTheme.typography.labelSmall,
+        Text(
+            text = label,
+            color = Color.White.copy(alpha = 0.5f),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+        )
+        Text(
+            text = value,
+            modifier = Modifier.weight(1f, fill = false),
+            color = Color.White,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun LibraryRefreshChip(
+    isLoading: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Graphite.copy(alpha = 0.78f))
+            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (isLoading) {
+            CircularProgressIndicator(
+                color = AppleBlue,
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
             )
-            Text(
-                text = value,
-                color = Color.White,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+        } else {
+            Icon(
+                Icons.Rounded.Refresh,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.72f),
+                modifier = Modifier.size(16.dp),
             )
         }
+        Text(
+            text = "Refresh",
+            color = Color.White.copy(alpha = 0.82f),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+        )
     }
 }
 
