@@ -83,6 +83,7 @@
     <string name="settings_section_dial">리모트 조작</string>
     <string name="settings_section_dial_subtitle">다이얼 방향</string>
     <string name="settings_section_tethered_capture">테더링 촬영</string>
+    <string name="settings_section_compatibility">호환성</string>
     <string name="settings_section_auto_import">자동 가져오기</string>
     <string name="settings_section_auto_geotag">자동 위치 태그</string>
     <string name="settings_section_live_view">라이브뷰</string>
@@ -114,6 +115,11 @@
     <string name="settings_capture_review_after_shot_summary">촬영 후 보관함을 새로고치고 최신 사진을 바로 열 수 있게 준비합니다.</string>
     <string name="settings_capture_save_after_shot_title">최신 촬영본 저장</string>
     <string name="settings_capture_save_after_shot_summary">촬영한 최신 사진을 이 기기로 자동 저장합니다.</string>
+    <string name="settings_library_speed_label">라이브러리 로딩</string>
+    <string name="settings_library_speed_high">고속 모드</string>
+    <string name="settings_library_speed_slow">저속 모드</string>
+    <string name="settings_library_speed_high_summary">최신 카메라처럼 빠른 썸네일 요청을 안정적으로 처리하는 기기에서 기존 병렬 로딩을 사용합니다.</string>
+    <string name="settings_library_speed_slow_summary">구형 카메라나 불안정한 Wi-Fi 연결에서 카메라 서버가 버틸 수 있도록 요청 속도를 낮춥니다.</string>
 
     <!-- Settings: Auto Import -->
     <string name="settings_auto_import_title">자동 가져오기</string>

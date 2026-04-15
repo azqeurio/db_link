@@ -64,6 +64,7 @@ import dev.dblink.core.ui.SectionHeader
 import dev.dblink.core.ui.SettingToggleRow
 import dev.dblink.ui.AutoImportConfig
 import dev.dblink.ui.GeotagConfig
+import dev.dblink.ui.LibraryCompatibilityMode
 import dev.dblink.ui.theme.AppleBlue
 import dev.dblink.ui.theme.AppleRed
 import dev.dblink.ui.theme.Chalk
@@ -155,6 +156,7 @@ fun SettingsScreen(
     appVersion: String = BuildConfig.VERSION_NAME.removeSuffix("-debug"),
     autoImportConfig: AutoImportConfig = AutoImportConfig(),
     geotagConfig: GeotagConfig = GeotagConfig(),
+    libraryCompatibilityMode: LibraryCompatibilityMode = LibraryCompatibilityMode.HighSpeed,
     tetherSaveTarget: TetherSaveTarget = TetherSaveTarget.SdAndPhone,
     onSelectSavedCamera: (String) -> Unit = {},
     onSelectLanguage: (String) -> Unit = {},
@@ -162,6 +164,7 @@ fun SettingsScreen(
     onAutoImportConfigChanged: (AutoImportConfig) -> Unit = {},
     onSelectCardSlotSource: (Int) -> Unit = {},
     onGeotagConfigChanged: (GeotagConfig) -> Unit = {},
+    onLibraryCompatibilityModeChanged: (LibraryCompatibilityMode) -> Unit = {},
     onTetherSaveTargetChanged: (TetherSaveTarget) -> Unit = {},
     onExportLogs: () -> Unit,
     onForgetCamera: () -> Unit = {},
@@ -375,6 +378,42 @@ fun SettingsScreen(
                     }
                     Text(
                         text = tetherSaveTargetSummary(tetherSaveTarget),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Chalk.copy(alpha = 0.58f),
+                        lineHeight = 18.sp,
+                    )
+                }
+            }
+        }
+
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    SectionIcon(Icons.Rounded.Tune, stringResource(R.string.settings_section_compatibility))
+                    Text(
+                        text = stringResource(R.string.settings_library_speed_label),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Chalk.copy(alpha = 0.46f),
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OptionChip(
+                            label = stringResource(R.string.settings_library_speed_high),
+                            selected = libraryCompatibilityMode == LibraryCompatibilityMode.HighSpeed,
+                            modifier = Modifier.weight(1f),
+                        ) { onLibraryCompatibilityModeChanged(LibraryCompatibilityMode.HighSpeed) }
+                        OptionChip(
+                            label = stringResource(R.string.settings_library_speed_slow),
+                            selected = libraryCompatibilityMode == LibraryCompatibilityMode.Slow,
+                            modifier = Modifier.weight(1f),
+                        ) { onLibraryCompatibilityModeChanged(LibraryCompatibilityMode.Slow) }
+                    }
+                    Text(
+                        text = if (libraryCompatibilityMode == LibraryCompatibilityMode.Slow) {
+                            stringResource(R.string.settings_library_speed_slow_summary)
+                        } else {
+                            stringResource(R.string.settings_library_speed_high_summary)
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = Chalk.copy(alpha = 0.58f),
                         lineHeight = 18.sp,

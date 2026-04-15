@@ -111,6 +111,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -143,6 +145,18 @@ data class GeotagConfig(
     val writeAltitude: Boolean = true,
 )
 
+enum class LibraryCompatibilityMode(val preferenceValue: String) {
+    HighSpeed("high_speed"),
+    Slow("slow"),
+    ;
+
+    companion object {
+        fun fromPreferenceValue(value: String?): LibraryCompatibilityMode {
+            return entries.firstOrNull { it.preferenceValue == value } ?: HighSpeed
+        }
+    }
+}
+
 data class MainUiState(
     val workspace: CameraWorkspace,
     val rawProtocolInput: String,
@@ -168,6 +182,7 @@ data class MainUiState(
     val selectedLanguageTag: String = AppLanguageManager.LANGUAGE_SYSTEM,
     val autoImportConfig: AutoImportConfig = AutoImportConfig(),
     val geotagConfig: GeotagConfig = GeotagConfig(),
+    val libraryCompatibilityMode: LibraryCompatibilityMode = LibraryCompatibilityMode.HighSpeed,
     val tetherSaveTarget: TetherSaveTarget = TetherSaveTarget.SdAndPhone,
     val tetherPhoneImportFormat: TetherPhoneImportFormat = TetherPhoneImportFormat.JpegOnly,
     val pendingReconnectHandoffToken: Long? = null,
@@ -3460,6 +3475,20 @@ class MainViewModel(
         }
     }
 
+    fun updateLibraryCompatibilityMode(mode: LibraryCompatibilityMode) {
+        if (_uiState.value.libraryCompatibilityMode == mode) return
+        wifiMediaRequestCooldownUntilMs = 0L
+        updateUiState { it.copy(libraryCompatibilityMode = mode) }
+        viewModelScope.launch {
+            preferencesRepository.saveStringPref("library_compatibility_mode", mode.preferenceValue)
+        }
+        val transfer = _uiState.value.transferState
+        if (transfer.sourceKind == TransferSourceKind.WifiCamera && transfer.images.isNotEmpty()) {
+            thumbnailJob?.cancel()
+            loadThumbnails(transfer.images)
+        }
+    }
+
     fun updateSelectedCardSlotSource(slot: Int) {
         if (slot !in 1..2) return
         val selectedSsid = _uiState.value.selectedCameraSsid ?: return
@@ -5651,62 +5680,105 @@ class MainViewModel(
             if (ensureSelectedPlayTargetSlotApplied().isFailure) {
                 return@launch
             }
-            waitForWifiMediaRequestCooldown()
-            val toLoad = images
-                .filter { it.fileName !in _uiState.value.transferState.thumbnails }
-                .take(WIFI_THUMBNAIL_PREFETCH_LIMIT)
-            var consecutiveFailures = 0
-            var shouldLoadPreviewUpgrades = true
-            for (image in toLoad) {
-                ensureActive()
-                if (!canSendRemoteCommand()) return@launch
-                val result = loadWifiThumbnail(image)
-                if (result != null) {
-                    consecutiveFailures = 0
-                    updateTransferThumbnails(listOf(result), overwriteExisting = false)
-                    delay(WIFI_THUMBNAIL_REQUEST_DELAY_MS)
-                } else {
-                    consecutiveFailures += 1
-                    if (consecutiveFailures >= WIFI_THUMBNAIL_FAILURE_LIMIT) {
-                        shouldLoadPreviewUpgrades = false
-                        startWifiMediaRequestCooldown("thumbnail failures")
-                        break
-                    }
-                    delay(WIFI_THUMBNAIL_FAILURE_BACKOFF_MS * consecutiveFailures)
-                }
-            }
-
-            if (!shouldLoadPreviewUpgrades) {
+            if (_uiState.value.libraryCompatibilityMode == LibraryCompatibilityMode.HighSpeed) {
+                loadWifiThumbnailsFast(images)
                 return@launch
             }
-            consecutiveFailures = 0
-            val previewTargets = buildPreviewThumbnailTargets(images)
-                .filterNot { it.fileName in previewThumbnailUpgrades }
-            for (image in previewTargets) {
+            loadWifiThumbnailsSlow(images)
+        }
+    }
+
+    private suspend fun loadWifiThumbnailsFast(images: List<CameraImage>) = coroutineScope {
+        val toLoad = images.filter { it.fileName !in _uiState.value.transferState.thumbnails }
+        toLoad.chunked(6).forEach { batch ->
+            ensureActive()
+            if (!canSendRemoteCommand()) return@coroutineScope
+            val deferred = batch.map { image ->
+                async(Dispatchers.IO) {
+                    repository.getThumbnail(image).getOrNull()?.let { bytes ->
+                        decodeTransferPreviewBitmap(bytes)?.let { bitmap ->
+                            image.fileName to bitmap
+                        }
+                    }
+                }
+            }
+            val results = deferred.awaitAll().filterNotNull()
+            updateTransferThumbnails(results, overwriteExisting = false)
+        }
+
+        buildPreviewThumbnailTargets(images)
+            .filterNot { it.fileName in previewThumbnailUpgrades }
+            .forEach { image ->
                 ensureActive()
-                if (!canSendRemoteCommand()) return@launch
-                waitForWifiMediaRequestCooldown()
+                if (!canSendRemoteCommand()) return@coroutineScope
                 val preview = withContext(Dispatchers.IO) {
                     repository.getPreviewThumbnail(image).getOrNull()?.let { bytes ->
                         updatePreviewDetails(image, bytes)
                         decodeTransferPreviewBitmap(bytes)
                     }
-                }
-                if (preview == null) {
-                    consecutiveFailures += 1
-                    if (consecutiveFailures >= WIFI_THUMBNAIL_FAILURE_LIMIT) {
-                        startWifiMediaRequestCooldown("preview thumbnail failures")
-                        return@launch
-                    }
-                    delay(WIFI_THUMBNAIL_FAILURE_BACKOFF_MS * consecutiveFailures)
-                    continue
-                }
-                consecutiveFailures = 0
+                } ?: return@forEach
                 previewThumbnailUpgrades += image.fileName
                 clearPreviewUnavailable(image.fileName)
                 updateTransferThumbnails(listOf(image.fileName to preview), overwriteExisting = true)
-                delay(WIFI_THUMBNAIL_REQUEST_DELAY_MS)
             }
+    }
+
+    private suspend fun loadWifiThumbnailsSlow(images: List<CameraImage>) {
+        waitForWifiMediaRequestCooldown()
+        val toLoad = images
+            .filter { it.fileName !in _uiState.value.transferState.thumbnails }
+            .take(WIFI_THUMBNAIL_PREFETCH_LIMIT)
+        var consecutiveFailures = 0
+        var shouldLoadPreviewUpgrades = true
+        for (image in toLoad) {
+            currentCoroutineContext().ensureActive()
+            if (!canSendRemoteCommand()) return
+            val result = loadWifiThumbnail(image)
+            if (result != null) {
+                consecutiveFailures = 0
+                updateTransferThumbnails(listOf(result), overwriteExisting = false)
+                delay(WIFI_THUMBNAIL_REQUEST_DELAY_MS)
+            } else {
+                consecutiveFailures += 1
+                if (consecutiveFailures >= WIFI_THUMBNAIL_FAILURE_LIMIT) {
+                    shouldLoadPreviewUpgrades = false
+                    startWifiMediaRequestCooldown("thumbnail failures")
+                    break
+                }
+                delay(WIFI_THUMBNAIL_FAILURE_BACKOFF_MS * consecutiveFailures)
+            }
+        }
+
+        if (!shouldLoadPreviewUpgrades) {
+            return
+        }
+        consecutiveFailures = 0
+        val previewTargets = buildPreviewThumbnailTargets(images)
+            .filterNot { it.fileName in previewThumbnailUpgrades }
+        for (image in previewTargets) {
+            currentCoroutineContext().ensureActive()
+            if (!canSendRemoteCommand()) return
+            waitForWifiMediaRequestCooldown()
+            val preview = withContext(Dispatchers.IO) {
+                repository.getPreviewThumbnail(image).getOrNull()?.let { bytes ->
+                    updatePreviewDetails(image, bytes)
+                    decodeTransferPreviewBitmap(bytes)
+                }
+            }
+            if (preview == null) {
+                consecutiveFailures += 1
+                if (consecutiveFailures >= WIFI_THUMBNAIL_FAILURE_LIMIT) {
+                    startWifiMediaRequestCooldown("preview thumbnail failures")
+                    return
+                }
+                delay(WIFI_THUMBNAIL_FAILURE_BACKOFF_MS * consecutiveFailures)
+                continue
+            }
+            consecutiveFailures = 0
+            previewThumbnailUpgrades += image.fileName
+            clearPreviewUnavailable(image.fileName)
+            updateTransferThumbnails(listOf(image.fileName to preview), overwriteExisting = true)
+            delay(WIFI_THUMBNAIL_REQUEST_DELAY_MS)
         }
     }
 
@@ -5997,7 +6069,9 @@ class MainViewModel(
                 markPreviewUnavailable(image.fileName)
                 return@launch
             }
-            waitForWifiMediaRequestCooldown()
+            if (_uiState.value.libraryCompatibilityMode == LibraryCompatibilityMode.Slow) {
+                waitForWifiMediaRequestCooldown()
+            }
             var bitmap = decodeSelectedPreviewCandidate(
                 image = image,
                 label = "resizeimg_witherr(1920)",
@@ -8138,6 +8212,12 @@ class MainViewModel(
             fileFormat = preferencesRepository.loadStringPref("import_file_format", "jpeg"),
             importTiming = preferencesRepository.loadStringPref("import_timing", "manual"),
         )
+        val libraryCompatibilityMode = LibraryCompatibilityMode.fromPreferenceValue(
+            preferencesRepository.loadStringPref(
+                "library_compatibility_mode",
+                LibraryCompatibilityMode.HighSpeed.preferenceValue,
+            ),
+        )
         val tetherSaveTarget = TetherSaveTarget.fromPreferenceValue(
             preferencesRepository.loadStringPref(
                 "tether_save_target",
@@ -8171,6 +8251,7 @@ class MainViewModel(
                 selectedCardSlotSource = selectedCardSlotSource,
                 selectedLanguageTag = selectedLanguageTag,
                 autoImportConfig = importConfig,
+                libraryCompatibilityMode = libraryCompatibilityMode,
                 geotagConfig = geoConfig,
                 tetherSaveTarget = tetherSaveTarget,
                 tetherPhoneImportFormat = tetherPhoneImportFormat,

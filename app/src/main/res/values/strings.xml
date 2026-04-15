@@ -85,6 +85,7 @@
     <string name="settings_section_dial_subtitle">Dial direction</string>
     <string name="settings_section_tethered_capture">Tethered Capture</string>
     <string name="settings_section_file_save">Save Settings</string>
+    <string name="settings_section_compatibility">Compatibility</string>
     <string name="settings_section_auto_import">Auto Import</string>
     <string name="settings_section_auto_geotag">Auto Geotag</string>
     <string name="settings_section_live_view">Live View</string>
@@ -123,6 +124,11 @@
     <string name="settings_tether_save_target_sd_summary">Keep tether captures on the camera card and skip phone import.</string>
     <string name="settings_tether_save_target_sd_phone_summary">Import the newest tether capture to the phone while also keeping the camera copy.</string>
     <string name="settings_tether_save_target_phone_summary">Prioritize immediate phone import for tether captures.</string>
+    <string name="settings_library_speed_label">Library loading</string>
+    <string name="settings_library_speed_high">High speed</string>
+    <string name="settings_library_speed_slow">Slow mode</string>
+    <string name="settings_library_speed_high_summary">Use the original parallel library loading for recent cameras that handle fast thumbnail requests reliably.</string>
+    <string name="settings_library_speed_slow_summary">Use slower, paced library loading for older cameras or unstable Wi-Fi connections.</string>
 
     <!-- Settings: Auto Import -->
     <string name="settings_auto_import_title">Auto import</string>
