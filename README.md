@@ -60,7 +60,6 @@ Legend:
 | OM SYSTEM E-M1 Mark III ASTRO | 2024 | Expected | Expected | Expected | Target | Same app target as E-M1 Mark III |
 | OM SYSTEM OM-3 | 2025 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
 | OM SYSTEM OM-5 Mark II | 2025 | Expected | Expected | N/A | No target | Wi-Fi workflow needs validation |
-| OM SYSTEM OM-3 ASTRO | 2026 | Expected | Expected | N/A | No target | Same app target as OM-3 |
 
 ## Notes
 
