@@ -51,7 +51,7 @@ Legend:
 | Olympus OM-D E-M1 Mark III | Expected | Expected | Expected | Target |
 | Olympus OM-D E-M10 Mark III S | Expected | Expected | N/A | N/A |
 | Olympus OM-D E-M10 Mark IV | Expected | Expected | N/A | N/A |
-| Olympus PEN E-P7 | Tested | Tested | Tested | N/A |
+| Olympus PEN E-P7 | Tested | Tested | N/A | N/A |
 | OM SYSTEM OM-1 | Tested | Tested | Tested | Tested, partial controls |
 | OM SYSTEM OM-5 | Expected | Expected | N/A | N/A |
 | OM SYSTEM OM-1 Mark II | Expected | Expected | Expected | Target |
