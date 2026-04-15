@@ -173,6 +173,7 @@
     <string name="settings_app_version_label">버전</string>
     <string name="settings_license_text">db link — MIT License\nAndroidX (Core, Compose, Lifecycle, Navigation, DataStore, Work, ExifInterface, CameraX, ProfileInstaller) — Apache 2.0\nOkHttp — Apache 2.0\nGoogle Material Components — Apache 2.0\nGoogle Play Services Location — Google APIs ToS\nML Kit Barcode Scanning — Google APIs ToS\nKotlin &amp; Coroutines — Apache 2.0</string>
     <string name="settings_support_donate">후원하기</string>
+    <string name="settings_support_donate_unavailable">후원 페이지를 열 수 없습니다. 브라우저에서 다시 시도해 주세요.</string>
     <string name="common_edit">편집</string>
     <string name="common_save">저장</string>
     <string name="common_cancel">취소</string>

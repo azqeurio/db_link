@@ -1,6 +1,7 @@
 package dev.dblink.feature.settings
 
 import android.content.Intent
+import android.widget.Toast
 import androidx.core.net.toUri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -141,6 +142,7 @@ private val tetheredCaptureIds = setOf("capture_review_after_shot")
 private val autoImportIds = setOf("auto_import", "import_new_only", "import_skip_duplicates")
 private val autoGeotagIds = setOf("time_match_geotags", "geotag_sync_clock", "geotag_include_altitude")
 private val developerIds = setOf("debug_workbench", "verbose_logs")
+private const val DonateUrl = "https://buymeacoffee.com/modang"
 
 @Composable
 fun SettingsScreen(
@@ -171,6 +173,7 @@ fun SettingsScreen(
     onForgetSavedCamera: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
+    val donateUnavailableMessage = stringResource(R.string.settings_support_donate_unavailable)
     val connectionSettings = settings.filter { it.id in connectionIds }
     val dialSettings = settings.filter { it.id in dialIds }
     val tetheredCaptureSettings = settings.filter { it.id in tetheredCaptureIds }
@@ -286,12 +289,19 @@ fun SettingsScreen(
                         onClick = {
                             val donateIntent = Intent(
                                 Intent.ACTION_VIEW,
-                                "https://buymeacoffee.com/modang".toUri(),
+                                DonateUrl.toUri(),
                             ).apply {
+                                addCategory(Intent.CATEGORY_BROWSABLE)
                                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             }
-                            if (donateIntent.resolveActivity(context.packageManager) != null) {
+                            runCatching {
                                 context.startActivity(donateIntent)
+                            }.onFailure {
+                                Toast.makeText(
+                                    context,
+                                    donateUnavailableMessage,
+                                    Toast.LENGTH_SHORT,
+                                ).show()
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),

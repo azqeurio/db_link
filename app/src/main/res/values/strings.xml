@@ -187,6 +187,7 @@
     <string name="settings_app_version_label">Version</string>
     <string name="settings_license_text">db link â€” MIT License\nThird-party components include AndroidX, OkHttp, Google Material Components, Google Play Services, Maps Compose, CameraX, ML Kit, and JUnit.\nSee THIRD_PARTY_NOTICES.md in the repository for details.</string>
     <string name="settings_support_donate">Support / Donate</string>
+    <string name="settings_support_donate_unavailable">Unable to open the donation page. Please try again in a browser.</string>
     <string name="common_edit">Edit</string>
     <string name="common_save">Save</string>
     <string name="common_cancel">Cancel</string>
