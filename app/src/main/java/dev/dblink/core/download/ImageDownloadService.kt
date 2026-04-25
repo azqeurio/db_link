@@ -22,27 +22,43 @@ import dev.dblink.R
 import dev.dblink.core.config.AppEnvironment
 import dev.dblink.core.logging.D
 import dev.dblink.core.model.TetherPhoneImportFormat
+import dev.dblink.core.preferences.AppPreferencesRepository
 import dev.dblink.core.protocol.CameraImage
 import dev.dblink.core.protocol.DefaultCameraRepository
 import dev.dblink.core.usb.OmCaptureUsbSavedMedia
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.EOFException
+import java.net.ConnectException
+import java.net.SocketException
+import java.net.SocketTimeoutException
 
 data class DownloadProgress(
     val total: Int = 0,
     val completed: Int = 0,
     val failed: Int = 0,
+    val skipped: Int = 0,
     val currentFileName: String = "",
     val isRunning: Boolean = false,
+    val isCancelled: Boolean = false,
     val etaMillis: Long = 0L,
     val title: String = "Downloading from camera",
 )
@@ -65,11 +81,17 @@ private data class DownloadRequestItem(
     val usbImportFormat: String = "",
 )
 
+private data class DownloadTotals(
+    val completed: Int,
+    val failed: Int,
+)
+
 class ImageDownloadService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var downloadJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private val preferencesRepository by lazy { AppPreferencesRepository(applicationContext) }
     private val repository by lazy { DefaultCameraRepository(AppEnvironment.current()) }
     private val omCaptureUsbManager by lazy {
         (application as DbLinkApplication).appContainer.omCaptureUsbManager
@@ -84,9 +106,23 @@ class ImageDownloadService : Service() {
         private const val USB_MODE_LIBRARY = "library"
         private const val USB_MODE_IMPORT_LATEST = "import_latest"
         private const val USB_MODE_CAPTURE_LATEST = "capture_latest"
+        private const val ACTION_CANCEL = "dev.dblink.action.DOWNLOAD_CANCEL"
         private const val EXTRA_REQUESTS_JSON = "requests_json"
         private const val EXTRA_SAVE_LOCATION = "save_location"
         private const val EXTRA_PLAY_TARGET_SLOT = "play_target_slot"
+        private const val LIBRARY_COMPATIBILITY_MODE_PREF = "library_compatibility_mode"
+        private const val LIBRARY_COMPATIBILITY_HIGH_SPEED = "high_speed"
+        private const val WIFI_JPEG_PARALLELISM = 4
+        private const val WIFI_RAW_PARALLELISM = 3
+        private const val WIFI_LARGE_STILL_PARALLELISM = 2
+        private const val WIFI_TYPICAL_JPEG_BYTES = 15L * 1024L * 1024L
+        private const val WIFI_TYPICAL_RAW_BYTES = 20L * 1024L * 1024L
+        private const val WIFI_TARGET_IN_FLIGHT_BYTES = 80L * 1024L * 1024L
+        private const val WIFI_LARGE_STILL_THRESHOLD_BYTES = 32L * 1024L * 1024L
+        private const val WIFI_TRANSFER_START_SETTLE_DELAY_MS = 300L
+        private const val WIFI_TRANSFER_MAX_ATTEMPTS = 3
+        private const val WIFI_RAW_START_STAGGER_MS = 260L
+        private const val STREAM_WRITE_BUFFER_BYTES = 256 * 1024
 
         private val _progress = MutableStateFlow(DownloadProgress())
         val progress: StateFlow<DownloadProgress> = _progress.asStateFlow()
@@ -175,6 +211,11 @@ class ImageDownloadService : Service() {
             )
         }
 
+        fun cancelTransfer(context: Context) {
+            val intent = Intent(context, ImageDownloadService::class.java).setAction(ACTION_CANCEL)
+            context.startService(intent)
+        }
+
         private fun startRequests(
             context: Context,
             requests: List<DownloadRequestItem>,
@@ -186,6 +227,7 @@ class ImageDownloadService : Service() {
             _progress.value = DownloadProgress(
                 total = requests.size,
                 isRunning = true,
+                isCancelled = false,
                 title = title,
             )
             val intent = Intent(context, ImageDownloadService::class.java).apply {
@@ -259,6 +301,8 @@ class ImageDownloadService : Service() {
 
     private var saveLocation: String = ""
     private var playTargetSlot: Int? = null
+    private val existingMediaCache = linkedSetOf<String>()
+    private var existingMediaCachePrimed = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -268,6 +312,10 @@ class ImageDownloadService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_CANCEL) {
+            cancelActiveTransfer()
+            return START_NOT_STICKY
+        }
         val requests = deserializeRequests(intent?.getStringExtra(EXTRA_REQUESTS_JSON))
         if (requests.isEmpty()) {
             D.transfer("No transfer requests in intent, stopping download service")
@@ -293,71 +341,111 @@ class ImageDownloadService : Service() {
     ) {
         downloadJob?.cancel()
         downloadJob = scope.launch {
-            var completed = 0
-            var failed = 0
+            resetExistingMediaCache()
+            try {
+                coroutineScope {
+                    val mediaCacheJob = async {
+                        primeExistingMediaCache(requests)
+                    }
+                    val slotJob = async {
+                        val requestedSlot = playTargetSlot
+                        if (requestedSlot != null && requests.any { it.source == SOURCE_WIFI }) {
+                            repository.setPlayTargetSlot(requestedSlot).getOrThrow()
+                            kotlinx.coroutines.delay(WIFI_TRANSFER_START_SETTLE_DELAY_MS)
+                        }
+                    }
+                    mediaCacheJob.await()
+                    slotJob.await()
+                }
+            } catch (e: Exception) {
+                D.err("DOWNLOAD", "Failed to prepare background transfer pipeline", e)
+                _progress.value = DownloadProgress(
+                    total = requests.size,
+                    completed = 0,
+                    failed = requests.size,
+                    isRunning = false,
+                    title = title,
+                )
+                updateNotification(_progress.value)
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return@launch
+            }
+
+            val pendingRequests = requests.filterNot(::isRequestAlreadySaved)
+            val skipped = requests.size - pendingRequests.size
             val startedAt = System.currentTimeMillis()
 
-            val requestedSlot = playTargetSlot
-            if (requestedSlot != null && requests.any { it.source == SOURCE_WIFI }) {
-                try {
-                    val currentSlot = repository.getPlayTargetSlot().getOrThrow()
-                    if (currentSlot != requestedSlot) {
-                        repository.setPlayTargetSlot(requestedSlot).getOrThrow()
-                    }
-                } catch (e: Exception) {
-                    D.err("DOWNLOAD", "Failed to apply play target slot $requestedSlot before background transfer", e)
-                    _progress.value = DownloadProgress(
-                        total = requests.size,
-                        completed = 0,
-                        failed = requests.size,
-                        isRunning = false,
-                        title = title,
-                    )
-                    updateNotification(_progress.value)
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                    return@launch
-                }
-            }
-
-            requests.forEach { request ->
-                _progress.value = _progress.value.copy(
-                    total = requests.size,
-                    completed = completed,
-                    failed = failed,
-                    currentFileName = request.fileName,
-                    isRunning = true,
-                    etaMillis = estimateRemainingMillis(startedAt, completed + failed, requests.size),
+            if (pendingRequests.isEmpty()) {
+                D.transfer("Background transfer complete: 0 saved, 0 failed, $skipped already saved")
+                _progress.value = DownloadProgress(
+                    total = 0,
+                    completed = 0,
+                    failed = 0,
+                    skipped = skipped,
+                    isRunning = false,
+                    isCancelled = false,
                     title = title,
                 )
                 updateNotification(_progress.value)
-
-                val saved = runCatching { processRequest(request) }
-                    .onFailure { throwable ->
-                        D.err("DOWNLOAD", "Failed transfer for ${request.fileName}", throwable)
-                    }
-                    .getOrDefault(false)
-
-                if (saved) completed++ else failed++
-
-                _progress.value = _progress.value.copy(
-                    total = requests.size,
-                    completed = completed,
-                    failed = failed,
-                    currentFileName = request.fileName,
-                    isRunning = completed + failed < requests.size,
-                    etaMillis = estimateRemainingMillis(startedAt, completed + failed, requests.size),
-                    title = title,
+                val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                manager.notify(
+                    NOTIFICATION_ID + 1,
+                    NotificationCompat.Builder(this@ImageDownloadService, CHANNEL_ID)
+                        .setSmallIcon(R.drawable.ic_launcher_foreground)
+                        .setContentTitle("Download complete")
+                        .setContentText(buildCompletionSummary(0, 0, skipped))
+                        .setContentIntent(buildLaunchIntent())
+                        .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                        .setAutoCancel(true)
+                        .build(),
                 )
-                updateNotification(_progress.value)
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return@launch
             }
 
-            D.transfer("Background transfer complete: $completed/${requests.size} saved, $failed failed")
             _progress.value = DownloadProgress(
-                total = requests.size,
+                total = pendingRequests.size,
+                completed = 0,
+                failed = 0,
+                skipped = skipped,
+                isRunning = true,
+                isCancelled = false,
+                title = title,
+            )
+            updateNotification(_progress.value)
+
+            val totals = if (shouldUseHighSpeedWifiDownloads(pendingRequests)) {
+                processHighSpeedWifiRequests(
+                    requests = pendingRequests,
+                    title = title,
+                    startedAt = startedAt,
+                    skipped = skipped,
+                )
+            } else {
+                processRequestsSequentially(
+                    requests = pendingRequests,
+                    title = title,
+                    startedAt = startedAt,
+                    overallTotal = pendingRequests.size,
+                    skipped = skipped,
+                )
+            }
+            val completed = totals.completed
+            val failed = totals.failed
+
+            D.transfer(
+                "Background transfer complete: $completed/${pendingRequests.size} saved, " +
+                    "$failed failed, $skipped already saved",
+            )
+            _progress.value = DownloadProgress(
+                total = pendingRequests.size,
                 completed = completed,
                 failed = failed,
+                skipped = skipped,
                 isRunning = false,
+                isCancelled = false,
                 title = title,
             )
 
@@ -372,7 +460,7 @@ class ImageDownloadService : Service() {
                             else -> "Download complete"
                         },
                     )
-                    .setContentText("${completed} saved" + if (failed > 0) ", ${failed} failed" else "")
+                    .setContentText(buildCompletionSummary(completed, failed, skipped))
                     .setContentIntent(buildLaunchIntent())
                     .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                     .setAutoCancel(true)
@@ -381,6 +469,315 @@ class ImageDownloadService : Service() {
 
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
+        }
+    }
+
+    private suspend fun shouldUseHighSpeedWifiDownloads(requests: List<DownloadRequestItem>): Boolean {
+        if (requests.isEmpty() || requests.any { it.source != SOURCE_WIFI }) {
+            return false
+        }
+        return preferencesRepository.loadStringPref(
+            LIBRARY_COMPATIBILITY_MODE_PREF,
+            LIBRARY_COMPATIBILITY_HIGH_SPEED,
+        ) == LIBRARY_COMPATIBILITY_HIGH_SPEED
+    }
+
+    private suspend fun processHighSpeedWifiRequests(
+        requests: List<DownloadRequestItem>,
+        title: String,
+        startedAt: Long,
+        skipped: Int,
+    ): DownloadTotals {
+        val stillRequests = requests.filterNot(::isVideoTransfer)
+        val videoRequests = requests.filter(::isVideoTransfer)
+        val jpegRequests = stillRequests.filter(::isJpegTransfer)
+        val rawRequests = stillRequests.filter(::isRawTransfer)
+        val otherStillRequests = stillRequests.filterNot { request ->
+            isJpegTransfer(request) || isRawTransfer(request)
+        }
+        var totals = DownloadTotals(completed = 0, failed = 0)
+
+        if (jpegRequests.isNotEmpty()) {
+            totals = processWifiStillPhase(
+                requests = jpegRequests,
+                phaseLabel = "JPEG",
+                title = title,
+                startedAt = startedAt,
+                overallTotal = requests.size,
+                skipped = skipped,
+                completedSoFar = totals.completed,
+                failedSoFar = totals.failed,
+            )
+        }
+
+        if (rawRequests.isNotEmpty()) {
+            totals = processWifiStillPhase(
+                requests = rawRequests,
+                phaseLabel = "RAW",
+                title = title,
+                startedAt = startedAt,
+                overallTotal = requests.size,
+                skipped = skipped,
+                completedSoFar = totals.completed,
+                failedSoFar = totals.failed,
+                launchStaggerMs = WIFI_RAW_START_STAGGER_MS,
+            )
+        }
+
+        if (otherStillRequests.isNotEmpty()) {
+            totals = processWifiStillPhase(
+                requests = otherStillRequests,
+                phaseLabel = "still",
+                title = title,
+                startedAt = startedAt,
+                overallTotal = requests.size,
+                skipped = skipped,
+                completedSoFar = totals.completed,
+                failedSoFar = totals.failed,
+            )
+        }
+
+        if (videoRequests.isNotEmpty()) {
+            D.transfer("Running video downloads in dedicated sequential phase (${videoRequests.size} items)")
+            totals = processRequestsSequentially(
+                requests = videoRequests,
+                title = title,
+                startedAt = startedAt,
+                overallTotal = requests.size,
+                completedSoFar = totals.completed,
+                failedSoFar = totals.failed,
+                skipped = skipped,
+            )
+        }
+
+        return totals
+    }
+
+    private suspend fun processWifiStillPhase(
+        requests: List<DownloadRequestItem>,
+        phaseLabel: String,
+        title: String,
+        startedAt: Long,
+        overallTotal: Int,
+        skipped: Int,
+        completedSoFar: Int = 0,
+        failedSoFar: Int = 0,
+        launchStaggerMs: Long = 0L,
+    ): DownloadTotals {
+        val parallelism = wifiStillImageParallelism(requests)
+        D.transfer(
+            "Running high-speed Wi-Fi $phaseLabel downloads with concurrency=$parallelism " +
+                "(count=${requests.size})",
+        )
+        return if (parallelism > 1) {
+            processRequestsInParallel(
+                requests = requests,
+                title = title,
+                startedAt = startedAt,
+                parallelism = parallelism,
+                overallTotal = overallTotal,
+                skipped = skipped,
+                completedSoFar = completedSoFar,
+                failedSoFar = failedSoFar,
+                launchStaggerMs = launchStaggerMs,
+            )
+        } else {
+            processRequestsSequentially(
+                requests = requests,
+                title = title,
+                startedAt = startedAt,
+                overallTotal = overallTotal,
+                skipped = skipped,
+                completedSoFar = completedSoFar,
+                failedSoFar = failedSoFar,
+            )
+        }
+    }
+
+    private fun wifiStillImageParallelism(requests: List<DownloadRequestItem>): Int {
+        if (requests.isEmpty()) {
+            return 1
+        }
+        val estimatedSizes = requests.map(::estimatedStillTransferBytes)
+        val maxSize = estimatedSizes.maxOrNull() ?: WIFI_TYPICAL_RAW_BYTES
+        val averageSize = estimatedSizes.average().takeIf { it > 0.0 }?.toLong() ?: WIFI_TYPICAL_RAW_BYTES
+        val targetParallelism = (WIFI_TARGET_IN_FLIGHT_BYTES / averageSize)
+            .toInt()
+            .coerceAtLeast(1)
+        val concurrencyCap = when {
+            maxSize >= WIFI_LARGE_STILL_THRESHOLD_BYTES -> WIFI_LARGE_STILL_PARALLELISM
+            requests.all(::isJpegTransfer) -> WIFI_JPEG_PARALLELISM
+            requests.any(::isRawTransfer) -> WIFI_RAW_PARALLELISM
+            else -> WIFI_RAW_PARALLELISM
+        }
+        return targetParallelism.coerceAtMost(concurrencyCap)
+    }
+
+    private fun estimatedStillTransferBytes(request: DownloadRequestItem): Long {
+        if (request.fileSize > 0L) {
+            return request.fileSize
+        }
+        return when {
+            isJpegTransfer(request) -> WIFI_TYPICAL_JPEG_BYTES
+            isRawTransfer(request) -> WIFI_TYPICAL_RAW_BYTES
+            else -> WIFI_TYPICAL_RAW_BYTES
+        }
+    }
+
+    private fun isVideoTransfer(request: DownloadRequestItem): Boolean {
+        val upperName = request.fileName.uppercase()
+        return upperName.endsWith(".MOV") ||
+            upperName.endsWith(".MP4") ||
+            upperName.endsWith(".AVI")
+    }
+
+    private fun isRawTransfer(request: DownloadRequestItem): Boolean {
+        val upperName = request.fileName.uppercase()
+        return upperName.endsWith(".ORF") || upperName.endsWith(".RAW")
+    }
+
+    private fun isJpegTransfer(request: DownloadRequestItem): Boolean {
+        val upperName = request.fileName.uppercase()
+        return upperName.endsWith(".JPG") || upperName.endsWith(".JPEG")
+    }
+
+    private suspend fun processRequestsSequentially(
+        requests: List<DownloadRequestItem>,
+        title: String,
+        startedAt: Long,
+        overallTotal: Int,
+        skipped: Int,
+        completedSoFar: Int = 0,
+        failedSoFar: Int = 0,
+    ): DownloadTotals {
+        var completed = completedSoFar
+        var failed = failedSoFar
+        requests.forEach { request ->
+            publishRunningProgress(
+                total = overallTotal,
+                completed = completed,
+                failed = failed,
+                currentFileName = request.fileName,
+                startedAt = startedAt,
+                title = title,
+                isRunning = true,
+                skipped = skipped,
+            )
+
+            val saved = executeTransferRequest(request)
+
+            if (saved) completed++ else failed++
+
+            publishRunningProgress(
+                total = overallTotal,
+                completed = completed,
+                failed = failed,
+                currentFileName = request.fileName,
+                startedAt = startedAt,
+                title = title,
+                isRunning = completed + failed < overallTotal,
+                skipped = skipped,
+            )
+        }
+        return DownloadTotals(completed = completed, failed = failed)
+    }
+
+    private suspend fun processRequestsInParallel(
+        requests: List<DownloadRequestItem>,
+        title: String,
+        startedAt: Long,
+        parallelism: Int,
+        overallTotal: Int,
+        skipped: Int,
+        completedSoFar: Int = 0,
+        failedSoFar: Int = 0,
+        launchStaggerMs: Long = 0L,
+    ): DownloadTotals {
+        val semaphore = Semaphore(parallelism.coerceAtLeast(1))
+        val progressLock = Any()
+        var completed = completedSoFar
+        var failed = failedSoFar
+
+        coroutineScope {
+            requests.mapIndexed { index, request ->
+                launch {
+                    val staggerDelayMs = if (launchStaggerMs > 0L && parallelism > 1) {
+                        launchStaggerMs * (index % parallelism)
+                    } else {
+                        0L
+                    }
+                    if (staggerDelayMs > 0L) {
+                        delay(staggerDelayMs)
+                    }
+                    semaphore.withPermit {
+                        synchronized(progressLock) {
+                            publishRunningProgress(
+                                total = overallTotal,
+                                completed = completed,
+                                failed = failed,
+                                currentFileName = request.fileName,
+                                startedAt = startedAt,
+                                title = title,
+                                isRunning = true,
+                                skipped = skipped,
+                            )
+                        }
+
+                        val saved = executeTransferRequest(request)
+
+                        synchronized(progressLock) {
+                            if (saved) completed++ else failed++
+                            publishRunningProgress(
+                                total = overallTotal,
+                                completed = completed,
+                                failed = failed,
+                                currentFileName = request.fileName,
+                                startedAt = startedAt,
+                                title = title,
+                                isRunning = completed + failed < overallTotal,
+                                skipped = skipped,
+                            )
+                        }
+                    }
+                }
+            }.joinAll()
+        }
+
+        return DownloadTotals(completed = completed, failed = failed)
+    }
+
+    private fun publishRunningProgress(
+        total: Int,
+        completed: Int,
+        failed: Int,
+        currentFileName: String,
+        startedAt: Long,
+        title: String,
+        isRunning: Boolean,
+        skipped: Int,
+    ) {
+        _progress.value = _progress.value.copy(
+            total = total,
+            completed = completed,
+            failed = failed,
+            skipped = skipped,
+            currentFileName = currentFileName,
+            isRunning = isRunning,
+            isCancelled = false,
+            etaMillis = estimateRemainingMillis(startedAt, completed + failed, total),
+            title = title,
+        )
+        updateNotification(_progress.value)
+    }
+
+    private suspend fun executeTransferRequest(request: DownloadRequestItem): Boolean {
+        return try {
+            processRequest(request)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (throwable: Throwable) {
+            D.err("DOWNLOAD", "Failed transfer for ${request.fileName}", throwable)
+            false
         }
     }
 
@@ -404,8 +801,51 @@ class ImageDownloadService : Service() {
             D.transfer("Skipping already-downloaded Wi-Fi media ${image.fileName}")
             return true
         }
-        val bytes = repository.getFullImage(image).getOrThrow()
-        return saveToGallery(image.fileName, bytes, image.dateFolderName)
+        var lastFailure: Throwable? = null
+        repeat(WIFI_TRANSFER_MAX_ATTEMPTS) { attempt ->
+            currentCoroutineContext().ensureActive()
+            val attemptNumber = attempt + 1
+            if (attempt > 0) {
+                val retryDelayMs = when (attempt) {
+                    1 -> 450L
+                    else -> 1_000L
+                }
+                D.transfer(
+                    "Retrying Wi-Fi media ${image.fileName} " +
+                        "attempt=$attemptNumber/$WIFI_TRANSFER_MAX_ATTEMPTS delay=${retryDelayMs}ms",
+                )
+                kotlinx.coroutines.delay(retryDelayMs)
+            }
+            try {
+                return saveStreamToGallery(
+                    fileName = image.fileName,
+                    dateFolder = image.dateFolderName,
+                    rethrowWriteFailures = true,
+                ) { outputStream ->
+                    repository.downloadFullImageTo(image, outputStream).getOrThrow()
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (throwable: Throwable) {
+                lastFailure = throwable
+                if (!isTransientWifiTransferFailure(throwable) || attempt == WIFI_TRANSFER_MAX_ATTEMPTS - 1) {
+                    throw throwable
+                }
+                D.err(
+                    "DOWNLOAD",
+                    "Transient Wi-Fi transfer failure for ${image.fileName}; will retry",
+                    throwable,
+                )
+            }
+        }
+        throw lastFailure ?: IllegalStateException("Unknown Wi-Fi transfer failure for ${image.fileName}")
+    }
+
+    private fun isRequestAlreadySaved(request: DownloadRequestItem): Boolean {
+        if (request.usbMode == USB_MODE_IMPORT_LATEST || request.usbMode == USB_MODE_CAPTURE_LATEST) {
+            return false
+        }
+        return isAlreadySaved(request.fileName, expectedDateFolderFor(request))
     }
 
     private suspend fun processUsbRequest(request: DownloadRequestItem): Boolean {
@@ -478,6 +918,10 @@ class ImageDownloadService : Service() {
     }
 
     private fun isAlreadySaved(fileName: String, dateFolder: String): Boolean {
+        val cacheKey = buildMediaCacheKey(fileName, dateFolder)
+        if (existingMediaCachePrimed) {
+            return cacheKey in existingMediaCache
+        }
         val resolver = contentResolver
         val collection = mediaCollectionForFileName(fileName)
         val relativePath = buildRelativePath(dateFolder)
@@ -506,10 +950,38 @@ class ImageDownloadService : Service() {
         return saveToGalleryDetailed(fileName, data, dateFolder) != null
     }
 
+    private suspend fun saveStreamToGallery(
+        fileName: String,
+        dateFolder: String = "",
+        rethrowWriteFailures: Boolean = false,
+        writeData: suspend (java.io.OutputStream) -> Unit,
+    ): Boolean {
+        return saveStreamToGalleryDetailed(
+            fileName = fileName,
+            dateFolder = dateFolder,
+            rethrowWriteFailures = rethrowWriteFailures,
+            writeData = writeData,
+        ) != null
+    }
+
     private fun saveToGalleryDetailed(
         fileName: String,
         data: ByteArray,
         dateFolder: String = "",
+    ): OmCaptureUsbSavedMedia? {
+        return kotlinx.coroutines.runBlocking {
+            saveStreamToGalleryDetailed(fileName, dateFolder) { outputStream ->
+                outputStream.write(data)
+                outputStream.flush()
+            }
+        }
+    }
+
+    private suspend fun saveStreamToGalleryDetailed(
+        fileName: String,
+        dateFolder: String = "",
+        rethrowWriteFailures: Boolean = false,
+        writeData: suspend (java.io.OutputStream) -> Unit,
     ): OmCaptureUsbSavedMedia? {
         val resolver = contentResolver
         val mimeType = resolveMimeType(fileName)
@@ -531,13 +1003,19 @@ class ImageDownloadService : Service() {
             return null
         } ?: return null
         try {
-            resolver.openOutputStream(uri)?.use { it.write(data) }
+            resolver.openOutputStream(uri)?.use { outputStream ->
+                outputStream.buffered(STREAM_WRITE_BUFFER_BYTES).use { bufferedOutput ->
+                    writeData(bufferedOutput)
+                    bufferedOutput.flush()
+                }
+            }
                 ?: throw IllegalStateException("ContentResolver returned null OutputStream for $uri")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 contentValues.clear()
                 contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
                 resolver.update(uri, contentValues, null, null)
             }
+            rememberSavedMedia(fileName, dateFolder)
             return OmCaptureUsbSavedMedia(
                 uriString = uri.toString(),
                 relativePath = relativePath,
@@ -545,12 +1023,23 @@ class ImageDownloadService : Service() {
                 displayName = fileName,
             )
         } catch (e: Exception) {
+            if (e is CancellationException) {
+                try {
+                    resolver.delete(uri, null, null)
+                } catch (deleteErr: Exception) {
+                    D.err("DOWNLOAD", "Failed to delete canceled MediaStore entry: $uri", deleteErr)
+                }
+                throw e
+            }
             D.err("DOWNLOAD", "Save failed, removing orphaned MediaStore entry: $fileName", e)
             // Clean up the IS_PENDING entry so it doesn't stay invisible in the gallery
             try {
                 resolver.delete(uri, null, null)
             } catch (deleteErr: Exception) {
                 D.err("DOWNLOAD", "Failed to delete orphaned MediaStore entry: $uri", deleteErr)
+            }
+            if (rethrowWriteFailures) {
+                throw e
             }
             return null
         }
@@ -570,33 +1059,65 @@ class ImageDownloadService : Service() {
 
     private fun buildNotification(progress: DownloadProgress): Notification {
         val processed = progress.completed + progress.failed
-        val currentLabel = progress.currentFileName.ifBlank { "Preparing transfer" }
         val etaLabel = formatEta(progress.etaMillis)
         val contentText = buildString {
-            append(currentLabel)
-            append("  ")
-            append("${processed}/${progress.total}")
-            if (etaLabel.isNotBlank()) {
-                append("  ")
-                append(etaLabel)
+            when {
+                progress.isRunning && progress.total > 0 -> {
+                    append("${processed}/${progress.total}")
+                    if (etaLabel.isNotBlank()) {
+                        append("  ")
+                        append(etaLabel)
+                    }
+                }
+                progress.total == 0 && progress.skipped > 0 -> {
+                    append("${progress.skipped} already saved")
+                }
+                else -> {
+                    append(buildCompletionSummary(progress.completed, progress.failed, progress.skipped))
+                }
             }
         }
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(progress.title)
             .setContentText(contentText)
             .setContentIntent(buildLaunchIntent())
             .setProgress(progress.total.coerceAtLeast(1), processed.coerceAtMost(progress.total), false)
-            .setOngoing(true)
+            .setOngoing(progress.isRunning)
             .setOnlyAlertOnce(true)
             .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+        if (progress.isRunning) {
+            builder.addAction(
+                0,
+                getString(R.string.common_cancel),
+                buildCancelIntent(),
+            )
+        }
+        return builder.build()
     }
 
     private fun updateNotification(progress: DownloadProgress) {
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, buildNotification(progress))
+    }
+
+    private fun buildCompletionSummary(completed: Int, failed: Int, skipped: Int): String {
+        return buildString {
+            when {
+                completed > 0 || failed > 0 -> {
+                    append("$completed saved")
+                    if (failed > 0) {
+                        append(", $failed failed")
+                    }
+                }
+                skipped > 0 -> append("$skipped already saved")
+                else -> append("Nothing to download")
+            }
+            if (skipped > 0 && (completed > 0 || failed > 0)) {
+                append(", $skipped already saved")
+            }
+        }
     }
 
     private fun estimateRemainingMillis(startedAt: Long, processed: Int, total: Int): Long {
@@ -623,6 +1144,141 @@ class ImageDownloadService : Service() {
         launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         return PendingIntent.getActivity(this, NOTIFICATION_ID, launchIntent, flags)
+    }
+
+    private fun buildCancelIntent(): PendingIntent {
+        val intent = Intent(this, ImageDownloadService::class.java).setAction(ACTION_CANCEL)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        return PendingIntent.getService(this, NOTIFICATION_ID + 2, intent, flags)
+    }
+
+    private fun cancelActiveTransfer() {
+        val current = _progress.value
+        D.transfer("User requested transfer cancellation")
+        repository.cancelPendingTransfers()
+        downloadJob?.cancel(CancellationException("Canceled by user"))
+        _progress.value = current.copy(
+            isRunning = false,
+            isCancelled = current.total > 0,
+            etaMillis = 0L,
+            currentFileName = current.currentFileName.ifBlank { "Canceled" },
+        )
+        val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        manager.cancel(NOTIFICATION_ID)
+        manager.cancel(NOTIFICATION_ID + 1)
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun resetExistingMediaCache() {
+        existingMediaCache.clear()
+        existingMediaCachePrimed = false
+    }
+
+    private fun buildMediaCacheKey(fileName: String, dateFolder: String): String {
+        return buildRelativePath(dateFolder) + fileName
+    }
+
+    private fun rememberSavedMedia(fileName: String, dateFolder: String) {
+        existingMediaCache += buildMediaCacheKey(fileName, dateFolder)
+    }
+
+    private fun primeExistingMediaCache(requests: List<DownloadRequestItem>) {
+        if (existingMediaCachePrimed) {
+            return
+        }
+        val requestedTargets = requests
+            .filter { it.source == SOURCE_WIFI || it.usbMode == USB_MODE_LIBRARY }
+            .map { request ->
+                CachedMediaLookupTarget(
+                    collection = mediaCollectionForFileName(request.fileName),
+                    relativePath = buildRelativePath(expectedDateFolderFor(request)),
+                    fileName = request.fileName,
+                )
+            }
+            .distinct()
+        if (requestedTargets.isEmpty()) {
+            existingMediaCachePrimed = true
+            return
+        }
+        val resolver = contentResolver
+        val projection = arrayOf(
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.RELATIVE_PATH,
+        )
+        requestedTargets
+            .groupBy { it.collection to it.relativePath }
+            .forEach { (groupKey, groupTargets) ->
+                val (collection, relativePath) = groupKey
+                groupTargets
+                    .map { it.fileName }
+                    .distinct()
+                    .chunked(40)
+                    .forEach { fileNames ->
+                        val placeholders = fileNames.joinToString(",") { "?" }
+                        val selection = buildString {
+                            append("${MediaStore.MediaColumns.DISPLAY_NAME} IN ($placeholders)")
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                append(" AND ${MediaStore.MediaColumns.RELATIVE_PATH}=?")
+                            }
+                        }
+                        val selectionArgs = buildList {
+                            addAll(fileNames)
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                add(relativePath)
+                            }
+                        }.toTypedArray()
+                        resolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+                            val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                            val relativePathCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
+                            while (cursor.moveToNext()) {
+                                val fileName = cursor.getString(nameCol) ?: continue
+                                val storedRelativePath = cursor.getString(relativePathCol) ?: relativePath
+                                existingMediaCache += storedRelativePath + fileName
+                            }
+                        }
+                    }
+            }
+        existingMediaCachePrimed = true
+    }
+
+    private fun expectedDateFolderFor(request: DownloadRequestItem): String {
+        if (request.source != SOURCE_WIFI || request.directory.isBlank()) {
+            return ""
+        }
+        return CameraImage(
+            directory = request.directory,
+            fileName = request.fileName,
+            fileSize = request.fileSize,
+            attribute = request.attribute,
+            width = request.width,
+            height = request.height,
+        ).dateFolderName
+    }
+
+    private data class CachedMediaLookupTarget(
+        val collection: Uri,
+        val relativePath: String,
+        val fileName: String,
+    )
+
+    private fun isTransientWifiTransferFailure(throwable: Throwable): Boolean {
+        return when (throwable) {
+            is SocketTimeoutException,
+            is SocketException,
+            is ConnectException,
+            is EOFException,
+            -> true
+            else -> {
+                val message = throwable.message.orEmpty()
+                "HTTP 500" in message ||
+                    "HTTP 503" in message ||
+                    "HTTP 520" in message ||
+                    "timeout" in message.lowercase() ||
+                    "socket closed" in message.lowercase() ||
+                    "unexpected end of stream" in message.lowercase()
+            }
+        }
     }
 
     private fun acquireRuntimeLocks(hasWifiTransfers: Boolean) {

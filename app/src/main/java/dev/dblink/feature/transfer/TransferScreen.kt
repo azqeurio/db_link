@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -119,6 +120,10 @@ data class TransferUiState(
     val isLoading: Boolean = false,
     val isDownloading: Boolean = false,
     val downloadProgress: String = "",
+    val backgroundTransferRunning: Boolean = false,
+    val backgroundTransferProgress: String = "",
+    val backgroundTransferTotal: Int = 0,
+    val backgroundTransferCurrent: Int = 0,
     val errorMessage: String? = null,
     val selectedImage: CameraImage? = null,
     val downloadedCount: Int = 0,
@@ -162,6 +167,7 @@ fun TransferScreen(
     transferState: TransferUiState,
     onLoadImages: () -> Unit,
     onDownloadImage: (CameraImage) -> Unit,
+    onCancelDownload: () -> Unit = {},
     onDeleteImage: (CameraImage) -> Unit = {},
     onSelectImage: (CameraImage?) -> Unit,
     onToggleSelection: (CameraImage) -> Unit = {},
@@ -227,10 +233,13 @@ fun TransferScreen(
             previewUnavailable = transferState.previewUnavailable,
             isDownloading = transferState.isDownloading,
             downloadProgress = transferState.downloadProgress,
+            backgroundTransferRunning = transferState.backgroundTransferRunning,
+            backgroundTransferProgress = transferState.backgroundTransferProgress,
             downloadedFileNames = transferState.downloadedFileNames,
             supportsDelete = transferState.supportsDelete,
             primaryActionLabel = primaryActionLabel,
             onDownload = onDownloadImage,
+            onCancelDownload = onCancelDownload,
             onDelete = onDeleteImage,
             onSelectImage = onSelectImage,
             onClose = { onSelectImage(null) },
@@ -351,6 +360,16 @@ fun TransferScreen(
             }
         }
 
+        if (!transferState.isSelectionMode && transferState.backgroundTransferRunning) {
+            BackgroundTransferStatusCard(
+                progress = transferState.backgroundTransferProgress,
+                current = transferState.backgroundTransferCurrent,
+                total = transferState.backgroundTransferTotal,
+                onCancel = onCancelDownload,
+            )
+        }
+
+        Box(modifier = Modifier.weight(1f)) {
         // Content
         when {
             transferState.isLoading && transferState.images.isEmpty() -> {
@@ -593,7 +612,6 @@ fun TransferScreen(
             }
         }
     }
-
     if (showSourceDialog && transferState.sourceKind == TransferSourceKind.OmCaptureUsb) {
         val storageIds = transferState.usbAvailableStorageIds.distinct()
         AlertDialog(
@@ -652,6 +670,68 @@ fun TransferScreen(
                 }
             },
         )
+    }
+}
+
+}
+
+@Composable
+private fun BackgroundTransferStatusCard(
+    progress: String,
+    current: Int,
+    total: Int,
+    onCancel: () -> Unit,
+) {
+    GlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 2.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = progress,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                TextButton(
+                    onClick = onCancel,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.common_cancel),
+                        color = Color(0xFFFF8A80),
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+            if (total > 0) {
+                LinearProgressIndicator(
+                    progress = { (current.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp),
+                    color = AppleBlue,
+                    trackColor = Color.White.copy(alpha = 0.1f),
+                )
+                Text(
+                    text = "$current / $total",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.56f),
+                )
+            }
+        }
     }
 }
 
@@ -936,10 +1016,13 @@ private fun ImageDetailPager(
     previewUnavailable: Set<String>,
     isDownloading: Boolean,
     downloadProgress: String,
+    backgroundTransferRunning: Boolean,
+    backgroundTransferProgress: String,
     downloadedFileNames: Set<String>,
     supportsDelete: Boolean,
     primaryActionLabel: String,
     onDownload: (CameraImage) -> Unit,
+    onCancelDownload: () -> Unit,
     onDelete: (CameraImage) -> Unit,
     onSelectImage: (CameraImage?) -> Unit,
     onClose: () -> Unit,
@@ -1131,12 +1214,15 @@ private fun ImageDetailPager(
                 currentPreviewUnavailable = currentPreviewUnavailable,
                 isDownloading = isDownloading,
                 downloadProgress = downloadProgress,
+                backgroundTransferRunning = backgroundTransferRunning,
+                backgroundTransferProgress = backgroundTransferProgress,
                 isAlreadyDownloaded = selectedImage.fileName in downloadedFileNames,
                 supportsDelete = supportsDelete,
                 primaryActionLabel = primaryActionLabel,
                 onOpenMap = { geoTag -> openMapForGeoTag(context, geoTag) },
                 onDelete = onDelete,
                 onDownload = onDownload,
+                onCancelDownload = onCancelDownload,
             )
         }
     }
@@ -1149,12 +1235,15 @@ private fun DetailBottomBar(
     currentPreviewUnavailable: Boolean,
     isDownloading: Boolean,
     downloadProgress: String,
+    backgroundTransferRunning: Boolean,
+    backgroundTransferProgress: String,
     isAlreadyDownloaded: Boolean,
     supportsDelete: Boolean,
     primaryActionLabel: String,
     onOpenMap: (ImageGeoTagInfo) -> Unit,
     onDelete: (CameraImage) -> Unit,
     onDownload: (CameraImage) -> Unit,
+    onCancelDownload: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -1224,15 +1313,30 @@ private fun DetailBottomBar(
                 }
             }
             Button(
-                onClick = { onDownload(currentImage) },
-                enabled = !isDownloading,
+                onClick = {
+                    if (backgroundTransferRunning) {
+                        onCancelDownload()
+                    } else {
+                        onDownload(currentImage)
+                    }
+                },
+                enabled = !isDownloading || backgroundTransferRunning,
                 modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isAlreadyDownloaded) AppleGreen else AppleBlue,
+                    containerColor = if (backgroundTransferRunning) {
+                        Color(0xFFD14B5A)
+                    } else if (isAlreadyDownloaded) {
+                        AppleGreen
+                    } else {
+                        AppleBlue
+                    },
                 ),
                 shape = RoundedCornerShape(14.dp),
             ) {
-                if (isDownloading) {
+                if (backgroundTransferRunning) {
+                    Icon(Icons.Rounded.Close, null, modifier = Modifier.size(18.dp))
+                    Text("  ${stringResource(R.string.common_cancel)}", fontWeight = FontWeight.Bold)
+                } else if (isDownloading) {
                     CircularProgressIndicator(color = Color.White, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                     Text("  $downloadProgress", fontWeight = FontWeight.Bold)
                 } else if (isAlreadyDownloaded) {
@@ -1243,6 +1347,15 @@ private fun DetailBottomBar(
                     Text("  $primaryActionLabel", fontWeight = FontWeight.Bold)
                 }
             }
+        }
+        if (backgroundTransferRunning && backgroundTransferProgress.isNotBlank()) {
+            Text(
+                text = backgroundTransferProgress,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White.copy(alpha = 0.68f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

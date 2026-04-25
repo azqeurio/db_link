@@ -5,6 +5,7 @@ import dev.dblink.core.config.AppEnvironment
 import dev.dblink.core.model.CameraWorkspace
 import dev.dblink.core.model.ConnectMode
 import dev.dblink.core.model.ConnectionMethod
+import java.io.OutputStream
 
 class FakeCameraRepository(
     private val config: AppConfig = AppEnvironment.current(),
@@ -105,6 +106,9 @@ class FakeCameraRepository(
 
     override suspend fun getFullImage(image: CameraImage): Result<ByteArray> =
         Result.success(ByteArray(0))
+
+    override suspend fun downloadFullImageTo(image: CameraImage, output: OutputStream): Result<Long> =
+        Result.success(0L)
 
     override suspend fun getPlayTargetSlot(): Result<Int> =
         Result.success(1)

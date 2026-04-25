@@ -226,6 +226,7 @@ class MainViewModel(
     private var reconnectJob: Job? = null
     private var handshakeJob: Job? = null
     private var sessionKeepAliveJob: Job? = null
+    private var sessionKeepAliveSuspendedForTransfer = false
     private var touchFocusOverlayJob: Job? = null
     @Volatile private var isCapturing = false
     @Volatile private var isTogglingLiveView = false
@@ -253,6 +254,7 @@ class MainViewModel(
         const val WIFI_THUMBNAIL_FAILURE_BACKOFF_MS = 650L
         const val WIFI_THUMBNAIL_FAILURE_LIMIT = 5
         const val WIFI_MEDIA_REQUEST_COOLDOWN_MS = 3_000L
+        const val WIFI_RESIZED_THUMBNAIL_COOLDOWN_MS = 12_000L
         const val CAPTURE_FOLLOWUP_MAX_ATTEMPTS = 6
         const val CAPTURE_FOLLOWUP_POLL_DELAY_MS = 700L
         const val USB_AUTO_IMPORT_RETRY_MS = 250L
@@ -282,6 +284,10 @@ class MainViewModel(
     private var usbLibraryCache: List<OmCaptureUsbLibraryItem> = emptyList()
     private var usbLibraryCacheUpdatedAtMs: Long = 0L
     private val previewThumbnailUpgrades = linkedSetOf<String>()
+    private val wifiThumbnail404Paths = linkedSetOf<String>()
+    private val wifiPreview404Paths = linkedSetOf<String>()
+    private val wifiResizedThumbnail404Paths = linkedSetOf<String>()
+    private var wifiResizedThumbnailCooldownUntilMs: Long = 0L
     private var activePlayTargetSlot: Int? = null
     private var latestLiveViewMetadata: LiveViewMetadata? = null
     private var lastRawApertureOptions: List<String> = emptyList()
@@ -579,6 +585,12 @@ class MainViewModel(
         val leavingUsbRemote = isUsbRemoteTransportActive() && _uiState.value.omCaptureUsb.summary != null
         if (!leavingUsbRemote) {
             suppressWifiAutoRefresh = false
+            propertyApplyJob?.cancel()
+            propertyApplyJob = null
+            propertyLoadJob?.cancel()
+            propertyLoadJob = null
+            propertyRefreshJob?.cancel()
+            propertyRefreshJob = null
             updateUiState { current -> current.copy(
                 remoteRuntime = current.remoteRuntime.copy(
                     activePicker = ActivePropertyPicker.None,
@@ -1896,7 +1908,7 @@ class MainViewModel(
                 )
             }
         }
-        previewThumbnailUpgrades.clear()
+        resetWifiThumbnailFallbackState()
     }
 
     /**
@@ -2923,7 +2935,7 @@ class MainViewModel(
                 val transferState = _uiState.value.transferState
                 if (selectionChanged) {
                     invalidateTransferLoads()
-                    previewThumbnailUpgrades.clear()
+                    resetWifiThumbnailFallbackState()
                     activePlayTargetSlot = null
                     pendingLastCapturePreviewOpen = false
                     _liveViewFrame.value = null
@@ -3267,7 +3279,7 @@ class MainViewModel(
         val switchingCamera = !previousSsid.isNullOrBlank() && !previousSsid.equals(ssid, ignoreCase = true)
         if (switchingCamera) {
             disconnectCamera()
-            previewThumbnailUpgrades.clear()
+            resetWifiThumbnailFallbackState()
             activePlayTargetSlot = null
             pendingLastCapturePreviewOpen = false
         }
@@ -3514,7 +3526,7 @@ class MainViewModel(
                 },
             ),
         ) }
-        previewThumbnailUpgrades.clear()
+        resetWifiThumbnailFallbackState()
         activePlayTargetSlot = null
         viewModelScope.launch {
             preferencesRepository.updateCameraPlayTargetSlot(selectedSsid, slot)
@@ -3565,15 +3577,14 @@ class MainViewModel(
     }
 
     private fun startSessionKeepAlive() {
+        sessionKeepAliveSuspendedForTransfer = false
         sessionKeepAliveJob?.cancel()
         sessionKeepAliveJob = viewModelScope.launch {
             // Refresh the session timeout on a stable 150-second cadence.
             // (field c=600, delay = (c/4)*1000 = 150000ms), timeout value = 1800s.
             while (true) {
                 delay(150_000L) // 150 seconds
-                if (_uiState.value.sessionState is CameraSessionState.Connected ||
-                    _uiState.value.remoteRuntime.liveViewActive
-                ) {
+                if (shouldRunSessionKeepAlive()) {
                     D.session("Sending session keepalive (set_timeout 1800s)")
                     runCatching { repository.setSessionTimeout(1800) }
                         .onFailure { D.err("SESSION", "Keepalive failed, will retry next cycle", it) }
@@ -3588,6 +3599,44 @@ class MainViewModel(
     private fun stopSessionKeepAlive() {
         sessionKeepAliveJob?.cancel()
         sessionKeepAliveJob = null
+    }
+
+    private fun shouldRunSessionKeepAlive(): Boolean {
+        if (sessionKeepAliveSuspendedForTransfer) {
+            return false
+        }
+        if (isUsbRemoteTransportActive()) {
+            return false
+        }
+        return _uiState.value.sessionState is CameraSessionState.Connected ||
+            _uiState.value.remoteRuntime.liveViewActive
+    }
+
+    private fun pauseSessionKeepAliveForWifiTransfer() {
+        if (_uiState.value.transferState.sourceKind != TransferSourceKind.WifiCamera) {
+            return
+        }
+        if (sessionKeepAliveSuspendedForTransfer) {
+            return
+        }
+        sessionKeepAliveSuspendedForTransfer = true
+        D.session("Pausing session keepalive for Wi-Fi background transfer")
+        stopSessionKeepAlive()
+    }
+
+    private fun resumeSessionKeepAliveAfterWifiTransfer() {
+        if (!sessionKeepAliveSuspendedForTransfer) {
+            return
+        }
+        sessionKeepAliveSuspendedForTransfer = false
+        if (_uiState.value.transferState.sourceKind == TransferSourceKind.WifiCamera &&
+            !isUsbRemoteTransportActive() &&
+            (_uiState.value.sessionState is CameraSessionState.Connected ||
+                _uiState.value.remoteRuntime.liveViewActive)
+        ) {
+            D.session("Resuming session keepalive after Wi-Fi background transfer")
+            startSessionKeepAlive()
+        }
     }
 
     fun setAppLanguage(languageTag: String) {
@@ -4189,26 +4238,23 @@ class MainViewModel(
             ),
         ) }
 
-        val imageBytes = withContext(Dispatchers.IO) {
-            repository.getFullImage(image)
-        }.getOrElse { throwable ->
-            updateUiState { current -> current.copy(
-                transferState = current.transferState.copy(
-                    isDownloading = false,
-                    downloadProgress = throwable.message ?: "Latest shot download failed",
-                ),
-            ) }
-            return Result.failure(throwable)
-        }
-
-        updateUiState { current -> current.copy(
-            transferState = current.transferState.copy(
-                downloadProgress = "Writing latest shot...",
-            ),
-        ) }
-
         val saved = withContext(Dispatchers.IO) {
-            saveToGallery(image.fileName, imageBytes, image.dateFolderName)
+            runCatching {
+                saveStreamToGallery(
+                    fileName = image.fileName,
+                    dateFolder = image.dateFolderName,
+                ) { outputStream ->
+                    repository.downloadFullImageTo(image, outputStream).getOrThrow()
+                }
+            }.getOrElse { throwable ->
+                updateUiState { current -> current.copy(
+                    transferState = current.transferState.copy(
+                        isDownloading = false,
+                        downloadProgress = throwable.message ?: "Latest shot download failed",
+                    ),
+                ) }
+                return@withContext false
+            }
         }
         updateUiState { current -> current.copy(
             transferState = current.transferState.copy(
@@ -4936,22 +4982,22 @@ class MainViewModel(
 
         suspend fun fetchProperty(propName: String): CameraPropertyDesc? {
             val descFromList = descList[propName]
-            val requiresDetailedRead = propName == "focalvalue" || propName == "shutspeedvalue"
-            val detailedDesc = if (requiresDetailedRead) repository.getPropertyDesc(propName).getOrNull() else null
-            val mergedDesc = mergePropertyDesc(descFromList, detailedDesc)
-            if (mergedDesc != null) {
+            if (isUsablePropertyDesc(descFromList)) {
                 if (_uiState.value.remoteRuntime.liveViewActive) delay(40)
-                return mergedDesc
+                return descFromList
             }
-            // If per-property read fails with 520, retry once after delay
+
             val directRead = repository.getPropertyDesc(propName)
-            if (directRead.isFailure && "520" in (directRead.exceptionOrNull()?.message.orEmpty())) {
+            if (directRead.isFailure && isTransientCameraPropFailure(directRead.exceptionOrNull())) {
                 delay(300)
-                return repository.getPropertyDesc(propName).getOrNull().also {
+                return mergePropertyDesc(
+                    descFromList,
+                    repository.getPropertyDesc(propName).getOrNull(),
+                ).also {
                     if (_uiState.value.remoteRuntime.liveViewActive) delay(40)
                 }
             }
-            return directRead.getOrNull().also {
+            return mergePropertyDesc(descFromList, directRead.getOrNull()).also {
                 if (_uiState.value.remoteRuntime.liveViewActive) delay(40)
             }
         }
@@ -5648,6 +5694,9 @@ class MainViewModel(
     private fun loadThumbnails(images: List<CameraImage>) {
         thumbnailJob?.cancel()
         thumbnailJob = viewModelScope.launch {
+            if (shouldPauseWifiLibraryMediaRequests()) {
+                return@launch
+            }
             val transferState = _uiState.value.transferState
             if (transferState.sourceKind == TransferSourceKind.OmCaptureUsb) {
                 val handleMap = transferState.usbObjectHandlesByPath
@@ -5692,31 +5741,36 @@ class MainViewModel(
         val toLoad = images.filter { it.fileName !in _uiState.value.transferState.thumbnails }
         toLoad.chunked(6).forEach { batch ->
             ensureActive()
+            if (shouldPauseWifiLibraryMediaRequests()) return@coroutineScope
             if (!canSendRemoteCommand()) return@coroutineScope
-            val deferred = batch.map { image ->
+            val deferred = batch.filter { it.isJpeg }.map { image ->
                 async(Dispatchers.IO) {
-                    repository.getThumbnail(image).getOrNull()?.let { bytes ->
-                        decodeTransferPreviewBitmap(bytes)?.let { bitmap ->
-                            image.fileName to bitmap
-                        }
-                    }
+                    loadWifiThumbnailResult(image)
                 }
             }
-            val results = deferred.awaitAll().filterNotNull()
-            updateTransferThumbnails(results, overwriteExisting = false)
+            val results = mutableListOf<WifiThumbnailLoadResult>()
+            results += deferred.awaitAll().filterNotNull()
+            batch.filterNot { it.isJpeg }.forEach { image ->
+                ensureActive()
+                if (shouldPauseWifiLibraryMediaRequests()) return@coroutineScope
+                if (!canSendRemoteCommand()) return@coroutineScope
+                loadWifiThumbnailResult(image)?.let(results::add)
+            }
+            updateTransferThumbnails(results.map { it.fileName to it.bitmap }, overwriteExisting = false)
+            results.filter { it.usedPreview }.forEach { result ->
+                previewThumbnailUpgrades += result.fileName
+                clearPreviewUnavailable(result.fileName)
+            }
         }
 
         buildPreviewThumbnailTargets(images)
+            .filterNot { it.isRaw || it.isMovie }
             .filterNot { it.fileName in previewThumbnailUpgrades }
             .forEach { image ->
                 ensureActive()
+                if (shouldPauseWifiLibraryMediaRequests()) return@coroutineScope
                 if (!canSendRemoteCommand()) return@coroutineScope
-                val preview = withContext(Dispatchers.IO) {
-                    repository.getPreviewThumbnail(image).getOrNull()?.let { bytes ->
-                        updatePreviewDetails(image, bytes)
-                        decodeTransferPreviewBitmap(bytes)
-                    }
-                } ?: return@forEach
+                val preview = loadWifiPreviewUpgradeBitmap(image) ?: return@forEach
                 previewThumbnailUpgrades += image.fileName
                 clearPreviewUnavailable(image.fileName)
                 updateTransferThumbnails(listOf(image.fileName to preview), overwriteExisting = true)
@@ -5732,11 +5786,16 @@ class MainViewModel(
         var shouldLoadPreviewUpgrades = true
         for (image in toLoad) {
             currentCoroutineContext().ensureActive()
+            if (shouldPauseWifiLibraryMediaRequests()) return
             if (!canSendRemoteCommand()) return
-            val result = loadWifiThumbnail(image)
+            val result = loadWifiThumbnailResult(image)
             if (result != null) {
                 consecutiveFailures = 0
-                updateTransferThumbnails(listOf(result), overwriteExisting = false)
+                updateTransferThumbnails(listOf(result.fileName to result.bitmap), overwriteExisting = false)
+                if (result.usedPreview) {
+                    previewThumbnailUpgrades += result.fileName
+                    clearPreviewUnavailable(result.fileName)
+                }
                 delay(WIFI_THUMBNAIL_REQUEST_DELAY_MS)
             } else {
                 consecutiveFailures += 1
@@ -5754,17 +5813,14 @@ class MainViewModel(
         }
         consecutiveFailures = 0
         val previewTargets = buildPreviewThumbnailTargets(images)
+            .filterNot { it.isRaw || it.isMovie }
             .filterNot { it.fileName in previewThumbnailUpgrades }
         for (image in previewTargets) {
             currentCoroutineContext().ensureActive()
+            if (shouldPauseWifiLibraryMediaRequests()) return
             if (!canSendRemoteCommand()) return
             waitForWifiMediaRequestCooldown()
-            val preview = withContext(Dispatchers.IO) {
-                repository.getPreviewThumbnail(image).getOrNull()?.let { bytes ->
-                    updatePreviewDetails(image, bytes)
-                    decodeTransferPreviewBitmap(bytes)
-                }
-            }
+            val preview = loadWifiPreviewUpgradeBitmap(image)
             if (preview == null) {
                 consecutiveFailures += 1
                 if (consecutiveFailures >= WIFI_THUMBNAIL_FAILURE_LIMIT) {
@@ -5782,15 +5838,151 @@ class MainViewModel(
         }
     }
 
-    private suspend fun loadWifiThumbnail(image: CameraImage): Pair<String, Bitmap>? {
-        val bytes = withContext(Dispatchers.IO) {
-            repository.getThumbnail(image).getOrNull()
-        } ?: return null
+    private suspend fun loadWifiThumbnailResult(image: CameraImage): WifiThumbnailLoadResult? {
+        val payload = loadWifiThumbnailPayload(image) ?: return null
+        val bytes = payload.bytes
         val bitmap = withContext(Dispatchers.Default) {
             decodeTransferPreviewBitmap(bytes)
         } ?: return null
-        return image.fileName to bitmap
+        return WifiThumbnailLoadResult(
+            fileName = image.fileName,
+            bitmap = bitmap,
+            usedPreview = payload.usedPreview,
+        )
     }
+
+    private suspend fun loadWifiThumbnailPayload(image: CameraImage): WifiThumbnailPayload? {
+        val payload = withContext(Dispatchers.IO) {
+            when {
+                image.isRaw -> {
+                    loadWifiPreviewThumbnailBytes(image)?.let { WifiThumbnailPayload(it, true) }
+                        ?: loadWifiBasicThumbnailBytes(image)?.let { WifiThumbnailPayload(it, false) }
+                }
+                image.isMovie -> {
+                    loadWifiPreviewThumbnailBytes(image)?.let { WifiThumbnailPayload(it, true) }
+                        ?: loadWifiBasicThumbnailBytes(image)?.let { WifiThumbnailPayload(it, false) }
+                        ?: loadWifiResizedThumbnailBytes(image)?.let { WifiThumbnailPayload(it, true) }
+                }
+                else -> {
+                    loadWifiBasicThumbnailBytes(image)?.let { WifiThumbnailPayload(it, false) }
+                        ?: loadWifiPreviewThumbnailBytes(image)?.let { WifiThumbnailPayload(it, true) }
+                        ?: loadWifiResizedThumbnailBytes(image)?.let { WifiThumbnailPayload(it, true) }
+                }
+            }
+        } ?: return null
+        updatePreviewDetails(image, payload.bytes)
+        return payload
+    }
+
+    private suspend fun loadWifiPreviewUpgradeBitmap(image: CameraImage): Bitmap? {
+        val bytes = withContext(Dispatchers.IO) {
+            loadWifiPreviewThumbnailBytes(image) ?: loadWifiResizedThumbnailBytes(image)
+        } ?: return null
+        updatePreviewDetails(image, bytes)
+        return withContext(Dispatchers.Default) {
+            decodeTransferPreviewBitmap(bytes)
+        }
+    }
+
+    private suspend fun loadWifiBasicThumbnailBytes(image: CameraImage): ByteArray? {
+        if (image.fullPath in wifiThumbnail404Paths) {
+            return null
+        }
+        val result = withTimeoutOrNull(1_400L) {
+            repository.getThumbnail(image)
+        } ?: return null
+        val bytes = result.getOrNull()
+        if (bytes == null && isHttp404(result.exceptionOrNull())) {
+            wifiThumbnail404Paths += image.fullPath
+        }
+        return bytes
+    }
+
+    private suspend fun loadWifiPreviewThumbnailBytes(image: CameraImage): ByteArray? {
+        if (image.fullPath in wifiPreview404Paths) {
+            return null
+        }
+        val result = withTimeoutOrNull(1_800L) {
+            repository.getPreviewThumbnail(image)
+        } ?: return null
+        val bytes = result.getOrNull()
+        if (bytes == null && isHttp404(result.exceptionOrNull())) {
+            wifiPreview404Paths += image.fullPath
+        }
+        return bytes
+    }
+
+    private suspend fun loadWifiResizedThumbnailBytes(image: CameraImage): ByteArray? {
+        if (image.isRaw) {
+            return null
+        }
+        if (image.fullPath in wifiResizedThumbnail404Paths) {
+            return null
+        }
+        if (SystemClock.elapsedRealtime() < wifiResizedThumbnailCooldownUntilMs) {
+            return null
+        }
+        val targetWidth = when {
+            image.isRaw -> 640
+            image.isMovie -> 960
+            else -> 720
+        }
+        val result = withTimeoutOrNull(2_400L) {
+            repository.getResizedImageWithErr(image, width = targetWidth)
+        } ?: return null
+        val bytes = result.getOrNull()
+        if (bytes != null) {
+            return bytes
+        }
+        val failure = result.exceptionOrNull()
+        if (isHttp404(failure)) {
+            wifiResizedThumbnail404Paths += image.fullPath
+        } else if (isHttp520(failure)) {
+            startWifiResizedThumbnailCooldown("resizeimg_witherr 520")
+            return null
+        }
+        val fallbackResult = withTimeoutOrNull(2_400L) {
+            repository.getResizedImage(image, width = targetWidth)
+        } ?: return null
+        val fallbackBytes = fallbackResult.getOrNull()
+        if (fallbackBytes == null) {
+            val fallbackFailure = fallbackResult.exceptionOrNull()
+            if (isHttp404(fallbackFailure)) {
+                wifiResizedThumbnail404Paths += image.fullPath
+            } else if (isHttp520(fallbackFailure)) {
+                startWifiResizedThumbnailCooldown("resizeimg 520")
+            }
+        }
+        return fallbackBytes
+    }
+
+    private fun isHttp404(throwable: Throwable?): Boolean {
+        return throwable?.message?.contains("HTTP 404") == true
+    }
+
+    private fun isHttp520(throwable: Throwable?): Boolean {
+        return throwable?.message?.contains("HTTP 520") == true
+    }
+
+    private fun startWifiResizedThumbnailCooldown(reason: String) {
+        val nextUntil = SystemClock.elapsedRealtime() + WIFI_RESIZED_THUMBNAIL_COOLDOWN_MS
+        if (nextUntil <= wifiResizedThumbnailCooldownUntilMs) {
+            return
+        }
+        wifiResizedThumbnailCooldownUntilMs = nextUntil
+        D.transfer("Pausing Wi-Fi resized thumbnail requests after $reason")
+    }
+
+    private data class WifiThumbnailLoadResult(
+        val fileName: String,
+        val bitmap: Bitmap,
+        val usedPreview: Boolean,
+    )
+
+    private data class WifiThumbnailPayload(
+        val bytes: ByteArray,
+        val usedPreview: Boolean,
+    )
 
     private suspend fun waitForWifiMediaRequestCooldown() {
         val remaining = wifiMediaRequestCooldownUntilMs - SystemClock.elapsedRealtime()
@@ -5858,6 +6050,9 @@ class MainViewModel(
         val validPaths = images.mapTo(linkedSetOf()) { it.fullPath }
         val validFileNames = images.mapTo(linkedSetOf()) { it.fileName }
         previewThumbnailUpgrades.retainAll(validFileNames)
+        wifiThumbnail404Paths.retainAll(validPaths)
+        wifiPreview404Paths.retainAll(validPaths)
+        wifiResizedThumbnail404Paths.retainAll(validPaths)
         val retainedThumbnails = transfer.thumbnails.filterKeys { it in validFileNames }
         val retainedGeoTags = transfer.matchedGeoTags.filterKeys { it in validFileNames }
         val retainedSelection = transfer.selectedImages.filterTo(linkedSetOf()) { it in validPaths }
@@ -5998,8 +6193,6 @@ class MainViewModel(
         updateUiState { it.copy(
             transferState = currentTransfer.copy(
                 selectedImage = image,
-                isDownloading = false,
-                downloadProgress = "",
             ),
         ) }
         detailPreviewJob?.cancel()
@@ -6039,6 +6232,9 @@ class MainViewModel(
 
     private fun preloadSelectedImagePreview(image: CameraImage) {
         detailPreviewJob = viewModelScope.launch {
+            if (shouldPauseWifiLibraryMediaRequests()) {
+                return@launch
+            }
             if (_uiState.value.transferState.sourceKind == TransferSourceKind.OmCaptureUsb) {
                 val handle = resolveUsbTransferHandle(image)
                 if (handle == null) {
@@ -6096,7 +6292,7 @@ class MainViewModel(
                     label = "screennail",
                 ) {
                     withTimeoutOrNull(1800L) {
-                        repository.getPreviewThumbnail(image).getOrNull()
+                        loadWifiPreviewThumbnailBytes(image)
                     }
                 }
             }
@@ -6106,7 +6302,7 @@ class MainViewModel(
                     label = "thumbnail",
                 ) {
                     withTimeoutOrNull(1800L) {
-                        repository.getThumbnail(image).getOrNull()
+                        loadWifiBasicThumbnailBytes(image)
                     }
                 }
             }
@@ -6182,10 +6378,15 @@ class MainViewModel(
             downloadOmCaptureUsbLibraryImage(image)
             return
         }
+        prepareWifiTransferPipeline()
         updateUiState { current -> current.copy(
             transferState = current.transferState.copy(
                 isDownloading = true,
                 downloadProgress = "Preparing background download...",
+                backgroundTransferRunning = true,
+                backgroundTransferProgress = "Preparing background download...",
+                backgroundTransferTotal = 1,
+                backgroundTransferCurrent = 0,
             ),
         ) }
         dev.dblink.core.download.ImageDownloadService.startDownload(
@@ -6212,6 +6413,10 @@ class MainViewModel(
             transferState = current.transferState.copy(
                 isDownloading = true,
                 downloadProgress = "Preparing USB import...",
+                backgroundTransferRunning = true,
+                backgroundTransferProgress = "Preparing USB import...",
+                backgroundTransferTotal = 1,
+                backgroundTransferCurrent = 0,
                 errorMessage = null,
             ),
         ) }
@@ -6309,11 +6514,16 @@ class MainViewModel(
             downloadSelectedOmCaptureUsbImages(images)
             return
         }
+        prepareWifiTransferPipeline()
         updateUiState { current -> current.copy(
             transferState = current.transferState.copy(
                 isDownloading = true,
                 batchDownloadTotal = images.size,
                 batchDownloadCurrent = 0,
+                backgroundTransferRunning = true,
+                backgroundTransferProgress = "Preparing background download...",
+                backgroundTransferTotal = images.size,
+                backgroundTransferCurrent = 0,
                 selectedImages = emptySet(),
                 isSelectionMode = false,
                 downloadProgress = "Preparing background download...",
@@ -6352,6 +6562,10 @@ class MainViewModel(
                 isDownloading = true,
                 batchDownloadTotal = requests.size,
                 batchDownloadCurrent = 0,
+                backgroundTransferRunning = true,
+                backgroundTransferProgress = "Preparing USB import...",
+                backgroundTransferTotal = requests.size,
+                backgroundTransferCurrent = 0,
                 selectedImages = emptySet(),
                 isSelectionMode = false,
                 downloadProgress = "Preparing USB import...",
@@ -6363,6 +6577,50 @@ class MainViewModel(
             items = requests,
             saveLocation = _uiState.value.autoImportConfig.saveLocation,
         )
+    }
+
+    fun cancelBackgroundDownload() {
+        val currentTransfer = _uiState.value.transferState
+        if (!currentTransfer.backgroundTransferRunning) {
+            return
+        }
+        updateUiState { current -> current.copy(
+            transferState = current.transferState.copy(
+                downloadProgress = "Canceling...",
+                backgroundTransferProgress = "Canceling...",
+            ),
+        ) }
+        dev.dblink.core.download.ImageDownloadService.cancelTransfer(getApplication())
+    }
+
+    private fun shouldPauseWifiLibraryMediaRequests(): Boolean {
+        val transfer = _uiState.value.transferState
+        return transfer.sourceKind == TransferSourceKind.WifiCamera && transfer.backgroundTransferRunning
+    }
+
+    private fun resetWifiThumbnailFallbackState() {
+        previewThumbnailUpgrades.clear()
+        wifiThumbnail404Paths.clear()
+        wifiPreview404Paths.clear()
+        wifiResizedThumbnail404Paths.clear()
+        wifiResizedThumbnailCooldownUntilMs = 0L
+    }
+
+    private fun prepareWifiTransferPipeline() {
+        if (_uiState.value.transferState.sourceKind != TransferSourceKind.WifiCamera) {
+            return
+        }
+        pauseSessionKeepAliveForWifiTransfer()
+        thumbnailJob?.cancel()
+        thumbnailJob = null
+        detailPreviewJob?.cancel()
+        detailPreviewJob = null
+        propertyApplyJob?.cancel()
+        propertyApplyJob = null
+        propertyLoadJob?.cancel()
+        propertyLoadJob = null
+        propertyRefreshJob?.cancel()
+        propertyRefreshJob = null
     }
 
     fun deleteImage(image: CameraImage) {
@@ -6540,10 +6798,31 @@ class MainViewModel(
         return saveToGalleryDetailed(fileName, data, dateFolder) != null
     }
 
+    private suspend fun saveStreamToGallery(
+        fileName: String,
+        dateFolder: String = "",
+        writeData: suspend (java.io.OutputStream) -> Unit,
+    ): Boolean {
+        return saveStreamToGalleryDetailed(fileName, dateFolder, writeData) != null
+    }
+
     private fun saveToGalleryDetailed(
         fileName: String,
         data: ByteArray,
         dateFolder: String = "",
+    ): OmCaptureUsbSavedMedia? {
+        return kotlinx.coroutines.runBlocking {
+            saveStreamToGalleryDetailed(fileName, dateFolder) { outputStream ->
+                outputStream.write(data)
+                outputStream.flush()
+            }
+        }
+    }
+
+    private suspend fun saveStreamToGalleryDetailed(
+        fileName: String,
+        dateFolder: String = "",
+        writeData: suspend (java.io.OutputStream) -> Unit,
     ): OmCaptureUsbSavedMedia? {
         return try {
             val context = getApplication<Application>()
@@ -6591,13 +6870,13 @@ class MainViewModel(
             }
 
             D.transfer(
-                "saveToGalleryDetailed: file=$fileName bytes=${data.size} mime=$mimeType " +
+                "saveToGalleryDetailed: file=$fileName mime=$mimeType " +
                     "relativePath=$normalizedRelativePath collection=$collection",
             )
             val uri = resolver.insert(collection, contentValues) ?: return null
             try {
                 resolver.openOutputStream(uri)?.use { outputStream ->
-                    outputStream.write(data)
+                    writeData(outputStream)
                     outputStream.flush()
                 } ?: error("Content resolver returned a null output stream for $fileName")
 
@@ -6816,27 +7095,54 @@ class MainViewModel(
         downloadProgressJob = dev.dblink.core.download.ImageDownloadService.progress
             .onEach { progress ->
                 val currentTransfer = _uiState.value.transferState
+                if (progress.isRunning && currentTransfer.sourceKind == TransferSourceKind.WifiCamera) {
+                    pauseSessionKeepAliveForWifiTransfer()
+                }
                 val processed = progress.completed + progress.failed
                 val etaLabel = formatEtaLabel(progress.etaMillis)
                 val nextProgressLabel = when {
+                    progress.total == 0 && progress.skipped > 0 -> "${progress.skipped} already saved"
                     progress.total == 0 -> currentTransfer.downloadProgress
                     progress.isRunning -> buildString {
-                        append(progress.currentFileName.ifBlank { "Downloading" })
-                        append(" (${processed}/${progress.total})")
+                        append("${processed}/${progress.total}")
                         if (etaLabel.isNotBlank()) {
-                            append(" ")
+                            append(" • ")
                             append(etaLabel)
                         }
                     }
-                    progress.failed > 0 && progress.completed == 0 -> "${progress.failed}/${progress.total} failed"
-                    progress.failed > 0 -> "${progress.completed}/${progress.total} saved, ${progress.failed} failed"
-                    else -> "${progress.completed}/${progress.total} saved"
+                    progress.isCancelled -> if (progress.total > 0) {
+                        "Canceled (${processed}/${progress.total})"
+                    } else {
+                        "Canceled"
+                    }
+                    progress.failed > 0 && progress.completed == 0 -> buildString {
+                        append("${progress.failed}/${progress.total} failed")
+                        if (progress.skipped > 0) {
+                            append(", ${progress.skipped} already saved")
+                        }
+                    }
+                    progress.failed > 0 -> buildString {
+                        append("${progress.completed}/${progress.total} saved, ${progress.failed} failed")
+                        if (progress.skipped > 0) {
+                            append(", ${progress.skipped} already saved")
+                        }
+                    }
+                    else -> buildString {
+                        append("${progress.completed}/${progress.total} saved")
+                        if (progress.skipped > 0) {
+                            append(", ${progress.skipped} already saved")
+                        }
+                    }
                 }
                 if (
                     currentTransfer.isDownloading == progress.isRunning &&
                     currentTransfer.batchDownloadTotal == progress.total &&
                     currentTransfer.batchDownloadCurrent == processed &&
-                    currentTransfer.downloadProgress == nextProgressLabel
+                    currentTransfer.downloadProgress == nextProgressLabel &&
+                    currentTransfer.backgroundTransferRunning == progress.isRunning &&
+                    currentTransfer.backgroundTransferTotal == progress.total &&
+                    currentTransfer.backgroundTransferCurrent == processed &&
+                    currentTransfer.backgroundTransferProgress == nextProgressLabel
                 ) {
                     return@onEach
                 }
@@ -6846,8 +7152,15 @@ class MainViewModel(
                         batchDownloadTotal = progress.total,
                         batchDownloadCurrent = processed,
                         downloadProgress = nextProgressLabel,
+                        backgroundTransferRunning = progress.isRunning,
+                        backgroundTransferTotal = progress.total,
+                        backgroundTransferCurrent = processed,
+                        backgroundTransferProgress = nextProgressLabel,
                     ),
                 ) }
+                if (!progress.isRunning) {
+                    resumeSessionKeepAliveAfterWifiTransfer()
+                }
                 if (!progress.isRunning && progress.total > 0 && (currentTransfer.isDownloading || currentTransfer.batchDownloadTotal > 0)) {
                     scanDownloadedFiles()
                     // Post-process: write geotag EXIF to batch-downloaded JPEGs
@@ -7594,6 +7907,15 @@ class MainViewModel(
         }
     }
 
+    private fun isUsablePropertyDesc(desc: CameraPropertyDesc?): Boolean {
+        return desc != null && (desc.currentValue.isNotBlank() || desc.enumValues.isNotEmpty())
+    }
+
+    private fun isTransientCameraPropFailure(error: Throwable?): Boolean {
+        val message = error?.message.orEmpty()
+        return "520" in message || "503" in message
+    }
+
     private fun updateTransferThumbnails(
         results: List<Pair<String, Bitmap>>,
         overwriteExisting: Boolean,
@@ -8153,6 +8475,7 @@ class MainViewModel(
         pendingAutoImportMarkerSsid = _uiState.value.selectedCameraSsid
 
         D.transfer("startAutoImportFromImages: starting background download of ${toDownload.size} images")
+        prepareWifiTransferPipeline()
         dev.dblink.core.download.ImageDownloadService.startDownload(
             getApplication<Application>(),
             toDownload,
@@ -8165,6 +8488,10 @@ class MainViewModel(
                 isDownloading = true,
                 batchDownloadTotal = toDownload.size,
                 batchDownloadCurrent = 0,
+                backgroundTransferRunning = true,
+                backgroundTransferProgress = "Auto-importing ${toDownload.size} images...",
+                backgroundTransferTotal = toDownload.size,
+                backgroundTransferCurrent = 0,
                 downloadProgress = "Auto-importing ${toDownload.size} images...",
             ),
         ) }

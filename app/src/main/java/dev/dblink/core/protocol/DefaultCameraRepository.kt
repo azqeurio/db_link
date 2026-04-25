@@ -11,6 +11,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
+import java.io.OutputStream
 import java.text.SimpleDateFormat
 import javax.xml.parsers.DocumentBuilderFactory
 import java.util.Date
@@ -24,6 +25,10 @@ class DefaultCameraRepository(
     private val fallback: FakeCameraRepository = FakeCameraRepository(config),
 ) : CameraRepository {
     private val gateway = CameraHttpGateway(baseUrl = config.cameraBaseUrl)
+
+    fun cancelPendingTransfers() {
+        gateway.cancelPendingTransferCalls()
+    }
 
     override fun initialWorkspace(): CameraWorkspace = fallback.initialWorkspace()
 
@@ -392,11 +397,7 @@ class DefaultCameraRepository(
 
     override suspend fun getPropertyDesc(propName: String): Result<CameraPropertyDesc> = withContext(Dispatchers.IO) {
         D.proto("Getting property desc for $propName")
-        gateway.getText(
-            path = "/get_camprop.cgi",
-            query = mapOf("com" to "desc", "propname" to propName),
-            timeoutMillis = config.readTimeoutMs,
-        ).map { responseXml ->
+        getCameraPropertyDescText(propName).map { responseXml ->
             val parsed = parsePropertyDescXml(responseXml)
             val currentValue = parsed.currentValue
             val attribute = parsed.attribute
@@ -417,15 +418,42 @@ class DefaultCameraRepository(
 
     override suspend fun getPropertyDescList(): Result<Map<String, CameraPropertyDesc>> = withContext(Dispatchers.IO) {
         D.proto("Getting property desc list")
-        gateway.getText(
-            path = "/get_camprop.cgi",
-            query = mapOf("com" to "desc", "propname" to "desclist"),
-            timeoutMillis = config.readTimeoutMs,
-        ).map { responseXml ->
+        getCameraPropertyDescText("desclist").map { responseXml ->
             parsePropertyDescListXml(responseXml)
         }.onFailure {
             D.err("PROTO", "Failed to get property desc list", it)
         }
+    }
+
+    private suspend fun getCameraPropertyDescText(propName: String): Result<String> {
+        var lastResult: Result<String>? = null
+        repeat(PROPERTY_DESC_MAX_ATTEMPTS) { attempt ->
+            val result = gateway.getText(
+                path = "/get_camprop.cgi",
+                query = mapOf("com" to "desc", "propname" to propName),
+                timeoutMillis = config.readTimeoutMs,
+            )
+            if (result.isSuccess) {
+                return result
+            }
+            lastResult = result
+            val shouldRetry = attempt < PROPERTY_DESC_MAX_ATTEMPTS - 1 &&
+                isTransientPropertyDescFailure(result.exceptionOrNull())
+            if (!shouldRetry) {
+                return result
+            }
+            D.proto(
+                "Retrying property desc for $propName after transient failure: " +
+                    result.exceptionOrNull()?.message,
+            )
+            delay(PROPERTY_DESC_RETRY_DELAY_MS)
+        }
+        return lastResult ?: Result.failure(IllegalStateException("Failed to get property desc for $propName"))
+    }
+
+    private fun isTransientPropertyDescFailure(error: Throwable?): Boolean {
+        val message = error?.message.orEmpty()
+        return "HTTP 520" in message || "HTTP 503" in message
     }
 
     override suspend fun setTakeMode(modeValue: String): Result<String> = withContext(Dispatchers.IO) {
@@ -584,11 +612,25 @@ class DefaultCameraRepository(
         D.transfer("Downloading full image ${image.fileName} (${image.fileSize} bytes)")
         gateway.getBytes(
             path = image.fullPath,
-            timeoutMillis = 60000,
+            timeoutMillis = fullImageTimeoutMillis(image.fileSize),
         ).onSuccess {
             D.transfer("Downloaded ${image.fileName}: ${it.size} bytes")
         }.onFailure {
             D.err("TRANSFER", "Failed to download ${image.fileName}", it)
+        }
+    }
+
+    override suspend fun downloadFullImageTo(image: CameraImage, output: OutputStream): Result<Long> = withContext(Dispatchers.IO) {
+        D.transfer("Streaming full image ${image.fileName} (${image.fileSize} bytes)")
+        gateway.copyBytesTo(
+            path = image.fullPath,
+            output = output,
+            timeoutMillis = fullImageTimeoutMillis(image.fileSize),
+        ).onSuccess { bytesCopied ->
+            val sizeLabel = if (bytesCopied >= 0L) bytesCopied.toString() else "unknown"
+            D.transfer("Streamed ${image.fileName}: $sizeLabel bytes")
+        }.onFailure {
+            D.err("TRANSFER", "Failed to stream ${image.fileName}", it)
         }
     }
 
@@ -1045,5 +1087,21 @@ class DefaultCameraRepository(
         val pointX = match.groupValues.getOrNull(1)?.toIntOrNull() ?: return null
         val pointY = match.groupValues.getOrNull(2)?.toIntOrNull() ?: return null
         return pointX to pointY
+    }
+
+    private fun fullImageTimeoutMillis(fileSize: Long): Int {
+        if (fileSize <= 0L) {
+            return 60_000
+        }
+        val extraTimeout = ((fileSize + FULL_IMAGE_TIMEOUT_STEP_BYTES - 1L) / FULL_IMAGE_TIMEOUT_STEP_BYTES) * 4_000L
+        return (60_000L + extraTimeout)
+            .coerceAtMost(180_000L)
+            .toInt()
+    }
+
+    private companion object {
+        private const val PROPERTY_DESC_RETRY_DELAY_MS = 250L
+        private const val PROPERTY_DESC_MAX_ATTEMPTS = 2
+        private const val FULL_IMAGE_TIMEOUT_STEP_BYTES = 4L * 1024L * 1024L
     }
 }

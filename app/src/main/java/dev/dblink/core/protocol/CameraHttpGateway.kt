@@ -1,7 +1,10 @@
 package dev.dblink.core.protocol
 
 import dev.dblink.core.logging.D
+import java.io.OutputStream
 import java.net.Proxy
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import okhttp3.Call
@@ -15,6 +18,10 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 class CameraHttpGateway(
     baseUrl: String = CameraProtocolCatalog.BaseUrl,
 ) {
+    private companion object {
+        const val STREAM_COPY_BUFFER_BYTES = 256 * 1024
+    }
+
     private val baseHttpUrl = baseUrl.toHttpUrl()
     private val baseClient = OkHttpClient.Builder()
         .retryOnConnectionFailure(true)
@@ -35,6 +42,7 @@ class CameraHttpGateway(
      * unblocks the socket immediately.
      */
     private val activePropertyCall = AtomicReference<Call?>(null)
+    private val activeTransferCalls = Collections.newSetFromMap(ConcurrentHashMap<Call, Boolean>())
 
     /**
      * Cancel any in-flight property-change call.
@@ -47,6 +55,16 @@ class CameraHttpGateway(
             D.http("CANCEL previous in-flight property call: ${prev.request().url}")
             prev.cancel()
         }
+    }
+
+    fun cancelPendingTransferCalls() {
+        activeTransferCalls.toList().forEach { call ->
+            if (!call.isCanceled()) {
+                D.http("CANCEL in-flight transfer call: ${call.request().url}")
+                call.cancel()
+            }
+        }
+        activeTransferCalls.clear()
     }
 
     fun getText(
@@ -93,6 +111,46 @@ class CameraHttpGateway(
         }
     }.onFailure {
         D.err("HTTP", "GET(bytes) EXCEPTION: $path", it)
+    }
+
+    fun copyBytesTo(
+        path: String,
+        output: OutputStream,
+        query: Map<String, String> = emptyMap(),
+        timeoutMillis: Int = 6_000,
+    ): Result<Long> {
+        var call: Call? = null
+        return runCatching {
+            val url = buildUrl(path, query)
+            D.http("GET(stream) $url timeout=${timeoutMillis}ms")
+            val startTime = System.currentTimeMillis()
+            val request = Request.Builder()
+                .url(buildUrl(path, query))
+                .get()
+                .build()
+            val requestCall = clientFor(timeoutMillis).newCall(request)
+            call = requestCall
+            activeTransferCalls += requestCall
+            requestCall.execute().use { response ->
+                val elapsed = System.currentTimeMillis() - startTime
+                D.http("GET(stream) $path -> ${response.code} in ${elapsed}ms")
+                if (!response.isSuccessful) {
+                    D.err("HTTP", "GET(stream) FAILED: $path -> HTTP ${response.code}")
+                }
+                check(response.isSuccessful) { "Camera request failed with HTTP ${response.code}." }
+                val body = checkNotNull(response.body) { "Camera returned an empty response body." }
+                body.byteStream().use { input ->
+                    input.copyTo(output, STREAM_COPY_BUFFER_BYTES)
+                }
+                val copiedBytes = body.contentLength().takeIf { it >= 0L } ?: -1L
+                D.http("GET(stream) $path -> ${copiedBytes.takeIf { it >= 0L } ?: "unknown"} bytes")
+                copiedBytes
+            }
+        }.onFailure {
+            D.err("HTTP", "GET(stream) EXCEPTION: $path", it)
+        }.also {
+            call?.let(activeTransferCalls::remove)
+        }
     }
 
     fun postText(

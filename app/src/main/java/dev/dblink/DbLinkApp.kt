@@ -530,6 +530,7 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                         transferState = uiState.transferState,
                                         onLoadImages = viewModel::loadCameraImages,
                                         onDownloadImage = viewModel::downloadImage,
+                                        onCancelDownload = viewModel::cancelBackgroundDownload,
                                         onDeleteImage = viewModel::deleteImage,
                                         onSelectImage = viewModel::selectImage,
                                         onToggleSelection = viewModel::toggleImageSelection,

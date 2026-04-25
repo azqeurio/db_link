@@ -2,6 +2,7 @@ package dev.dblink.core.protocol
 
 import dev.dblink.core.model.CameraWorkspace
 import dev.dblink.core.model.ConnectMode
+import java.io.OutputStream
 
 /** Describes a camera property with its current value and list of possible values. */
 data class CameraPropertyDesc(
@@ -55,6 +56,7 @@ interface CameraRepository {
     suspend fun getResizedImageWithErr(image: CameraImage, width: Int = 1024): Result<ByteArray>
     suspend fun getResizedImage(image: CameraImage, width: Int = 1024): Result<ByteArray>
     suspend fun getFullImage(image: CameraImage): Result<ByteArray>
+    suspend fun downloadFullImageTo(image: CameraImage, output: OutputStream): Result<Long>
     suspend fun getPlayTargetSlot(): Result<Int>
     suspend fun setPlayTargetSlot(slot: Int): Result<Int>
     suspend fun deleteImage(image: CameraImage): Result<String>
