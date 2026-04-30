@@ -61,16 +61,37 @@ data class OmCaptureUsbLibraryItem(
     val hasThumbnail: Boolean,
 )
 
+enum class UsbTetheringProfile(val preferenceValue: String) {
+    Om("om"),
+    Olympus("olympus"),
+    ;
+
+    companion object {
+        fun fromPreferenceValue(value: String?): UsbTetheringProfile {
+            return entries.firstOrNull { it.preferenceValue == value } ?: Om
+        }
+    }
+}
+
+enum class UsbSessionDomain {
+    Control,
+    Transfer,
+}
+
 class OmCaptureUsbManager(
     context: Context,
 ) : AutoCloseable {
     private companion object {
-        const val CAPTURE_OBJECT_TIMEOUT_MS = 15_000L
+        const val CAPTURE_OBJECT_TIMEOUT_MS = 20_000L
+        const val CAPTURE_OBJECT_PROGRESS_EXTENSION_MS = 10_000L
+        const val CAPTURE_OBJECT_TIMEOUT_MAX_MS = 40_000L
         const val CAPTURE_COLLECTION_TIMEOUT_MS = 4_000L
         const val CAPTURE_COMPLETE_GRACE_MS = 800L
         const val CAPTURE_FALLBACK_RECENT_WINDOW_MS = 15_000L
         const val CAPTURE_FALLBACK_HANDLE_SCAN_LIMIT = 96
         const val SPECIFIC_HANDLE_PAIR_SCAN_LIMIT = 32
+        const val RAW_COMPANION_RETRY_ATTEMPTS = 4
+        const val RAW_COMPANION_RETRY_DELAY_MS = 350L
         const val EVENT_POLL_TIMEOUT_MS = 500
         const val EXTENDED_EVENT_POLL_TIMEOUT_MS = 180
         const val EXTENDED_EVENT_FALLBACK_MISS_THRESHOLD = 3
@@ -83,6 +104,7 @@ class OmCaptureUsbManager(
         const val SESSION_POST_PC_MODE_SETTLE_MS = 220L
         const val SESSION_POST_PC_MODE_REOPEN_DELAY_MS = 700L
         const val SESSION_STORAGE_RETRY_DELAY_MS = 180L
+        const val CAPTURE_MODE_DIAL_EVENT_PROP = 0xD062
         // Some bodies confirm preview readiness via an event callback, while
         // others also succeed with fixed-size frame polling during startup.
         const val LIVE_VIEW_READY_EVENT_TIMEOUT_MS = 4_000L
@@ -121,8 +143,10 @@ class OmCaptureUsbManager(
         const val ISO_SPEED_OM1_FALLBACK_PROP = 0xD005
         const val PERMISSION_TIMEOUT_MS = 15_000L
         const val USB_DISCOVERY_SETTLE_TIMEOUT_MS = 3_000L
+        const val USB_DISCOVERY_REENUMERATION_TIMEOUT_MS = 10_000L
         const val USB_DISCOVERY_POLL_INTERVAL_MS = 250L
         const val RAW_PAIR_WINDOW_MS = 1_500L
+        const val USB_LIBRARY_THUMBNAIL_TIMEOUT_MS = 2_500
     }
 
     private val appContext = context.applicationContext
@@ -138,11 +162,15 @@ class OmCaptureUsbManager(
     @Volatile
     private var isClosed = false
     @Volatile
+    private var usbTetheringProfile = UsbTetheringProfile.Om
+    @Volatile
     private var activeOperationId: Long = 0L
     @Volatile
     private var eventEndpointUnreliable = false
     @Volatile
     private var pureFallbackLiveViewPolling = false
+    @Volatile
+    private var lastCaptureWaitSawProgressEvent = false
     @Volatile
     private var cameraControlOffRecoveryJob: Job? = null
     private var lifecycleReceiverRegistered = false
@@ -164,12 +192,58 @@ class OmCaptureUsbManager(
     @Volatile
     var isLiveViewActive: Boolean = false
         private set
+    @Volatile
+    private var expectedUsbReenumerationUntilMs = 0L
+    @Volatile
+    private var preferredSessionDomain = UsbSessionDomain.Control
 
     val usbLiveViewFrame: SharedFlow<Bitmap> = _usbLiveViewFrame.asSharedFlow()
     private val _cameraEvents = MutableSharedFlow<OmCaptureUsbCameraEvent>(extraBufferCapacity = 8)
     val cameraEvents: SharedFlow<OmCaptureUsbCameraEvent> = _cameraEvents.asSharedFlow()
 
     val runtimeState: StateFlow<OmCaptureUsbRuntimeState> = _runtimeState.asStateFlow()
+
+    fun setUsbTetheringProfile(profile: UsbTetheringProfile) {
+        if (usbTetheringProfile == profile) return
+        usbTetheringProfile = profile
+        clearCachedInitDeviceInfo()
+        clearCachedMtpWarmupSnapshot()
+        usbLog("USB tethering profile updated to ${profile.preferenceValue}; cached bootstrap metadata cleared")
+    }
+
+    fun requestSessionDomain(domain: UsbSessionDomain, reason: String) {
+        val previousDomain = preferredSessionDomain
+        preferredSessionDomain = domain
+        if (previousDomain == domain) {
+            return
+        }
+        transferCandidateCache.clear()
+        usbLog("USB session domain changed $previousDomain -> $domain reason=$reason")
+        val active = currentActiveSession()
+        if (active != null && active.domain != domain) {
+            if (shouldAllowCrossDomainReuse(reason, active.domain, domain)) {
+                synchronized(sessionLock) {
+                    if (activeSession === active) {
+                        activeSession = active.copy(domain = domain)
+                    }
+                }
+                usbLog(
+                    "Keeping OM camera USB/PTP session open for $reason " +
+                        "and re-labeling domain ${active.domain} -> $domain",
+                )
+            } else if (_runtimeState.value.isBusy) {
+                usbLog(
+                    "USB session domain switch deferred until idle because " +
+                        "${active.domain} session is busy",
+                )
+            } else {
+                closeActiveSession("session-domain-switch:$reason:${active.domain}->${domain}")
+            }
+        }
+    }
+
+    fun preferredSessionDomain(): UsbSessionDomain = preferredSessionDomain
+
     @Volatile
     private var monitorCaptureEventsDuringLiveView = false
 
@@ -221,6 +295,7 @@ class OmCaptureUsbManager(
                     val device = extractUsbDevice(intent) ?: return
                     if (!isCandidateUsbDevice(device)) return
                     attachSeenAtMs[device.deviceId] = SystemClock.elapsedRealtime()
+                    expectedUsbReenumerationUntilMs = 0L
                     usbLog("USB attach detected for ${device.deviceName}; awaiting explicit tether selection")
                     if (currentActiveSession() == null) {
                         updateRuntimeState(
@@ -292,13 +367,16 @@ class OmCaptureUsbManager(
     suspend fun importLatestImage(
         saveMedia: suspend (fileName: String, data: ByteArray) -> OmCaptureUsbSavedMedia,
         importFormat: TetherPhoneImportFormat,
-    ): Result<OmCaptureUsbImportResult> = runSerializedImport(
-        startState = OmCaptureUsbOperationState.WaitObject,
-        startStatus = "Resolving latest OM camera image over USB...",
-        operationKind = OperationKind.ImportLatest,
-        saveMedia = saveMedia,
-        selectionBlock = { active -> latestSelection(active, importFormat) },
-    )
+    ): Result<OmCaptureUsbImportResult> {
+        return runSerializedImport(
+            startState = OmCaptureUsbOperationState.WaitObject,
+            startStatus = "Resolving latest OM camera image over USB...",
+            operationKind = OperationKind.ImportLatest,
+            saveMedia = saveMedia,
+            selectionBlock = { active -> latestSelection(active, importFormat) },
+            resumeLiveViewAfter = true,
+        )
+    }
 
     suspend fun importObjectHandle(
         handle: Int,
@@ -319,37 +397,195 @@ class OmCaptureUsbManager(
         saveMedia: suspend (fileName: String, data: ByteArray) -> OmCaptureUsbSavedMedia,
         importFormat: TetherPhoneImportFormat,
         keepLiveViewVisible: Boolean = false,
+        relatedHandlesHint: Set<Int> = emptySet(),
     ): Result<OmCaptureUsbImportResult?> = withContext(Dispatchers.IO) {
         runCatching {
-            val keepPresentation = keepLiveViewVisible && isLiveViewActive
-            val pausedLiveView = keepPresentation &&
-                pauseLiveViewTransport("auto-import handle ${handle.toUsbHex()}")
+            val preserveControlSession =
+                keepLiveViewVisible ||
+                    isLiveViewActive ||
+                    preferredSessionDomain == UsbSessionDomain.Control
+            if (!preserveControlSession) {
+                requestSessionDomain(UsbSessionDomain.Transfer, "auto-import-handle")
+            } else {
+                usbLog(
+                    "Keeping current OM camera control session for auto-import handle=${handle.toUsbHex()} " +
+                        "to match the single-session event->download flow used by libgphoto2",
+                )
+            }
+            val resumeLiveViewAfter =
+                keepLiveViewVisible &&
+                    isLiveViewActive &&
+                    !preserveControlSession
+            withOptionalLiveViewTransportPause("auto-import handle ${handle.toUsbHex()}") {
+                try {
+                    operationMutex.withLock {
+                        ensureManagerOpen()
+                        activeOperationId = operationIdCounter.incrementAndGet()
+                        val active = connectOrReuseSession(OperationKind.ImportHandle.name)
+                        updateRuntimeState(
+                            nextState = OmCaptureUsbOperationState.WaitObject,
+                            statusLabel = "Importing OM camera capture ${handle.toUsbHex()} to the phone...",
+                        ) { state ->
+                            state.copy(summary = active.summary, canRetry = false)
+                        }
 
-            try {
+                        try {
+                            val requested = loadTransferCandidate(active, handle)
+                                ?: throw IllegalStateException(
+                                    "The OM camera reported object ${handle.toUsbHex()}, but its metadata could not be read.",
+                                )
+                            val selection = selectAutoImportTransferForExactHandle(
+                                active = active,
+                                requested = requested,
+                                importFormat = importFormat,
+                                relatedHandlesHint = relatedHandlesHint,
+                            )
+                            if (selection == null) {
+                                usbLog(
+                                    "Skipping OM camera auto-import handle=${handle.toUsbHex()} " +
+                                        "file=${requested.fileName} formatPref=${importFormat.preferenceValue}",
+                                )
+                                return@withLock null
+                            }
+                            val primaryDownload = downloadCandidate(
+                                active = active,
+                                candidate = selection.primary,
+                                fetchThumbnail = false,
+                            )
+                            val companionDownload = selection.companionRaw?.let { raw ->
+                                runCatching { downloadCandidate(active, raw, fetchThumbnail = false) }
+                                    .onFailure { throwable ->
+                                        D.err("USB", "Companion RAW download failed for ${raw.fileName}", throwable)
+                                    }
+                                    .getOrNull()
+                            }
+                            saveImportResult(
+                                active = active,
+                                operationKind = OperationKind.ImportHandle,
+                                primaryDownload = primaryDownload,
+                                companionDownload = companionDownload,
+                                relatedHandles = selection.relatedHandles,
+                                saveMedia = saveMedia,
+                            )
+                        } catch (throwable: Throwable) {
+                            handleOperationFailure(throwable)
+                            throw throwable
+                        }
+                    }
+                } finally {
+                    if (resumeLiveViewAfter) {
+                        restoreLiveViewAfterTransfer("auto-import handle ${handle.toUsbHex()}")
+                    } else if (keepLiveViewVisible && preserveControlSession) {
+                        usbLog(
+                            "Skipping USB live view restart after auto-import handle=${handle.toUsbHex()} " +
+                                "because the current control session stayed alive, matching OM Capture/libgphoto2 flow",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun loadLibraryItems(): Result<List<OmCaptureUsbLibraryItem>> = withContext(Dispatchers.IO) {
+        runCatching {
+            requestSessionDomain(UsbSessionDomain.Transfer, "library-list")
+            withOptionalLiveViewTransportPause("usb library load") {
+                operationMutex.withLock {
+                    ensureManagerOpen()
+                    val active = connectOrReuseSession("library-list")
+                    val handles = enumerateObjectHandles(active)
+                    usbLog("USB library enumerated ${handles.size} object handles")
+                    val activeHandleSet = handles.toSet()
+                    transferCandidateCache.keys
+                        .filterNot { it in activeHandleSet }
+                        .forEach(transferCandidateCache::remove)
+                    handles
+                        .mapNotNull { handle -> loadTransferCandidate(active, handle) }
+                        .sortedWith(transferCandidateComparator)
+                        .map { candidate -> candidate.toLibraryItem() }
+                }
+            }
+        }
+    }
+
+    suspend fun loadLibraryThumbnail(handle: Int): Result<ByteArray?> = withContext(Dispatchers.IO) {
+        runCatching {
+            requestSessionDomain(UsbSessionDomain.Transfer, "library-thumb")
+            withOptionalLiveViewTransportPause("usb library thumbnail ${handle.toUsbHex()}") {
+                operationMutex.withLock {
+                    ensureManagerOpen()
+                    val active = connectOrReuseSession("library-thumb")
+                    active.session.getThumb(
+                        handle = handle,
+                        timeoutMs = USB_LIBRARY_THUMBNAIL_TIMEOUT_MS,
+                    ).getOrNull()?.takeIf { it.isNotEmpty() }?.also { bytes ->
+                        usbLog(
+                            "USB library thumbnail end handle=${handle.toUsbHex()} bytes=${bytes.size}",
+                        )
+                        return@withLock bytes
+                    }
+                    null
+                }
+            }
+        }
+    }
+
+    suspend fun loadLibraryPreview(handle: Int): Result<ByteArray> = withContext(Dispatchers.IO) {
+        runCatching {
+            requestSessionDomain(UsbSessionDomain.Transfer, "library-preview")
+            withOptionalLiveViewTransportPause("usb library preview ${handle.toUsbHex()}") {
+                operationMutex.withLock {
+                    ensureManagerOpen()
+                    val active = connectOrReuseSession("library-preview")
+                    val candidate = loadTransferCandidate(active, handle)
+                        ?: throw IllegalStateException(
+                            "The OM camera object ${handle.toUsbHex()} is no longer available.",
+                        )
+                    if (candidate.info.hasThumbnail) {
+                        active.session.getThumb(
+                            handle = candidate.handle,
+                            timeoutMs = USB_LIBRARY_THUMBNAIL_TIMEOUT_MS,
+                        ).getOrElse { throwable ->
+                            throw IllegalStateException(
+                                "Failed to load preview for ${candidate.fileName}: " +
+                                    "${throwable.message ?: "preview transfer failed"}",
+                                throwable,
+                            )
+                        }
+                    } else {
+                        active.session.getObject(candidate.handle).getOrElse { throwable ->
+                            throw IllegalStateException(
+                                "Failed to load preview for ${candidate.fileName}: " +
+                                    "${throwable.message ?: "preview transfer failed"}",
+                                throwable,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun importLibraryHandle(
+        handle: Int,
+        saveMedia: suspend (fileName: String, data: ByteArray) -> OmCaptureUsbSavedMedia,
+        importFormat: TetherPhoneImportFormat = TetherPhoneImportFormat.JpegOnly,
+    ): Result<OmCaptureUsbImportResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            requestSessionDomain(UsbSessionDomain.Transfer, "library-import")
+            withOptionalLiveViewTransportPause("usb library import ${handle.toUsbHex()}") {
                 operationMutex.withLock {
                     ensureManagerOpen()
                     activeOperationId = operationIdCounter.incrementAndGet()
                     val active = connectOrReuseSession(OperationKind.ImportHandle.name)
                     updateRuntimeState(
                         nextState = OmCaptureUsbOperationState.WaitObject,
-                        statusLabel = "Importing OM camera capture ${handle.toUsbHex()} to the phone...",
+                        statusLabel = "Importing ${handle.toUsbHex()} from OM camera...",
                     ) { state ->
                         state.copy(summary = active.summary, canRetry = false)
                     }
-
                     try {
-                        val requested = loadTransferCandidate(active, handle)
-                            ?: throw IllegalStateException(
-                                "The OM camera reported object ${handle.toUsbHex()}, but its metadata could not be read.",
-                            )
-                        val selection = selectAutoImportTransferForExactHandle(active, requested, importFormat)
-                        if (selection == null) {
-                            usbLog(
-                                "Skipping OM camera auto-import handle=${handle.toUsbHex()} " +
-                                    "file=${requested.fileName} formatPref=${importFormat.preferenceValue}",
-                            )
-                            return@withLock null
-                        }
+                        val selection = specificHandleSelection(active, handle, importFormat)
                         val primaryDownload = downloadCandidate(
                             active = active,
                             candidate = selection.primary,
@@ -375,181 +611,44 @@ class OmCaptureUsbManager(
                         throw throwable
                     }
                 }
-            } finally {
-                if (pausedLiveView) {
-                    resumeLiveViewTransport("auto-import handle ${handle.toUsbHex()}")
-                }
-            }
-        }
-    }
-
-    suspend fun loadLibraryItems(): Result<List<OmCaptureUsbLibraryItem>> = withContext(Dispatchers.IO) {
-        runCatching {
-            withOptionalLiveViewTransportPause("usb library load") {
-                operationMutex.withLock {
-                    ensureManagerOpen()
-                    val active = connectOrReuseSession("library-list")
-                    val handles = enumerateObjectHandles(active)
-                    usbLog("USB library enumerated ${handles.size} object handles")
-                    val activeHandleSet = handles.toSet()
-                    transferCandidateCache.keys
-                        .filterNot { it in activeHandleSet }
-                        .forEach(transferCandidateCache::remove)
-                    handles
-                        .mapNotNull { handle -> loadTransferCandidate(active, handle) }
-                        .sortedWith(transferCandidateComparator)
-                        .map { candidate -> candidate.toLibraryItem() }
-                }
-            }
-        }
-    }
-
-    suspend fun loadLibraryThumbnail(handle: Int): Result<ByteArray?> = withContext(Dispatchers.IO) {
-        runCatching {
-            withOptionalLiveViewTransportPause("usb library thumbnail ${handle.toUsbHex()}") {
-                operationMutex.withLock {
-                    ensureManagerOpen()
-                    val active = connectOrReuseSession("library-thumb")
-                    active.session.getThumb(handle).getOrNull()?.takeIf { it.isNotEmpty() }?.also { bytes ->
-                        usbLog(
-                            "USB library thumbnail end handle=${handle.toUsbHex()} bytes=${bytes.size}",
-                        )
-                        return@withLock bytes
-                    }
-                    val candidate = loadTransferCandidate(active, handle)
-                        ?: throw IllegalStateException(
-                            "The OM camera object ${handle.toUsbHex()} is no longer available.",
-                        )
-                    if (!candidate.info.hasThumbnail) {
-                        return@withLock null
-                    }
-                    usbLog(
-                        "USB library thumbnail retry file=${candidate.fileName} " +
-                            "handle=${candidate.handle.toUsbHex()}",
-                    )
-                    active.session.getThumb(candidate.handle).getOrElse { throwable ->
-                        throw IllegalStateException(
-                            "Failed to load thumbnail for ${candidate.fileName}: " +
-                                "${throwable.message ?: "thumbnail transfer failed"}",
-                            throwable,
-                        )
-                    }.also { bytes ->
-                        usbLog(
-                            "USB library thumbnail end file=${candidate.fileName} " +
-                                "handle=${candidate.handle.toUsbHex()} bytes=${bytes.size}",
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    suspend fun loadLibraryPreview(handle: Int): Result<ByteArray> = withContext(Dispatchers.IO) {
-        runCatching {
-            withOptionalLiveViewTransportPause("usb library preview ${handle.toUsbHex()}") {
-                operationMutex.withLock {
-                    ensureManagerOpen()
-                    val active = connectOrReuseSession("library-preview")
-                    val candidate = loadTransferCandidate(active, handle)
-                        ?: throw IllegalStateException(
-                            "The OM camera object ${handle.toUsbHex()} is no longer available.",
-                        )
-                    if (candidate.info.hasThumbnail) {
-                        active.session.getThumb(candidate.handle).getOrElse { throwable ->
-                            throw IllegalStateException(
-                                "Failed to load preview for ${candidate.fileName}: " +
-                                    "${throwable.message ?: "preview transfer failed"}",
-                                throwable,
-                            )
-                        }
-                    } else {
-                        active.session.getObject(candidate.handle).getOrElse { throwable ->
-                            throw IllegalStateException(
-                                "Failed to load preview for ${candidate.fileName}: " +
-                                    "${throwable.message ?: "preview transfer failed"}",
-                                throwable,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    suspend fun importLibraryHandle(
-        handle: Int,
-        saveMedia: suspend (fileName: String, data: ByteArray) -> OmCaptureUsbSavedMedia,
-    ): Result<OmCaptureUsbImportResult> = withContext(Dispatchers.IO) {
-        runCatching {
-            withOptionalLiveViewTransportPause("usb library import ${handle.toUsbHex()}") {
-                operationMutex.withLock {
-                    ensureManagerOpen()
-                    activeOperationId = operationIdCounter.incrementAndGet()
-                    val active = connectOrReuseSession(OperationKind.ImportHandle.name)
-                    updateRuntimeState(
-                        nextState = OmCaptureUsbOperationState.WaitObject,
-                        statusLabel = "Importing ${handle.toUsbHex()} from OM camera...",
-                    ) { state ->
-                        state.copy(summary = active.summary, canRetry = false)
-                    }
-                    try {
-                        val requested = loadTransferCandidate(active, handle)
-                            ?: throw IllegalStateException(
-                                "The OM camera object ${handle.toUsbHex()} is no longer available.",
-                            )
-                        val primaryDownload = downloadCandidate(
-                            active = active,
-                            candidate = requested,
-                            fetchThumbnail = false,
-                        )
-                        saveImportResult(
-                            active = active,
-                            operationKind = OperationKind.ImportHandle,
-                            primaryDownload = primaryDownload,
-                            companionDownload = null,
-                            relatedHandles = setOf(requested.handle),
-                            saveMedia = saveMedia,
-                        )
-                    } catch (throwable: Throwable) {
-                        handleOperationFailure(throwable)
-                        throw throwable
-                    }
-                }
             }
         }
     }
 
     suspend fun captureToCameraStorage(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            if (isLiveViewActive) {
-                usbLog("Pausing USB live view for capture-only")
-                stopUsbLiveView()
-            }
-            operationMutex.withLock {
-                ensureManagerOpen()
-                activeOperationId = operationIdCounter.incrementAndGet()
-                val active = connectOrReuseSession(OperationKind.CaptureOnly.name)
-                updateRuntimeState(
-                    nextState = OmCaptureUsbOperationState.Capturing,
-                    statusLabel = "Triggering OM camera shutter over USB...",
-                ) { state ->
-                    state.copy(summary = active.summary, canRetry = false)
-                }
-                try {
-                    val selection = captureSelection(active, TetherPhoneImportFormat.JpegAndRaw)
+            requestSessionDomain(UsbSessionDomain.Control, "capture-to-camera-storage")
+            withOptionalLiveViewTransportPause("capture-only") {
+                operationMutex.withLock {
+                    ensureManagerOpen()
+                    activeOperationId = operationIdCounter.incrementAndGet()
+                    val active = connectOrReuseSession(OperationKind.CaptureOnly.name)
                     updateRuntimeState(
-                        nextState = OmCaptureUsbOperationState.Complete,
-                        statusLabel = "Captured ${selection.primary.fileName} to camera storage",
+                        nextState = OmCaptureUsbOperationState.Capturing,
+                        statusLabel = "Triggering OM camera shutter over USB...",
                     ) { state ->
-                        state.copy(
-                            summary = active.summary,
-                            lastActionLabel = "Saved to SD card: ${selection.primary.fileName}",
-                            canRetry = false,
-                        )
+                        state.copy(summary = active.summary, canRetry = false)
                     }
-                } catch (throwable: Throwable) {
-                    handleOperationFailure(throwable)
-                    throw throwable
+                    try {
+                        val selection = captureSelection(
+                            active = active,
+                            importFormat = TetherPhoneImportFormat.JpegOnly,
+                            strictImportExpectation = false,
+                        )
+                        updateRuntimeState(
+                            nextState = OmCaptureUsbOperationState.Complete,
+                            statusLabel = "Captured ${selection.primary.fileName} to camera storage",
+                        ) { state ->
+                            state.copy(
+                                summary = active.summary,
+                                lastActionLabel = "Saved to SD card: ${selection.primary.fileName}",
+                                canRetry = false,
+                            )
+                        }
+                    } catch (throwable: Throwable) {
+                        handleOperationFailure(throwable)
+                        throw throwable
+                    }
                 }
             }
         }
@@ -562,7 +661,7 @@ class OmCaptureUsbManager(
         label = "capture+import",
         iterations = iterations,
     ) {
-        captureAndImportLatestImage(saveMedia, TetherPhoneImportFormat.JpegAndRaw).getOrThrow()
+        captureAndImportLatestImage(saveMedia, TetherPhoneImportFormat.JpegOnly).getOrThrow()
     }
 
     suspend fun runDebugStressImportLoop(
@@ -572,7 +671,7 @@ class OmCaptureUsbManager(
         label = "import-latest",
         iterations = iterations,
     ) {
-        importLatestImage(saveMedia, TetherPhoneImportFormat.JpegAndRaw).getOrThrow()
+        importLatestImage(saveMedia, TetherPhoneImportFormat.JpegOnly).getOrThrow()
     }
 
     fun clearRuntimeState() {
@@ -649,6 +748,7 @@ class OmCaptureUsbManager(
      */
     suspend fun refreshCameraProperties(includeExtras: Boolean = true): Result<CameraPropertiesSnapshot> = withContext(Dispatchers.IO) {
         runCatching {
+            requestSessionDomain(UsbSessionDomain.Control, "property-refresh")
             val paused = pauseLiveViewTransport("property-refresh")
             try {
                 operationMutex.withLock {
@@ -668,6 +768,7 @@ class OmCaptureUsbManager(
         propCodes: Set<Int>,
     ): Result<CameraPropertiesSnapshot> = withContext(Dispatchers.IO) {
         runCatching {
+            requestSessionDomain(UsbSessionDomain.Control, "property-refresh-subset")
             if (propCodes.isEmpty()) {
                 return@runCatching _cameraProperties.value
             }
@@ -697,6 +798,7 @@ class OmCaptureUsbManager(
      */
     suspend fun setCameraProperty(propCode: Int, value: Long): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
+            requestSessionDomain(UsbSessionDomain.Control, "property-set")
             val paused = pauseLiveViewTransport("property-set")
             try {
                 operationMutex.withLock {
@@ -742,6 +844,7 @@ class OmCaptureUsbManager(
      */
     suspend fun manualFocusDrive(steps: Int): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
+            requestSessionDomain(UsbSessionDomain.Control, "mf-drive")
             val paused = pauseLiveViewTransport("mf-drive")
             try {
                 operationMutex.withLock {
@@ -756,13 +859,14 @@ class OmCaptureUsbManager(
     }
 
     /**
-     * Trigger capture while keeping live view active.
-     * Pauses live view transport during capture, then resumes.
+     * Trigger capture while restoring the live-view presentation afterward.
+     * OM Capture / libgphoto2 serialize preview and capture traffic instead of
+     * overlapping them on one Olympus PTP session.
      */
     suspend fun captureWhileLiveView(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val paused = pauseLiveViewTransport("capture")
-            try {
+            requestSessionDomain(UsbSessionDomain.Control, "capture-live-view")
+            withOptionalLiveViewTransportPause("capture-live-view") {
                 operationMutex.withLock {
                     ensureManagerOpen()
                     activeOperationId = operationIdCounter.incrementAndGet()
@@ -773,7 +877,11 @@ class OmCaptureUsbManager(
                     ) { state ->
                         state.copy(summary = active.summary, canRetry = false)
                     }
-                    val selection = captureSelection(active, TetherPhoneImportFormat.JpegAndRaw)
+                    val selection = captureSelection(
+                        active = active,
+                        importFormat = TetherPhoneImportFormat.JpegOnly,
+                        strictImportExpectation = false,
+                    )
                     updateRuntimeState(
                         nextState = OmCaptureUsbOperationState.Complete,
                         statusLabel = "Captured ${selection.primary.fileName}",
@@ -786,14 +894,13 @@ class OmCaptureUsbManager(
                     }
                     usbLog("Capture during live view completed with ${selection.primary.fileName}")
                 }
-            } finally {
-                if (paused) resumeLiveViewTransport("capture")
             }
         }
     }
 
     suspend fun touchFocus(encodedArea: Long): Result<TouchFocusResult> = withContext(Dispatchers.IO) {
         runCatching {
+            requestSessionDomain(UsbSessionDomain.Control, "touch-focus")
             val activeBefore = currentActiveSession()
                 ?: throw IllegalStateException("USB camera is not connected")
             drainPendingEvents(activeBefore)
@@ -899,7 +1006,7 @@ class OmCaptureUsbManager(
             flashMode = readPropertyIfSupported(active, PtpConstants.OlympusProp.FlashMode, "Flash", supported),
             driveMode = readPropertyIfSupported(active, PtpConstants.OlympusProp.DriveMode, "Drive Mode", supported),
             imageQuality = readPropertyIfSupported(active, PtpConstants.OlympusProp.ImageQuality, "Image Quality", supported),
-            exposureMode = readPropertyIfSupported(active, PtpConstants.OlympusProp.ExposureMode, "Exposure Mode", supported),
+            exposureMode = readExposureModePropertyIfSupported(active, supported),
             extraProperties = extraProperties,
         )
     }
@@ -940,6 +1047,25 @@ class OmCaptureUsbManager(
         return null
     }
 
+    private fun readExposureModePropertyIfSupported(
+        active: ActiveSession,
+        supported: Set<Int>,
+    ): CameraPropertyState? {
+        val candidates = listOf(
+            PtpConstants.Prop.ExposureProgramMode,
+            PtpConstants.OlympusProp.ExposureMode,
+        )
+        candidates.forEach { candidate ->
+            readPropertyIfReachable(
+                active = active,
+                propCode = candidate,
+                label = olympusUsbPropertyLabel(candidate),
+                supported = supported,
+            )?.let { return it }
+        }
+        return null
+    }
+
     private fun refreshCameraPropertiesSubset(
         active: ActiveSession,
         existing: CameraPropertiesSnapshot,
@@ -948,12 +1074,24 @@ class OmCaptureUsbManager(
         var nextSnapshot = existing
         val supported = active.info.devicePropertiesSupported
         propCodes.forEach { propCode ->
-            val refreshed = readPropertyIfSupported(
-                active = active,
-                propCode = propCode,
-                label = olympusUsbPropertyLabel(propCode),
-                supported = supported,
-            )
+            val refreshed = if (
+                propCode == PtpConstants.Prop.ExposureProgramMode ||
+                propCode == PtpConstants.OlympusProp.ExposureMode
+            ) {
+                readPropertyIfReachable(
+                    active = active,
+                    propCode = propCode,
+                    label = olympusUsbPropertyLabel(propCode),
+                    supported = supported,
+                )
+            } else {
+                readPropertyIfSupported(
+                    active = active,
+                    propCode = propCode,
+                    label = olympusUsbPropertyLabel(propCode),
+                    supported = supported,
+                )
+            }
             nextSnapshot = nextSnapshot.withUpdatedProperty(propCode, refreshed)
         }
         return nextSnapshot
@@ -990,7 +1128,9 @@ class OmCaptureUsbManager(
         propCodes.forEach { propCode ->
             expanded += propCode
             when (propCode) {
+                PtpConstants.Prop.ExposureProgramMode,
                 PtpConstants.OlympusProp.ExposureMode -> expanded += listOf(
+                    PtpConstants.Prop.ExposureProgramMode,
                     PtpConstants.OlympusProp.ExposureMode,
                     PtpConstants.OlympusProp.ShutterSpeed,
                     PtpConstants.OlympusProp.Aperture,
@@ -1008,11 +1148,13 @@ class OmCaptureUsbManager(
                     PtpConstants.OlympusProp.FocusDistance,
                     PtpConstants.OlympusProp.AFResult,
                 )
-                // Body mode changes emit 0xD062 before the session often falls out
-                // of PC control (0xC105 CameraControlOff). Refresh the exposure set
-                // from the next safe session rather than treating D084 as a UI prop;
-                // D084 is RecView/live-view state and is handled separately.
+                // Olympus bodies use 0xD062 as a state-transition hint around
+                // exposure-mode changes and capture progress. Re-read the actual
+                // exposure props (D01D/500E) instead of treating D062 itself as
+                // a UI-facing mode property. D084 is RecView/live-view state and
+                // is handled separately.
                 MODE_DIAL_EVENT_PROP -> expanded += listOf(
+                    PtpConstants.Prop.ExposureProgramMode,
                     PtpConstants.OlympusProp.ExposureMode,
                     PtpConstants.OlympusProp.ShutterSpeed,
                     PtpConstants.OlympusProp.Aperture,
@@ -1039,12 +1181,13 @@ class OmCaptureUsbManager(
             PtpConstants.OlympusProp.ImageQuality,
             PtpConstants.OlympusProp.WhiteBalance,
             PtpConstants.OlympusProp.FlashMode,
+            PtpConstants.Prop.ExposureProgramMode,
             PtpConstants.OlympusProp.ExposureMode,
             PtpConstants.OlympusProp.AFTargetArea,
             PtpConstants.OlympusProp.FocusDistance,
             PtpConstants.OlympusProp.AFResult,
-            // OM-1 body mode changes surface on 0xD062. D084 is RecView/live-view
-            // state and should stay on the manager's internal live-view path.
+            // Surface 0xD062 as a state-change hint so the UI can re-read the
+            // actual mode props (D01D/500E). D084 remains internal live-view state.
             MODE_DIAL_EVENT_PROP,
             -> true
             else -> shouldExposeUsbScpExtraProperty(propCode)
@@ -1069,7 +1212,9 @@ class OmCaptureUsbManager(
             PtpConstants.OlympusProp.FlashMode -> copy(flashMode = property, extraProperties = cleanedExtras)
             PtpConstants.OlympusProp.DriveMode -> copy(driveMode = property, extraProperties = cleanedExtras)
             PtpConstants.OlympusProp.ImageQuality -> copy(imageQuality = property, extraProperties = cleanedExtras)
-            PtpConstants.OlympusProp.ExposureMode -> copy(exposureMode = property, extraProperties = cleanedExtras)
+            PtpConstants.Prop.ExposureProgramMode,
+            PtpConstants.OlympusProp.ExposureMode,
+            -> copy(exposureMode = property, extraProperties = cleanedExtras)
             else -> copy(
                 extraProperties = if (property == null) {
                     cleanedExtras
@@ -1089,6 +1234,20 @@ class OmCaptureUsbManager(
         supported: Set<Int>,
     ): CameraPropertyState? {
         if (propCode !in supported) return null
+        return readPropertyIfReachable(
+            active = active,
+            propCode = propCode,
+            label = label,
+            supported = supported,
+        )
+    }
+
+    private fun readPropertyIfReachable(
+        active: ActiveSession,
+        propCode: Int,
+        label: String,
+        supported: Set<Int>,
+    ): CameraPropertyState? {
         return try {
             val desc = active.session.getDevicePropDesc(propCode).getOrNull()
             if (desc != null) {
@@ -1169,48 +1328,55 @@ class OmCaptureUsbManager(
             pureFallbackLiveViewPolling = false
             var endedWithError = false
             try {
-                updateRuntimeState(
-                    nextState = OmCaptureUsbOperationState.Idle,
-                    statusLabel = "Preparing OM camera live view...",
-                ) { state -> state.copy(summary = active.summary, canRetry = false) }
-                val liveViewModeCandidates = resolveLiveViewModeCandidates(active)
-                updateRuntimeState(
-                    nextState = OmCaptureUsbOperationState.Idle,
-                    statusLabel = "Waiting for camera preview readiness...",
-                ) { state -> state.copy(summary = active.summary, canRetry = false) }
-                val skipRecViewCallbackWait = eventEndpointUnreliable
-                if (skipRecViewCallbackWait) {
-                    pureFallbackLiveViewPolling = true
-                    usbLog(
-                        "USB live view: this OM-1 transport already proved its preview callback " +
-                            "path unreliable, so startup is skipping callback wait " +
-                            "and entering fixed-size fallback polling immediately",
+                var activeLiveViewMode: LiveViewModeCandidate?
+                operationMutex.withLock {
+                    ensureManagerOpen()
+                    if (currentActiveSession() !== active || active.transport.isClosed || !active.session.isOpen) {
+                        throw IllegalStateException("USB tether session was lost before live view startup completed.")
+                    }
+                    updateRuntimeState(
+                        nextState = OmCaptureUsbOperationState.Idle,
+                        statusLabel = "Preparing OM camera live view...",
+                    ) { state -> state.copy(summary = active.summary, canRetry = false) }
+                    val liveViewModeCandidates = resolveLiveViewModeCandidates(active)
+                    updateRuntimeState(
+                        nextState = OmCaptureUsbOperationState.Idle,
+                        statusLabel = "Waiting for camera preview readiness...",
+                    ) { state -> state.copy(summary = active.summary, canRetry = false) }
+                    val skipRecViewCallbackWait = eventEndpointUnreliable
+                    if (skipRecViewCallbackWait) {
+                        pureFallbackLiveViewPolling = true
+                        usbLog(
+                            "USB live view: this OM-1 transport already proved its preview callback " +
+                                "path unreliable, so startup is skipping callback wait " +
+                                "and entering fixed-size fallback polling immediately",
+                        )
+                    }
+                    val preparedRecView = prepareUsbLiveView(
+                        active = active,
+                        liveViewModeCandidate = liveViewModeCandidates.firstOrNull(),
+                        waitForRecView = !skipRecViewCallbackWait,
                     )
-                }
-                val preparedRecView = prepareUsbLiveView(
-                    active = active,
-                    liveViewModeCandidate = liveViewModeCandidates.firstOrNull(),
-                    waitForRecView = !skipRecViewCallbackWait,
-                )
-                val recViewReady = !skipRecViewCallbackWait && preparedRecView
-                if (!recViewReady) {
-                    pureFallbackLiveViewPolling = true
-                    usbLog(
-                        "Preview readiness was not confirmed during startup; " +
-                            "falling back to fixed-size live-view polling",
+                    val recViewReady = !skipRecViewCallbackWait && preparedRecView
+                    if (!recViewReady) {
+                        pureFallbackLiveViewPolling = true
+                        usbLog(
+                            "Preview readiness was not confirmed during startup; " +
+                                "falling back to fixed-size live-view polling",
+                        )
+                    }
+                    val bootstrap = bootstrapUsbLiveViewFrame(
+                        active = active,
+                        liveViewModeCandidates = liveViewModeCandidates,
+                        recViewReadyInitially = recViewReady,
                     )
+                    activeLiveViewMode = bootstrap.modeCandidate
+                    emitLiveViewFrame(bootstrap.frame)
+                    updateRuntimeState(
+                        nextState = OmCaptureUsbOperationState.Idle,
+                        statusLabel = "USB live view active",
+                    ) { state -> state.copy(summary = active.summary, canRetry = false) }
                 }
-                val bootstrap = bootstrapUsbLiveViewFrame(
-                    active = active,
-                    liveViewModeCandidates = liveViewModeCandidates,
-                    recViewReadyInitially = recViewReady,
-                )
-                val activeLiveViewMode = bootstrap.modeCandidate
-                emitLiveViewFrame(bootstrap.frame)
-                updateRuntimeState(
-                    nextState = OmCaptureUsbOperationState.Idle,
-                    statusLabel = "USB live view active",
-                ) { state -> state.copy(summary = active.summary, canRetry = false) }
 
                 var consecutiveErrors = 0
                 var consecutiveEmptyFrames = 0
@@ -1227,7 +1393,16 @@ class OmCaptureUsbManager(
                         continue
                     }
 
-                    val frameResult = active.session.getLiveViewFrame()
+                    val frameResult = operationMutex.withLock {
+                        ensureManagerOpen()
+                        if (currentActiveSession() !== active || active.transport.isClosed || !active.session.isOpen) {
+                            Result.failure(
+                                IllegalStateException("USB tether session was lost during live view frame fetch."),
+                            )
+                        } else {
+                            active.session.getLiveViewFrame()
+                        }
+                    }
                     if (frameResult.isSuccess) {
                         val rawData = frameResult.getOrThrow()
                         consecutiveErrors = 0
@@ -2108,7 +2283,23 @@ class OmCaptureUsbManager(
         resumeLiveViewAfter: Boolean = false,
     ): Result<OmCaptureUsbImportResult> = withContext(Dispatchers.IO) {
         runCatching {
-            val pausedLiveView = isLiveViewActive &&
+            val liveViewWasActive = isLiveViewActive
+            val activeBefore = currentActiveSession()
+            val preserveControlSession =
+                operationKind.sessionDomain == UsbSessionDomain.Transfer &&
+                    liveViewWasActive &&
+                    activeBefore?.domain == UsbSessionDomain.Control &&
+                    !activeBefore.transport.isClosed &&
+                    activeBefore.session.isOpen
+            if (!preserveControlSession) {
+                requestSessionDomain(operationKind.sessionDomain, "serialized-import-${operationKind.name}")
+            } else {
+                usbLog(
+                    "Keeping current OM camera control session for ${operationKind.name} " +
+                        "to match libgphoto2's same-session ObjectAdded/GetObject flow",
+                )
+            }
+            val pausedLiveView = liveViewWasActive &&
                 pauseLiveViewTransport(operationKind.name)
             try {
                 operationMutex.withLock {
@@ -2146,7 +2337,85 @@ class OmCaptureUsbManager(
                 if (pausedLiveView) {
                     resumeLiveViewTransport(operationKind.name)
                 }
+                if (
+                    resumeLiveViewAfter &&
+                    liveViewWasActive &&
+                    operationKind.sessionDomain == UsbSessionDomain.Transfer &&
+                    !preserveControlSession
+                ) {
+                    restoreLiveViewAfterTransfer(operationKind.name)
+                } else if (
+                    resumeLiveViewAfter &&
+                    liveViewWasActive &&
+                    operationKind.sessionDomain == UsbSessionDomain.Transfer &&
+                    preserveControlSession
+                ) {
+                    usbLog(
+                        "Skipping USB live view restart after ${operationKind.name} " +
+                            "because the current control session stayed alive, matching libgphoto2 flow",
+                    )
+                }
             }
+        }
+    }
+
+    private suspend fun importFromTransferHandle(
+        handle: Int,
+        importFormat: TetherPhoneImportFormat,
+        operationKind: OperationKind,
+        startStatus: String,
+        saveMedia: suspend (fileName: String, data: ByteArray) -> OmCaptureUsbSavedMedia,
+    ): OmCaptureUsbImportResult {
+        requestSessionDomain(UsbSessionDomain.Transfer, "transfer-handle-${operationKind.name}")
+        return operationMutex.withLock {
+            ensureManagerOpen()
+            val active = connectOrReuseSession("${operationKind.name}-transfer")
+            updateRuntimeState(
+                nextState = OmCaptureUsbOperationState.WaitObject,
+                statusLabel = startStatus,
+            ) { state ->
+                state.copy(summary = active.summary, canRetry = false)
+            }
+
+            try {
+                val selection = specificHandleSelection(active, handle, importFormat)
+                val primaryDownload = downloadCandidate(active, selection.primary, fetchThumbnail = true)
+                val companionDownload = selection.companionRaw?.let { raw ->
+                    runCatching { downloadCandidate(active, raw, fetchThumbnail = false) }
+                        .onFailure { throwable ->
+                            D.err("USB", "Companion RAW download failed for ${raw.fileName}", throwable)
+                        }
+                        .getOrNull()
+                }
+                saveImportResult(
+                    active = active,
+                    operationKind = operationKind,
+                    primaryDownload = primaryDownload,
+                    companionDownload = companionDownload,
+                    relatedHandles = selection.relatedHandles,
+                    saveMedia = saveMedia,
+                )
+            } catch (throwable: Throwable) {
+                handleOperationFailure(throwable)
+                throw throwable
+            }
+        }
+    }
+
+    private suspend fun restoreLiveViewAfterTransfer(reason: String) {
+        runCatching {
+            requestSessionDomain(UsbSessionDomain.Control, "resume-live-view-$reason")
+            operationMutex.withLock {
+                ensureManagerOpen()
+                connectOrReuseSession("resume-live-view-$reason")
+            }
+            if (isLiveViewActive) {
+                usbLog("Stopping stale USB live view before resume reason=$reason")
+                stopUsbLiveView()
+            }
+            startUsbLiveView()
+        }.onFailure { throwable ->
+            D.err("USB", "Failed to restore USB live view after transfer ($reason)", throwable)
         }
     }
 
@@ -2176,6 +2445,7 @@ class OmCaptureUsbManager(
     private suspend fun captureSelection(
         active: ActiveSession,
         importFormat: TetherPhoneImportFormat,
+        strictImportExpectation: Boolean = true,
     ): TransferSelection {
         ensureSessionAlive(active)
         drainPendingEvents(active)
@@ -2215,6 +2485,7 @@ class OmCaptureUsbManager(
         )
 
         val handles = linkedSetOf<Int>()
+        lastCaptureWaitSawProgressEvent = false
         val firstObjectAdded = try {
             awaitFreshObjectAdded(
                 active = active,
@@ -2223,7 +2494,14 @@ class OmCaptureUsbManager(
             )
         } catch (timeout: ObjectAddedTimeoutException) {
             // Fallback for when event endpoint doesn't deliver ObjectAdded
-            return fallbackSelectionAfterCaptureTimeout(active, handlesBefore, captureStartMillis, timeout, importFormat)
+            return fallbackSelectionAfterCaptureTimeout(
+                active = active,
+                handlesBefore = handlesBefore,
+                captureStartMillis = captureStartMillis,
+                timeout = timeout,
+                importFormat = importFormat,
+                strictImportExpectation = strictImportExpectation,
+            )
         }
         eventEndpointUnreliable = false
         handles += firstObjectAdded.param(0)
@@ -2288,24 +2566,50 @@ class OmCaptureUsbManager(
                 "Capture completed, but the OM camera did not report a valid JPEG or RAW image handle.",
             )
         }
-        return chooseTransferSelection(candidates, importFormat)
+        val imageFormatExpectation = resolveImageFormatExpectation(active)
+        return awaitExpectedTransferSelectionIfNeeded(
+            active = active,
+            selection = chooseTransferSelection(
+                candidates = candidates,
+                importFormat = importFormat,
+                imageFormatExpectation = imageFormatExpectation,
+            ),
+            importFormat = importFormat,
+            reason = "capture-selection",
+            imageFormatExpectation = imageFormatExpectation,
+            strictImportExpectation = strictImportExpectation,
+        )
     }
 
-    private fun fallbackSelectionAfterCaptureTimeout(
+    private suspend fun fallbackSelectionAfterCaptureTimeout(
         active: ActiveSession,
         handlesBefore: Set<Int>,
         captureStartMillis: Long,
         timeout: ObjectAddedTimeoutException,
         importFormat: TetherPhoneImportFormat,
+        strictImportExpectation: Boolean,
     ): TransferSelection {
-        eventEndpointUnreliable = true
+        eventEndpointUnreliable = !lastCaptureWaitSawProgressEvent
         usbLog("ObjectAdded timeout hit; entering controlled storage fallback")
-        D.err("USB", "Interrupt endpoint marked unreliable after ObjectAdded timeout", timeout)
+        if (eventEndpointUnreliable) {
+            D.err("USB", "Interrupt endpoint marked unreliable after ObjectAdded timeout", timeout)
+        } else {
+            usbLog(
+                "ObjectAdded arrived too late, but Olympus capture progress events were observed; " +
+                    "keeping interrupt endpoint marked reliable",
+            )
+        }
         updateRuntimeState(
             nextState = OmCaptureUsbOperationState.WaitObject,
             statusLabel = "ObjectAdded timed out; checking camera storage for a new capture...",
         )
-        val handlesAfter = enumerateObjectHandles(active)
+        val fallbackActive = if (currentActiveSession() === active && !active.transport.isClosed && active.session.isOpen) {
+            active
+        } else {
+            usbLog("Capture fallback needs a fresh OM camera session before scanning for new objects")
+            connectOrReuseSession("capture-timeout-fallback")
+        }
+        val handlesAfter = enumerateObjectHandles(fallbackActive)
         val newHandles = handlesAfter.filterNot { it in handlesBefore }
         usbLog(
             "Fallback handle scan before=${handlesBefore.size} after=${handlesAfter.size} " +
@@ -2313,13 +2617,25 @@ class OmCaptureUsbManager(
         )
 
         val newCandidates = newHandles.mapNotNull { handle ->
-            loadTransferCandidate(active, handle)
+            loadTransferCandidate(fallbackActive, handle)
         }
         if (newCandidates.isNotEmpty()) {
             usbLog("Fallback selected from newly discovered handles only")
-            return logFallbackSelection(
-                selection = chooseTransferSelection(newCandidates, importFormat),
-                previousLatestTimestamp = latestKnownTimestamp(active, handlesBefore),
+            val imageFormatExpectation = resolveImageFormatExpectation(fallbackActive)
+            return awaitExpectedTransferSelectionIfNeeded(
+                active = fallbackActive,
+                selection = logFallbackSelection(
+                    selection = chooseTransferSelection(
+                        candidates = newCandidates,
+                        importFormat = importFormat,
+                        imageFormatExpectation = imageFormatExpectation,
+                    ),
+                    previousLatestTimestamp = latestKnownTimestamp(fallbackActive, handlesBefore),
+                ),
+                importFormat = importFormat,
+                reason = "capture-timeout-new-handles",
+                imageFormatExpectation = imageFormatExpectation,
+                strictImportExpectation = strictImportExpectation,
             )
         }
 
@@ -2328,7 +2644,7 @@ class OmCaptureUsbManager(
             addAll(handlesAfter.takeLast(CAPTURE_FALLBACK_HANDLE_SCAN_LIMIT))
         }.toList()
         val recentCandidates = fallbackHandleWindow
-            .mapNotNull { handle -> loadTransferCandidate(active, handle) }
+            .mapNotNull { handle -> loadTransferCandidate(fallbackActive, handle) }
             .filter { candidate ->
                 val timestamp = candidate.info.preferredTimestampMillis ?: return@filter false
                 timestamp >= captureStartMillis - CAPTURE_FALLBACK_RECENT_WINDOW_MS
@@ -2338,9 +2654,21 @@ class OmCaptureUsbManager(
                 "Fallback selected from recent timestamps within ${CAPTURE_FALLBACK_RECENT_WINDOW_MS}ms " +
                     "of capture start using ${fallbackHandleWindow.size} recent handles",
             )
-            return logFallbackSelection(
-                selection = chooseTransferSelection(recentCandidates, importFormat),
-                previousLatestTimestamp = latestKnownTimestamp(active, handlesBefore),
+            val imageFormatExpectation = resolveImageFormatExpectation(fallbackActive)
+            return awaitExpectedTransferSelectionIfNeeded(
+                active = fallbackActive,
+                selection = logFallbackSelection(
+                    selection = chooseTransferSelection(
+                        candidates = recentCandidates,
+                        importFormat = importFormat,
+                        imageFormatExpectation = imageFormatExpectation,
+                    ),
+                    previousLatestTimestamp = latestKnownTimestamp(fallbackActive, handlesBefore),
+                ),
+                importFormat = importFormat,
+                reason = "capture-timeout-recent-handles",
+                imageFormatExpectation = imageFormatExpectation,
+                strictImportExpectation = strictImportExpectation,
             )
         }
 
@@ -2374,7 +2702,9 @@ class OmCaptureUsbManager(
         knownHandles: Set<Int>,
         timeoutMs: Long,
     ): PtpContainer {
-        val deadline = System.currentTimeMillis() + timeoutMs
+        val waitStartedAt = System.currentTimeMillis()
+        var deadline = waitStartedAt + timeoutMs
+        val maxDeadline = waitStartedAt + CAPTURE_OBJECT_TIMEOUT_MAX_MS
         while (System.currentTimeMillis() < deadline) {
             val remainingMs = (deadline - System.currentTimeMillis()).coerceAtLeast(1L)
             val event = awaitEventOrNull(
@@ -2383,6 +2713,12 @@ class OmCaptureUsbManager(
                     PtpConstants.Evt.ObjectAdded,
                     PtpConstants.Evt.RequestObjectTransfer,
                     PtpConstants.OlympusEvt.ObjectAdded,
+                    PtpConstants.OlympusEvt.CreateRecView,
+                    PtpConstants.OlympusEvt.AfFrame,
+                    PtpConstants.OlympusEvt.DirectStoreImage,
+                    PtpConstants.OlympusEvt.DevicePropChanged,
+                    PtpConstants.OlympusEvt.ImageTransferFinish,
+                    PtpConstants.OlympusEvt.ImageRecordFinish,
                     // Also accept CameraControlOff so we can abort early
                     // instead of waiting the full timeout when the camera drops out.
                     PtpConstants.OlympusEvt.CameraControlOff,
@@ -2400,12 +2736,41 @@ class OmCaptureUsbManager(
                 )
             }
 
+            if (isCaptureProgressEvent(event)) {
+                lastCaptureWaitSawProgressEvent = true
+                val now = System.currentTimeMillis()
+                val extendedDeadline = minOf(maxDeadline, now + CAPTURE_OBJECT_PROGRESS_EXTENSION_MS)
+                if (extendedDeadline > deadline) {
+                    deadline = extendedDeadline
+                }
+                usbLog(
+                    "Observed Olympus capture progress code=${event.code.toUsbHex()} " +
+                        "param0=${event.param(0)?.toUsbHex() ?: "n/a"}; " +
+                        "extending ObjectAdded wait to ${deadline - now}ms",
+                )
+                continue
+            }
+
+            if (!isCaptureHandleEvent(event)) {
+                usbLog(
+                    "Ignoring non-object capture event code=${event.code.toUsbHex()} " +
+                        "param0=${event.param(0)?.toUsbHex() ?: "n/a"} while waiting for ObjectAdded",
+                )
+                continue
+            }
+
             val handle = event.param(0)
-                ?: throw IllegalStateException("Camera reported ObjectAdded without an object handle.")
+            if (handle == null || handle == 0) {
+                usbLog(
+                    "Ignoring capture handle event code=${event.code.toUsbHex()} " +
+                        "because it did not carry a usable object handle",
+                )
+                continue
+            }
             if (handle !in knownHandles) {
                 usbLog(
                     "Accepted capture handle=${handle.toUsbHex()} code=${event.code.toUsbHex()} for op=$activeOperationId " +
-                        "after ${System.currentTimeMillis() - (deadline - timeoutMs)}ms",
+                        "after ${System.currentTimeMillis() - waitStartedAt}ms",
                 )
                 return event
             }
@@ -2414,7 +2779,39 @@ class OmCaptureUsbManager(
         throw ObjectAddedTimeoutException("Timed out waiting for ObjectAdded after USB capture.")
     }
 
-    private fun latestSelection(
+    private fun isCaptureHandleEvent(event: PtpContainer): Boolean {
+        return when (event.code) {
+            PtpConstants.Evt.ObjectAdded,
+            PtpConstants.Evt.RequestObjectTransfer,
+            PtpConstants.OlympusEvt.ObjectAdded,
+            -> true
+
+            else -> false
+        }
+    }
+
+    private fun isCaptureProgressEvent(event: PtpContainer): Boolean {
+        return when (event.code) {
+            PtpConstants.OlympusEvt.CreateRecView,
+            PtpConstants.OlympusEvt.AfFrame,
+            PtpConstants.OlympusEvt.DirectStoreImage,
+            PtpConstants.OlympusEvt.ImageTransferFinish,
+            PtpConstants.OlympusEvt.ImageRecordFinish,
+            -> true
+
+            PtpConstants.OlympusEvt.DevicePropChanged -> when (event.param(0)) {
+                LIVE_VIEW_REC_VIEW_STATE_PROP,
+                CAPTURE_MODE_DIAL_EVENT_PROP,
+                -> true
+
+                else -> false
+            }
+
+            else -> false
+        }
+    }
+
+    private suspend fun latestSelection(
         active: ActiveSession,
         importFormat: TetherPhoneImportFormat,
     ): TransferSelection {
@@ -2434,10 +2831,21 @@ class OmCaptureUsbManager(
         if (candidates.isEmpty()) {
             throw IllegalStateException("No JPEG or ORF images were found on the connected OM camera.")
         }
-        return chooseTransferSelection(candidates, importFormat)
+        val imageFormatExpectation = resolveImageFormatExpectation(active)
+        return awaitExpectedTransferSelectionIfNeeded(
+            active = active,
+            selection = chooseTransferSelection(
+                candidates = candidates,
+                importFormat = importFormat,
+                imageFormatExpectation = imageFormatExpectation,
+            ),
+            importFormat = importFormat,
+            reason = "latest-selection",
+            imageFormatExpectation = imageFormatExpectation,
+        )
     }
 
-    private fun specificHandleSelection(
+    private suspend fun specificHandleSelection(
         active: ActiveSession,
         handle: Int,
         importFormat: TetherPhoneImportFormat,
@@ -2467,7 +2875,18 @@ class OmCaptureUsbManager(
             )
         }.getOrDefault(emptyList())
 
-        val selection = chooseTransferSelection(listOf(requested) + nearbyCandidates, importFormat)
+        val imageFormatExpectation = resolveImageFormatExpectation(active)
+        val selection = awaitExpectedTransferSelectionIfNeeded(
+            active = active,
+            selection = chooseTransferSelection(
+                candidates = listOf(requested) + nearbyCandidates,
+                importFormat = importFormat,
+                imageFormatExpectation = imageFormatExpectation,
+            ),
+            importFormat = importFormat,
+            reason = "specific-handle-${handle.toUsbHex()}",
+            imageFormatExpectation = imageFormatExpectation,
+        )
         usbLog(
             "Selected OM camera object from explicit handle request requested=${handle.toUsbHex()} " +
                 "primary=${selection.primary.fileName} companionRaw=${selection.companionRaw?.fileName ?: "none"} " +
@@ -2515,9 +2934,41 @@ class OmCaptureUsbManager(
         return handles.toList()
     }
 
+    private fun resolveImageFormatExpectation(active: ActiveSession): OlympusImageFormatExpectation? {
+        val liveValue = active.session.getDevicePropValueInt16(PtpConstants.OlympusProp.ImageQuality).getOrNull()
+        val cachedValue = _cameraProperties.value.imageQuality?.currentValue?.toInt()
+        val propValue = liveValue ?: cachedValue
+        return when (propValue) {
+            0x020 -> OlympusImageFormatExpectation(propValue = propValue, logLabel = "RAW(0x020)", jpegEnabled = false, rawEnabled = true)
+            0x101, 0x102, 0x103, 0x104 ->
+                OlympusImageFormatExpectation(
+                    propValue = propValue,
+                    logLabel = "JPEG(${formatOlympusImageQuality(propValue.toLong())})",
+                    jpegEnabled = true,
+                    rawEnabled = false,
+                )
+            0x121, 0x122, 0x123, 0x124 ->
+                OlympusImageFormatExpectation(
+                    propValue = propValue,
+                    logLabel = "JPEG+RAW(${formatOlympusImageQuality(propValue.toLong())})",
+                    jpegEnabled = true,
+                    rawEnabled = true,
+                )
+            else -> {
+                if (propValue != null) {
+                    usbLog(
+                        "OM camera Image Quality value ${propValue.toUsbHex()} is not in the libgphoto2 Olympus table; using filename/object-format fallback",
+                    )
+                }
+                null
+            }
+        }
+    }
+
     private fun chooseTransferSelection(
         candidates: List<TransferCandidate>,
         importFormat: TetherPhoneImportFormat,
+        imageFormatExpectation: OlympusImageFormatExpectation?,
     ): TransferSelection {
         val sorted = candidates.sortedWith(transferCandidateComparator)
         val newest = sorted.first()
@@ -2526,26 +2977,17 @@ class OmCaptureUsbManager(
         }
         val preferredJpeg = pairedCandidates.firstOrNull { it.info.isJpeg }
         val preferredRaw = pairedCandidates.firstOrNull { it.info.isRaw }
-        val primary = when (importFormat) {
-            TetherPhoneImportFormat.JpegOnly -> preferredJpeg ?: preferredRaw ?: newest
-            TetherPhoneImportFormat.RawOnly -> preferredRaw ?: preferredJpeg ?: newest
-            TetherPhoneImportFormat.JpegAndRaw -> preferredJpeg ?: preferredRaw ?: newest
+        val preferredPrimaryKind = preferredPrimaryKind(importFormat, imageFormatExpectation)
+        val primary = when (preferredPrimaryKind) {
+            TransferMediaKind.Jpeg -> preferredJpeg ?: preferredRaw ?: newest
+            TransferMediaKind.Raw -> preferredRaw ?: preferredJpeg ?: newest
         }
-        val companionRaw = when (importFormat) {
-            TetherPhoneImportFormat.JpegAndRaw ->
-                if (primary.info.isJpeg) {
-                    pairedCandidates.firstOrNull { candidate ->
-                        candidate.handle != primary.handle && candidate.info.isRaw && isSameCapture(primary, candidate)
-                    }
-                } else {
-                    null
-                }
-            else -> null
-        }
+        val companionRaw: TransferCandidate? = null
         usbLog(
             "Selected OM camera object primary=${primary.fileName} handle=${primary.handle.toUsbHex()} " +
                 "timestamp=${primary.info.preferredTimestampMillis ?: -1} " +
-                "companionRaw=${companionRaw?.fileName ?: "none"} formatPref=${importFormat.preferenceValue}",
+                "companionRaw=${companionRaw?.fileName ?: "none"} formatPref=${importFormat.preferenceValue} " +
+                "cameraFormat=${imageFormatExpectation?.logLabel ?: "unknown"}",
         )
         return TransferSelection(
             primary = primary,
@@ -2554,16 +2996,23 @@ class OmCaptureUsbManager(
         )
     }
 
-    private fun selectAutoImportTransferForExactHandle(
+    private suspend fun selectAutoImportTransferForExactHandle(
         active: ActiveSession,
         requested: TransferCandidate,
         importFormat: TetherPhoneImportFormat,
+        relatedHandlesHint: Set<Int>,
     ): TransferSelection? {
+        val imageFormatExpectation = resolveImageFormatExpectation(active)
+        val hintedCandidates = relatedHandlesHint
+            .asSequence()
+            .filter { it != requested.handle }
+            .mapNotNull { hintedHandle -> loadTransferCandidate(active, hintedHandle) }
+            .toList()
         val nearbyCandidates = runCatching {
             enumerateObjectHandles(active)
                 .takeLast(SPECIFIC_HANDLE_PAIR_SCAN_LIMIT)
                 .asReversed()
-                .filter { it != requested.handle }
+                .filter { it != requested.handle && it !in relatedHandlesHint }
                 .mapNotNull { nearbyHandle -> loadTransferCandidate(active, nearbyHandle) }
         }.onFailure { throwable ->
             D.err(
@@ -2573,38 +3022,171 @@ class OmCaptureUsbManager(
             )
         }.getOrDefault(emptyList())
 
-        val pairedCandidates = buildList {
-            add(requested)
-            addAll(nearbyCandidates.filter { candidate -> isSameCapture(requested, candidate) })
-        }
-        val preferredJpeg = pairedCandidates.firstOrNull { it.info.isJpeg }
-        val preferredRaw = pairedCandidates.firstOrNull { it.info.isRaw }
-        val primary = when (importFormat) {
-            TetherPhoneImportFormat.JpegOnly -> preferredJpeg ?: return null
-            TetherPhoneImportFormat.RawOnly -> preferredRaw ?: return null
-            TetherPhoneImportFormat.JpegAndRaw -> preferredJpeg ?: preferredRaw ?: requested
-        }
-        val companionRaw = when (importFormat) {
-            TetherPhoneImportFormat.JpegAndRaw ->
-                if (primary.info.isJpeg) {
-                    pairedCandidates.firstOrNull { candidate ->
-                        candidate.handle != primary.handle && candidate.info.isRaw && isSameCapture(primary, candidate)
-                    }
-                } else {
-                    null
-                }
-            else -> null
-        }
+        val selection = awaitExpectedTransferSelectionIfNeeded(
+            active = active,
+            selection = chooseTransferSelection(
+                candidates = listOf(requested) + hintedCandidates + nearbyCandidates,
+                importFormat = importFormat,
+                imageFormatExpectation = imageFormatExpectation,
+            ),
+            importFormat = importFormat,
+            reason = "auto-import-${requested.handle.toUsbHex()}",
+            imageFormatExpectation = imageFormatExpectation,
+        )
         usbLog(
             "Selected OM camera auto-import object requested=${requested.handle.toUsbHex()} " +
-                "primary=${primary.fileName} handle=${primary.handle.toUsbHex()} " +
-                "companionRaw=${companionRaw?.fileName ?: "none"} formatPref=${importFormat.preferenceValue}",
+                "primary=${selection.primary.fileName} handle=${selection.primary.handle.toUsbHex()} " +
+                "companionRaw=${selection.companionRaw?.fileName ?: "none"} " +
+                "hinted=${hintedCandidates.map { it.handle.toUsbHex() }} " +
+                "formatPref=${importFormat.preferenceValue}",
         )
-        return TransferSelection(
-            primary = primary,
-            companionRaw = companionRaw,
-            relatedHandles = pairedCandidates.mapTo(linkedSetOf()) { it.handle },
+        return when (importFormat) {
+            TetherPhoneImportFormat.JpegOnly -> selection.takeIf { it.primary.info.isJpeg }
+            TetherPhoneImportFormat.RawOnly -> selection.takeIf { it.primary.info.isRaw }
+        }
+    }
+
+    private suspend fun awaitExpectedTransferSelectionIfNeeded(
+        active: ActiveSession,
+        selection: TransferSelection,
+        importFormat: TetherPhoneImportFormat,
+        reason: String,
+        imageFormatExpectation: OlympusImageFormatExpectation?,
+        strictImportExpectation: Boolean = true,
+    ): TransferSelection {
+        if (!strictImportExpectation) {
+            return selection
+        }
+        if (selectionSatisfiesExpectation(selection, importFormat, imageFormatExpectation)) {
+            return selection
+        }
+
+        if (!canExpectedTransferSelectionArriveLater(selection, importFormat, imageFormatExpectation)) {
+            ensureSelectionMatchesImportFormat(selection, importFormat, imageFormatExpectation)
+            return selection
+        }
+
+        var bestSelection = selection
+        repeat(RAW_COMPANION_RETRY_ATTEMPTS) { attempt ->
+            val delayMs = RAW_COMPANION_RETRY_DELAY_MS * (attempt + 1)
+            usbLog(
+                "Waiting ${delayMs}ms for expected paired OM camera object(s) of ${bestSelection.primary.fileName} " +
+                    "(attempt ${attempt + 1}/$RAW_COMPANION_RETRY_ATTEMPTS reason=$reason cameraFormat=${imageFormatExpectation?.logLabel ?: "unknown"})",
+            )
+            delay(delayMs)
+            val activeForRetry =
+                if (currentActiveSession() === active && !active.transport.isClosed && active.session.isOpen) {
+                    active
+                } else {
+                    connectOrReuseSession("raw-companion-$reason")
+                }
+            val refreshedCandidates = enumerateObjectHandles(activeForRetry)
+                .takeLast(CAPTURE_FALLBACK_HANDLE_SCAN_LIMIT)
+                .asReversed()
+                .filter { handle -> handle != bestSelection.primary.handle }
+                .mapNotNull { handle -> loadTransferCandidate(activeForRetry, handle) }
+            val refreshedSelection = chooseTransferSelection(
+                candidates = buildList {
+                    add(bestSelection.primary)
+                    bestSelection.companionRaw?.let(::add)
+                    addAll(refreshedCandidates)
+                },
+                importFormat = importFormat,
+                imageFormatExpectation = imageFormatExpectation,
+            )
+            if (selectionSatisfiesExpectation(refreshedSelection, importFormat, imageFormatExpectation)) {
+                usbLog(
+                    "Found delayed OM camera pair completion primary=${refreshedSelection.primary.fileName} " +
+                        "companionRaw=${refreshedSelection.companionRaw?.fileName ?: "none"}",
+                )
+                return refreshedSelection.copy(
+                    relatedHandles = refreshedSelection.relatedHandles + bestSelection.relatedHandles,
+                )
+            }
+            bestSelection = refreshedSelection.copy(
+                relatedHandles = refreshedSelection.relatedHandles + bestSelection.relatedHandles,
+            )
+        }
+
+        usbLog(
+            "Expected OM camera pair completion not found for ${bestSelection.primary.fileName} " +
+                "after delayed retries cameraFormat=${imageFormatExpectation?.logLabel ?: "unknown"}",
         )
+        ensureSelectionMatchesImportFormat(bestSelection, importFormat, imageFormatExpectation)
+        return bestSelection
+    }
+
+    private fun canExpectedTransferSelectionArriveLater(
+        selection: TransferSelection,
+        importFormat: TetherPhoneImportFormat,
+        imageFormatExpectation: OlympusImageFormatExpectation?,
+    ): Boolean {
+        return when (importFormat) {
+            TetherPhoneImportFormat.JpegOnly -> false
+            TetherPhoneImportFormat.RawOnly -> !selection.primary.info.isRaw && imageFormatExpectation?.rawEnabled != false
+        }
+    }
+
+    private fun selectionSatisfiesExpectation(
+        selection: TransferSelection,
+        importFormat: TetherPhoneImportFormat,
+        imageFormatExpectation: OlympusImageFormatExpectation?,
+    ): Boolean {
+        return when (importFormat) {
+            TetherPhoneImportFormat.JpegOnly -> {
+                if (imageFormatExpectation?.jpegEnabled == true) {
+                    selection.primary.info.isJpeg
+                } else {
+                    true
+                }
+            }
+
+            TetherPhoneImportFormat.RawOnly -> selection.primary.info.isRaw
+        }
+    }
+
+    private fun ensureSelectionMatchesImportFormat(
+        selection: TransferSelection,
+        importFormat: TetherPhoneImportFormat,
+        imageFormatExpectation: OlympusImageFormatExpectation?,
+    ) {
+        when (importFormat) {
+            TetherPhoneImportFormat.JpegOnly -> Unit
+            TetherPhoneImportFormat.RawOnly -> {
+                if (!selection.primary.info.isRaw) {
+                    val cameraFormatLabel = imageFormatExpectation?.logLabel ?: "unknown"
+                    throw ImportFormatMismatchException(
+                        "RAW-only import was requested, but the OM camera did not provide a RAW object. " +
+                        "Current camera Image Quality is $cameraFormatLabel.",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun preferredPrimaryKind(
+        importFormat: TetherPhoneImportFormat,
+        imageFormatExpectation: OlympusImageFormatExpectation?,
+    ): TransferMediaKind {
+        val expectsJpeg = imageFormatExpectation?.jpegEnabled == true
+        val expectsRaw = imageFormatExpectation?.rawEnabled == true
+        return when (importFormat) {
+            TetherPhoneImportFormat.JpegOnly -> {
+                if (!expectsJpeg && expectsRaw) {
+                    TransferMediaKind.Raw
+                } else {
+                    TransferMediaKind.Jpeg
+                }
+            }
+
+            TetherPhoneImportFormat.RawOnly -> {
+                if (expectsRaw) {
+                    TransferMediaKind.Raw
+                } else {
+                    TransferMediaKind.Jpeg
+                }
+            }
+        }
     }
 
     private fun isSameCapture(primary: TransferCandidate, companion: TransferCandidate): Boolean {
@@ -2613,13 +3195,17 @@ class OmCaptureUsbManager(
             primary.info.normalizedBaseName == companion.info.normalizedBaseName
         val sameSequence = primary.info.sequenceNumber != 0 &&
             primary.info.sequenceNumber == companion.info.sequenceNumber
+        val sameCaptureIndex = primary.info.captureIndex != null &&
+            primary.info.captureIndex == companion.info.captureIndex
         val sameStorage = primary.info.storageId == companion.info.storageId
         val primaryTimestamp = primary.info.preferredTimestampMillis
         val companionTimestamp = companion.info.preferredTimestampMillis
         val withinPairWindow = primaryTimestamp != null &&
             companionTimestamp != null &&
             abs(primaryTimestamp - companionTimestamp) <= RAW_PAIR_WINDOW_MS
-        return sameBaseName || (withinPairWindow && sameSequence && sameStorage)
+        return sameBaseName ||
+            (sameCaptureIndex && sameStorage) ||
+            (withinPairWindow && sameStorage && (sameSequence || sameCaptureIndex))
     }
 
     private fun loadTransferCandidate(active: ActiveSession, handle: Int): TransferCandidate? {
@@ -2796,14 +3382,14 @@ class OmCaptureUsbManager(
     private fun buildCompleteStatus(operationKind: OperationKind, savedCount: Int): String {
         return when (operationKind) {
             OperationKind.Capture -> {
-                if (savedCount > 1) "USB tethered capture imported (JPEG + RAW)" else "USB tethered capture imported"
+                if (savedCount > 1) "USB tethered capture imported (multiple files)" else "USB tethered capture imported"
             }
             OperationKind.CaptureOnly -> "USB tethered capture saved to camera storage"
             OperationKind.ImportLatest -> {
-                if (savedCount > 1) "Latest USB image imported (JPEG + RAW)" else "Latest USB image imported"
+                if (savedCount > 1) "Latest USB image imported (multiple files)" else "Latest USB image imported"
             }
             OperationKind.ImportHandle -> {
-                if (savedCount > 1) "Camera capture imported to phone (JPEG + RAW)" else "Camera capture imported to phone"
+                if (savedCount > 1) "Camera capture imported to phone (multiple files)" else "Camera capture imported to phone"
             }
         }
     }
@@ -2827,8 +3413,15 @@ class OmCaptureUsbManager(
 
     private suspend fun connectOrReuseSession(reason: String): ActiveSession {
         currentActiveSession()?.let { active ->
-            if (isSessionReusable(active)) {
-                usbLog("Reusing OM camera USB/PTP session for $reason")
+            if (isSessionReusable(active, reason)) {
+                if (active.domain != preferredSessionDomain) {
+                    usbLog(
+                        "Reusing OM camera USB/PTP session for $reason " +
+                            "despite domain mismatch ${active.domain} -> $preferredSessionDomain",
+                    )
+                } else {
+                    usbLog("Reusing OM camera USB/PTP session for $reason")
+                }
                 if (_runtimeState.value.summary == null) {
                     updateRuntimeState(
                         nextState = _runtimeState.value.operationState,
@@ -2847,15 +3440,21 @@ class OmCaptureUsbManager(
         var reusableDeviceInfo = findCachedInitDeviceInfo(device)
         var reusableMtpWarmupSnapshot = findCachedMtpWarmupSnapshot(device)
         for (attempt in 1..SESSION_BOOTSTRAP_MAX_ATTEMPTS) {
+            val bootstrapPlan = selectUsbBootstrapPlan()
             usbLog(
                 "USB/PTP session bootstrap attempt $attempt/$SESSION_BOOTSTRAP_MAX_ATTEMPTS " +
-                    "reason=$reason init=${if (reusableDeviceInfo != null) "cached_device_info" else "fresh_get_device_info"}",
+                    "reason=$reason init=${if (reusableDeviceInfo != null) "cached_device_info" else "fresh_get_device_info"} " +
+                    "bootstrap=${bootstrapPlan.logLabel}",
             )
             val initSession = openFreshTransportForInit(
                 device = device,
                 bundle = bundle,
                 cachedInfo = reusableDeviceInfo,
                 cachedMtpWarmupSnapshot = reusableMtpWarmupSnapshot,
+                allowMtpWarmup = bootstrapPlan.allowMtpWarmup,
+                claimMode = bootstrapPlan.claimMode,
+                initializeTransport = bootstrapPlan.initializeTransport,
+                bootstrapLabel = bootstrapPlan.logLabel,
             )
             var transport = initSession.transport
             var session = initSession.session
@@ -2912,24 +3511,32 @@ class OmCaptureUsbManager(
                         },
                     )
                     if (pcModeWriteSent) {
-                        awaitBootstrapReadyAfterPcModeSwitch(session, info)
-                        delay(SESSION_POST_PC_MODE_SETTLE_MS)
-                        val refreshed = reopenTransportAfterOlympusPcModeSwitch(
-                            device = device,
-                            bundle = bundle,
-                            cachedMtpWarmupSnapshot = reusableMtpWarmupSnapshot,
-                            staleTransport = transport,
-                        )
-                        transport = refreshed.transport
-                        session = refreshed.session
-                        info = refreshed.info
-                        reusableDeviceInfo = refreshed.info
-                        reusableMtpWarmupSnapshot = refreshed.mtpWarmupSnapshot ?: reusableMtpWarmupSnapshot
-                        rememberCachedInitDeviceInfo(device, refreshed.info)
-                        reusableMtpWarmupSnapshot?.let { rememberCachedMtpWarmupSnapshot(device, it) }
-                        usbLog(
-                            "USB/PTP session init: using fresh transport after Olympus Camera Control handoff",
-                        )
+                        if (shouldReopenTransportAfterOlympusPcModeSwitch()) {
+                            awaitBootstrapReadyAfterPcModeSwitch(session, info)
+                            delay(SESSION_POST_PC_MODE_SETTLE_MS)
+                            val refreshed = reopenTransportAfterOlympusPcModeSwitch(
+                                device = device,
+                                bundle = bundle,
+                                cachedMtpWarmupSnapshot = reusableMtpWarmupSnapshot,
+                                staleTransport = transport,
+                            )
+                            transport = refreshed.transport
+                            session = refreshed.session
+                            info = refreshed.info
+                            reusableDeviceInfo = refreshed.info
+                            reusableMtpWarmupSnapshot = refreshed.mtpWarmupSnapshot ?: reusableMtpWarmupSnapshot
+                            rememberCachedInitDeviceInfo(device, refreshed.info)
+                            reusableMtpWarmupSnapshot?.let { rememberCachedMtpWarmupSnapshot(device, it) }
+                            usbLog(
+                                "USB/PTP session init: using fresh transport after Olympus Camera Control handoff",
+                            )
+                        } else {
+                            usbLog(
+                                "USB/PTP session init: keeping current transport after Olympus PC mode " +
+                                    "switch for profile=${usbTetheringProfile.preferenceValue} " +
+                                    "model=${info.model.ifBlank { device.productName ?: "unknown" }}",
+                            )
+                        }
                     }
                 }
                 val storageIds = probeStorageIdsAfterBootstrap(
@@ -2954,6 +3561,7 @@ class OmCaptureUsbManager(
                     summary = summary,
                     eventChannel = eventChannel,
                     eventJob = eventJob,
+                    domain = preferredSessionDomain,
                 )
                 synchronized(sessionLock) {
                     activeSession = active
@@ -3382,6 +3990,7 @@ class OmCaptureUsbManager(
         allowMtpWarmup: Boolean = true,
         claimMode: PtpUsbConnection.ClaimMode = PtpUsbConnection.ClaimMode.PortableDeviceCompatible,
         initializeTransport: Boolean = false,
+        bootstrapLabel: String = "portable_device",
     ): FreshInitSession {
         var lastFailure: Throwable? = null
 
@@ -3394,18 +4003,20 @@ class OmCaptureUsbManager(
                 } else {
                     usbLog(
                         "PTP init fresh attempt $attempt/$GET_DEVICE_INFO_MAX_ATTEMPTS " +
-                            "skipping framework MTP warmup for post-handoff raw reconnect",
+                            "skipping framework MTP warmup for bootstrap=$bootstrapLabel",
                     )
                 }
                 usbLog(
                     "PTP init fresh attempt $attempt/$GET_DEVICE_INFO_MAX_ATTEMPTS opening transport " +
                         "warmup=${warmupMs}ms timeout=${GET_DEVICE_INFO_RESPONSE_TIMEOUT_MS}ms " +
+                        "bootstrap=$bootstrapLabel " +
                         "frameworkReady=${mtpWarmupSnapshot != null}",
                 )
             } else {
                 usbLog(
                     "PTP init cached-info attempt $attempt/$GET_DEVICE_INFO_MAX_ATTEMPTS opening transport " +
                         "warmup=${warmupMs}ms model=${cachedInfo.model} fw=${cachedInfo.firmwareVersion} " +
+                        "bootstrap=$bootstrapLabel " +
                         "ops=${cachedInfo.operationsSupported.size}",
                 )
             }
@@ -3465,9 +4076,15 @@ class OmCaptureUsbManager(
                     }
                 }
                 if (cachedInfo == null) {
-                    usbLog(
+                    val startupLabel = if (mtpWarmupSnapshot != null) {
                         "PTP init fresh attempt $attempt/$GET_DEVICE_INFO_MAX_ATTEMPTS " +
-                            "using MTP-warmed minimal raw startup before GetDeviceInfo",
+                            "using MTP-warmed minimal raw startup before GetDeviceInfo"
+                    } else {
+                        "PTP init fresh attempt $attempt/$GET_DEVICE_INFO_MAX_ATTEMPTS " +
+                            "using standard raw PTP startup before GetDeviceInfo"
+                    }
+                    usbLog(
+                        startupLabel,
                     )
                 } else {
                     usbLog(
@@ -3560,10 +4177,32 @@ class OmCaptureUsbManager(
         throw failure
     }
 
-    private fun isSessionReusable(active: ActiveSession): Boolean {
+    private fun isSessionReusable(active: ActiveSession, reason: String): Boolean {
         if (isClosed || active.transport.isClosed || !active.session.isOpen) return false
         if (!usbManager.hasPermission(active.device)) return false
+        if (
+            active.domain != preferredSessionDomain &&
+            !shouldAllowCrossDomainReuse(reason, active.domain, preferredSessionDomain)
+        ) {
+            return false
+        }
         return usbManager.deviceList.values.any { device -> device.deviceId == active.device.deviceId }
+    }
+
+    private fun shouldAllowCrossDomainReuse(
+        reason: String,
+        activeDomain: UsbSessionDomain,
+        requestedDomain: UsbSessionDomain,
+    ): Boolean {
+        if (activeDomain == requestedDomain) return true
+        return when {
+            reason == "inspect" -> true
+            reason.startsWith("property-refresh") -> true
+            reason == "touch-focus-readback" -> true
+            reason == "viewmodel-control-mode" -> true
+            reason == "viewmodel-transfer-mode" -> true
+            else -> false
+        }
     }
 
     private fun formatAttachToFirstCommand(device: UsbDevice, firstCommandAtMs: Long): String {
@@ -3667,6 +4306,8 @@ class OmCaptureUsbManager(
             return
         }
         cameraControlOffRecoveryJob = scope.launch {
+            expectedUsbReenumerationUntilMs =
+                SystemClock.elapsedRealtime() + USB_DISCOVERY_REENUMERATION_TIMEOUT_MS
             usbLog(
                 "OM camera reported ${PtpConstants.OlympusEvt.CameraControlOff.toUsbHex()} " +
                     "(CameraControlOff); forcing a clean USB/PTP session reset",
@@ -3839,7 +4480,7 @@ class OmCaptureUsbManager(
             drainedCount += 1
             usbLog(
                 "Drained stale event code=${staleEvent.code.toUsbHex()} " +
-                    "handle=${staleEvent.param(0)?.toUsbHex() ?: "n/a"}",
+                    "param0=${staleEvent.param(0)?.toUsbHex() ?: "n/a"}",
             )
         }
         if (drainedCount > 0) {
@@ -4000,15 +4641,17 @@ class OmCaptureUsbManager(
     }
 
     private suspend fun findCandidateDevice(): UsbDevice {
-        val deadline = SystemClock.elapsedRealtime() + USB_DISCOVERY_SETTLE_TIMEOUT_MS
+        val initialDeadline = SystemClock.elapsedRealtime() + USB_DISCOVERY_SETTLE_TIMEOUT_MS
         var attempt = 0
         while (true) {
             attempt += 1
+            val deadline = maxOf(initialDeadline, expectedUsbReenumerationUntilMs)
             val allDevices = usbManager.deviceList.values.toList()
             val candidates = allDevices.filter { isCandidateUsbDevice(it) }
             val storageModeDevices = allDevices.filter { isLikelyStorageModeDevice(it, allDevices.size) }
             when {
                 candidates.size == 1 -> {
+                    expectedUsbReenumerationUntilMs = 0L
                     if (attempt > 1) {
                         usbLog("USB candidate appeared after ${attempt - 1} discovery wait checks")
                     }
@@ -4017,11 +4660,24 @@ class OmCaptureUsbManager(
                 candidates.size > 1 -> error("Multiple USB cameras are connected. Disconnect extras and try again.")
                 storageModeDevices.isNotEmpty() -> error("Camera is in Storage mode. Switch to PTP/Tether mode.")
                 SystemClock.elapsedRealtime() >= deadline -> error(
-                    "No OM camera detected over USB/PTP. If the camera is connected in storage mode, switch it to PTP/MTP and reconnect.",
+                    if (expectedUsbReenumerationUntilMs > SystemClock.elapsedRealtime()) {
+                        "Waiting for the OM camera to re-enumerate over USB after the body mode changed. " +
+                            "Reconnect the USB cable or try Tether again."
+                    } else {
+                        "No OM camera detected over USB/PTP. If the camera is connected in storage mode, switch it to PTP/MTP and reconnect."
+                    },
                 )
                 else -> {
                     if (attempt == 1) {
-                        usbLog("No USB/PTP candidate yet; waiting for Android USB discovery")
+                        val waitingForReenumeration = expectedUsbReenumerationUntilMs > SystemClock.elapsedRealtime()
+                        if (waitingForReenumeration) {
+                            usbLog(
+                                "No USB/PTP candidate yet; waiting for OM camera USB re-enumeration " +
+                                    "after CameraControlOff/body mode change",
+                            )
+                        } else {
+                            usbLog("No USB/PTP candidate yet; waiting for Android USB discovery")
+                        }
                     }
                     delay(USB_DISCOVERY_POLL_INTERVAL_MS)
                 }
@@ -4104,6 +4760,27 @@ class OmCaptureUsbManager(
             val normalized = label.uppercase()
             "OLYMPUS" in normalized || "OM SYSTEM" in normalized || "OM-" in normalized
         }
+    }
+
+    private fun selectUsbBootstrapPlan(): UsbBootstrapPlan {
+        return when (usbTetheringProfile) {
+            UsbTetheringProfile.Om -> UsbBootstrapPlan(
+                logLabel = "om_portable_device",
+                allowMtpWarmup = true,
+                claimMode = PtpUsbConnection.ClaimMode.PortableDeviceCompatible,
+                initializeTransport = false,
+            )
+            UsbTetheringProfile.Olympus -> UsbBootstrapPlan(
+                logLabel = "olympus_standard_ptp",
+                allowMtpWarmup = false,
+                claimMode = PtpUsbConnection.ClaimMode.AggressiveDetach,
+                initializeTransport = true,
+            )
+        }
+    }
+
+    private fun shouldReopenTransportAfterOlympusPcModeSwitch(): Boolean {
+        return usbTetheringProfile == UsbTetheringProfile.Om
     }
 
     private fun endpointTypeLabel(type: Int): String = when (type) {
@@ -4215,10 +4892,18 @@ class OmCaptureUsbManager(
             else -> throwable.message ?: "USB operation failed."
         }
         val preservedSummary = currentActiveSession()?.summary ?: _runtimeState.value.summary
-        closeActiveSession("operation-failure:${throwable::class.simpleName ?: "Unknown"}")
+        val keepSessionAlive = throwable is ImportFormatMismatchException
+        if (!keepSessionAlive) {
+            closeActiveSession("operation-failure:${throwable::class.simpleName ?: "Unknown"}")
+        } else {
+            usbLog(
+                "Keeping OM camera USB/PTP session alive after import-format mismatch " +
+                    "to match OM Capture/libgphoto2 style non-fatal transfer handling",
+            )
+        }
         D.err("USB", message, throwable)
         updateRuntimeState(
-            nextState = OmCaptureUsbOperationState.Error,
+            nextState = if (keepSessionAlive) OmCaptureUsbOperationState.Idle else OmCaptureUsbOperationState.Error,
             statusLabel = message,
         ) { state ->
             state.copy(
@@ -4256,6 +4941,7 @@ class OmCaptureUsbManager(
             OmCaptureUsbOperationState.Inspecting,
             OmCaptureUsbOperationState.Capturing,
             OmCaptureUsbOperationState.WaitObject,
+            OmCaptureUsbOperationState.Downloading,
         ) -> true
         current == OmCaptureUsbOperationState.Inspecting && next == OmCaptureUsbOperationState.Idle -> true
         current == OmCaptureUsbOperationState.Capturing && next == OmCaptureUsbOperationState.WaitObject -> true
@@ -4322,6 +5008,7 @@ class OmCaptureUsbManager(
         val summary: OmCaptureUsbSessionSummary,
         val eventChannel: Channel<PtpContainer>,
         val eventJob: Job,
+        val domain: UsbSessionDomain,
     )
 
     private data class MtpWarmupSnapshot(
@@ -4337,6 +5024,13 @@ class OmCaptureUsbManager(
         val session: PtpSession,
         val info: PtpDeviceInfo,
         val mtpWarmupSnapshot: MtpWarmupSnapshot?,
+    )
+
+    private data class UsbBootstrapPlan(
+        val logLabel: String,
+        val allowMtpWarmup: Boolean,
+        val claimMode: PtpUsbConnection.ClaimMode,
+        val initializeTransport: Boolean,
     )
 
     private data class CachedInitDeviceInfo(
@@ -4390,22 +5084,41 @@ class OmCaptureUsbManager(
         val relatedHandles: Set<Int>,
     )
 
+    private enum class TransferMediaKind {
+        Jpeg,
+        Raw,
+    }
+
+    /**
+     * Mirrors the Olympus imageformat table in libgphoto2 config.c and the
+     * Olympus camera dumps under camlibs/ptp2 camera sample logs for
+     * main/imgsettings/imageformat.
+     */
+    private data class OlympusImageFormatExpectation(
+        val propValue: Int,
+        val logLabel: String,
+        val jpegEnabled: Boolean,
+        val rawEnabled: Boolean,
+    )
+
     private data class DownloadedCandidate(
         val candidate: TransferCandidate,
         val thumbnailBytes: ByteArray?,
         val objectBytes: ByteArray,
     )
 
-    private enum class OperationKind {
-        Capture,
-        CaptureOnly,
-        ImportLatest,
-        ImportHandle,
+    private enum class OperationKind(val sessionDomain: UsbSessionDomain) {
+        Capture(UsbSessionDomain.Control),
+        CaptureOnly(UsbSessionDomain.Control),
+        ImportLatest(UsbSessionDomain.Transfer),
+        ImportHandle(UsbSessionDomain.Transfer),
     }
 
     private class ObjectAddedTimeoutException(message: String) : IllegalStateException(message)
 
     private class UsbDisconnectedException(message: String) : IllegalStateException(message)
+
+    private class ImportFormatMismatchException(message: String) : IllegalStateException(message)
 
     private val transferCandidateComparator = compareByDescending<TransferCandidate> {
         it.info.preferredTimestampMillis ?: Long.MIN_VALUE

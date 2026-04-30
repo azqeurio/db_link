@@ -152,6 +152,9 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
         if (previousDestination == AppDestination.Remote && currentDestination != AppDestination.Remote) {
             viewModel.onNavigateAwayFromRemote()
         }
+        if (currentDestination == AppDestination.Remote) {
+            viewModel.onRemoteScreenVisible()
+        }
         previousDestination = currentDestination
     }
 
@@ -370,6 +373,10 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                         remoteReady = remoteSessionReady,
                                         liveViewFrame = liveViewFrame,
                                         lastCaptureThumbnail = uiState.lastCaptureThumbnail,
+                                        captureReviewAfterShotEnabled = uiState.settings.firstOrNull {
+                                            it.id == "capture_review_after_shot"
+                                        }?.enabled == true,
+                                        captureReviewDurationSeconds = uiState.captureReviewDurationSeconds,
                                         tetheredCaptureAvailable = true,
                                         omCaptureUsb = uiState.omCaptureUsb,
                                         latestTransferThumbnail = latestTransfer?.let { uiState.transferState.thumbnails[it.fileName] },
@@ -415,14 +422,8 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                         onSelectDeepSkyPreset = viewModel::selectDeepSkyPreset,
                                         onSetDeepSkyManualFocalLength = viewModel::setDeepSkyManualFocalLength,
                                         onOpenLibrary = {
-                                            val usbSaved = uiState.omCaptureUsb.lastSavedMedia
-                                            if (usbSaved != null && activity != null) {
-                                                // Open the image saved by the USB capture flow.
-                                                viewModel.openUsbCapturedImage(activity)
-                                            } else {
-                                                viewModel.openLastCapturedPreview()
-                                                navigateTo(AppDestination.Transfer)
-                                            }
+                                            viewModel.openLastCapturedPreview()
+                                            navigateTo(AppDestination.Transfer)
                                         },
                                         onSetUsbProperty = { propCode, value ->
                                             viewModel.dispatchOmCaptureAction(
@@ -541,6 +542,7 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                         onSetTypeFilter = viewModel::setTypeFilter,
                                         onToggleDateSelection = viewModel::toggleDateSelection,
                                         onSelectUsbSource = viewModel::setUsbLibrarySourceSelection,
+                                        onCloseSavedMediaPreview = viewModel::closeSavedMediaPreview,
                                         selectedCardSlotSource = uiState.selectedCardSlotSource,
                                         wifiSourceSelectionAvailable = supportsWifiSourceSelection,
                                         onSelectWifiSource = viewModel::selectWifiLibrarySourceSlot,
@@ -574,7 +576,10 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                         selectedCardSlotSource = uiState.selectedCardSlotSource,
                                         selectedLanguageTag = uiState.selectedLanguageTag,
                                         libraryCompatibilityMode = uiState.libraryCompatibilityMode,
+                                        usbTetheringMode = uiState.usbTetheringMode,
                                         tetherSaveTarget = uiState.tetherSaveTarget,
+                                        captureReviewDurationSeconds = uiState.captureReviewDurationSeconds,
+                                        appUpdate = uiState.appUpdate,
                                         onSelectSavedCamera = viewModel::selectSavedCamera,
                                         onSelectLanguage = { languageTag ->
                                             if (languageTag != uiState.selectedLanguageTag) {
@@ -589,7 +594,11 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                         onSelectCardSlotSource = viewModel::updateSelectedCardSlotSource,
                                         onGeotagConfigChanged = viewModel::updateGeotagConfig,
                                         onLibraryCompatibilityModeChanged = viewModel::updateLibraryCompatibilityMode,
+                                        onUsbTetheringModeChanged = viewModel::updateUsbTetheringMode,
                                         onTetherSaveTargetChanged = viewModel::updateTetherSaveTarget,
+                                        onCaptureReviewDurationSecondsChanged = viewModel::updateCaptureReviewDurationSeconds,
+                                        onCheckForUpdates = { viewModel.checkForAppUpdate() },
+                                        onInstallUpdate = viewModel::installLatestAppUpdate,
                                         onExportLogs = onExportLogs,
                                         onForgetCamera = viewModel::forgetCamera,
                                         onForgetSavedCamera = viewModel::forgetSavedCamera,

@@ -68,6 +68,11 @@ data class PtpObjectInfo(
             .uppercase(Locale.US)
     }
 
+    /** Trailing numeric capture index parsed from the file stem, if present. */
+    val captureIndex: String? by lazy(LazyThreadSafetyMode.NONE) {
+        CAPTURE_INDEX_REGEX.find(normalizedBaseName)?.groupValues?.getOrNull(1)
+    }
+
     /** Best-effort parsed capture timestamp, if present. */
     val captureTimestampMillis: Long? by lazy(LazyThreadSafetyMode.NONE) {
         parsePtpTimestamp(captureDate)
@@ -86,6 +91,7 @@ data class PtpObjectInfo(
     companion object {
         /** Known RAW file extensions for Olympus/OM System cameras. */
         private val RAW_EXTENSIONS = setOf("ORF", "ORI")
+        private val CAPTURE_INDEX_REGEX = Regex("(\\d{4,})$")
 
         private val timestampPatterns = listOf(
             "yyyyMMdd'T'HHmmss",

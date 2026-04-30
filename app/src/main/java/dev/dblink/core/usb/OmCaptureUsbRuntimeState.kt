@@ -41,6 +41,9 @@ data class OmCaptureUsbSavedMedia(
     val relativePath: String,
     val absolutePath: String,
     val displayName: String,
+    val mimeType: String,
+    val dateFolder: String,
+    val isRaw: Boolean,
 )
 
 data class OmCaptureUsbCompanionImport(

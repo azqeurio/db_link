@@ -33,21 +33,31 @@ class DefaultCameraRepository(
     override fun initialWorkspace(): CameraWorkspace = fallback.initialWorkspace()
 
     override suspend fun probeConnectionReady(): Result<String> = withContext(Dispatchers.IO) {
+        val probeTimeoutMs = maxOf(config.connectTimeoutMs, 3_500)
         fun attempt(attempt: Int): Result<String> {
             D.proto("Connection readiness probe attempt $attempt via get_connectmode")
             return gateway.getText(
                 path = "/get_connectmode.cgi",
-                timeoutMillis = 2000,
+                timeoutMillis = probeTimeoutMs,
             ).map { "Camera ready" }
         }
 
-        val firstAttempt = attempt(1)
-        if (firstAttempt.isSuccess) {
-            return@withContext firstAttempt
+        var lastResult: Result<String> = attempt(1)
+        if (lastResult.isSuccess) {
+            return@withContext lastResult
         }
-        D.proto("Connection readiness probe retry after initial failure: ${firstAttempt.exceptionOrNull()?.message}")
-        delay(200L)
-        attempt(2)
+        repeat(2) { retryIndex ->
+            D.proto(
+                "Connection readiness probe retry ${retryIndex + 2} " +
+                    "after failure: ${lastResult.exceptionOrNull()?.message}",
+            )
+            delay(if (retryIndex == 0) 250L else 500L)
+            lastResult = attempt(retryIndex + 2)
+            if (lastResult.isSuccess) {
+                return@withContext lastResult
+            }
+        }
+        lastResult
     }
 
     override suspend fun loadWorkspace(): CameraWorkspace = withContext(Dispatchers.IO) {

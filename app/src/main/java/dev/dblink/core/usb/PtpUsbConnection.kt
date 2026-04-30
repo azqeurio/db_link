@@ -181,18 +181,29 @@ class PtpUsbConnection(
         if (isClosed) return false
         val bytes = container.toByteArray()
         D.ptp(">> ${container}")
-        val sent = bulkTransfer(
-            endpoint = bulkOut,
-            buffer = bytes,
-            length = bytes.size,
-            timeoutMs = DEFAULT_TIMEOUT_MS,
-            label = "send-command:${container.code.opName()}",
-        )
-        if (sent != bytes.size) {
+        repeat(2) { attemptIndex ->
+            val sent = bulkTransfer(
+                endpoint = bulkOut,
+                buffer = bytes,
+                length = bytes.size,
+                timeoutMs = DEFAULT_TIMEOUT_MS,
+                label = "send-command:${container.code.opName()}",
+            )
+            if (sent == bytes.size) {
+                return true
+            }
+            if (sent < 0 && attemptIndex == 0) {
+                D.ptp(
+                    "Send command failed for ${container.code.opName()} with $sent bytes; " +
+                        "clearing OUT halt and retrying once",
+                )
+                clearEndpointHalt(bulkOut)
+                return@repeat
+            }
             D.err("PTP", "Send failed: sent $sent of ${bytes.size} bytes")
             return false
         }
-        return true
+        return false
     }
 
     /**

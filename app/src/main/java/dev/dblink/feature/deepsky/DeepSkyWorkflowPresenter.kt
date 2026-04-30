@@ -100,11 +100,10 @@ object DeepSkyWorkflowPresenter {
                 DeepSkyStatusChipModel(
                     label = "FORMAT",
                     value = when (tetherPhoneImportFormat) {
-                        TetherPhoneImportFormat.JpegAndRaw -> "JPEG+RAW"
                         TetherPhoneImportFormat.RawOnly -> "RAW"
                         TetherPhoneImportFormat.JpegOnly -> "JPEG"
                     },
-                    tone = if (tetherPhoneImportFormat == TetherPhoneImportFormat.JpegAndRaw) {
+                    tone = if (tetherPhoneImportFormat == TetherPhoneImportFormat.RawOnly) {
                         DeepSkyChipTone.Good
                     } else {
                         DeepSkyChipTone.Warning

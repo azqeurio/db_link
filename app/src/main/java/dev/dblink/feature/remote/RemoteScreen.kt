@@ -34,8 +34,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -160,11 +162,29 @@ private data class RemoteQuickAccessItem(
     val accent: Color,
 )
 
+private data class RemoteScpLabels(
+    val mode: String,
+    val afMode: String,
+    val pictureMode: String,
+    val drive: String,
+    val flash: String,
+    val metering: String,
+    val quality: String,
+    val faceEye: String,
+    val aspect: String,
+    val stabilizer: String,
+    val highRes: String,
+    val subject: String,
+    val subjectType: String,
+    val colorSpace: String,
+)
+
 private val LocalRemoteRotationState = compositionLocalOf<RemoteRotationState?> { null }
 private const val TETHER_MODE_DIAL_VALUE = "Tether"
 private const val TETHER_RETRY_MODE_DIAL_VALUE = "Tether Retry"
 private const val DEEP_SKY_MODE_DIAL_VALUE = "Deep Sky"
 private const val DEEP_SKY_FOCAL_LENGTH_PROP = "deepsky_focal_length"
+private const val DEFAULT_CAPTURE_REVIEW_DURATION_SECONDS = 2
 private val Om1SilentBurstDriveRawValues = setOf(
     41L, // Pro Capture SH2 on OM-1 tether reports
     67L, // Pro Capture Low
@@ -224,6 +244,8 @@ fun RemoteScreen(
     remoteReady: Boolean = true,
     liveViewFrame: Bitmap?,
     lastCaptureThumbnail: Bitmap? = null,
+    captureReviewAfterShotEnabled: Boolean = false,
+    captureReviewDurationSeconds: Int = DEFAULT_CAPTURE_REVIEW_DURATION_SECONDS,
     tetheredCaptureAvailable: Boolean = true,
     omCaptureUsb: OmCaptureUsbUiState = OmCaptureUsbUiState(),
     latestTransferThumbnail: Bitmap? = null,
@@ -269,9 +291,19 @@ fun RemoteScreen(
     latestGeoTagSample: GeoTagLocationSample? = null,
     reverseDialMap: Map<String, Boolean> = emptyMap(),
 ) {
-    val readableRotation = rememberReadableCameraRotation()
+    val sensorReadableRotation = rememberReadableCameraRotation()
+    val actualLandscapeLayout = rememberLandscapeControlLayout()
+    val readableRotation = if (actualLandscapeLayout) 0 else sensorReadableRotation
+    val previewReadableRotation = remember(sensorReadableRotation, actualLandscapeLayout, liveViewFrame?.width, liveViewFrame?.height) {
+        val previewLooksPortrait = (liveViewFrame?.width ?: 0) in 1 until (liveViewFrame?.height ?: 0)
+        when {
+            !actualLandscapeLayout -> sensorReadableRotation
+            previewLooksPortrait -> if (isQuarterTurnRotation(sensorReadableRotation)) sensorReadableRotation else 90
+            else -> 0
+        }
+    }
     val rotationState = rememberRemoteRotationState(readableRotation)
-    val landscapeChrome = rotationState.quarterTurn || rememberLandscapeControlLayout()
+    val landscapeChrome = rotationState.quarterTurn || actualLandscapeLayout
     val sharedAnimatedReadableRotation = rotationState.animatedReadableRotation
     val usbTetherSurface =
         remoteRuntime.modePickerSurface == ModePickerSurface.Tether ||
@@ -301,6 +333,13 @@ fun RemoteScreen(
             ?: (4f / 3f)
     }
     val liveViewVisible = liveViewFrame != null
+    val reviewBitmap = lastCaptureThumbnail ?: latestTransferThumbnail
+    val reviewAspectRatio = remember(reviewBitmap?.width, reviewBitmap?.height) {
+        reviewBitmap
+            ?.takeIf { it.width > 0 && it.height > 0 }
+            ?.let { it.width.toFloat() / it.height.toFloat() }
+            ?: previewAspectRatio
+    }
     val previewLayerAlpha by animateFloatAsState(
         targetValue = if (liveViewVisible) 1f else 0f,
         animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
@@ -320,6 +359,17 @@ fun RemoteScreen(
         targetValue = if (liveViewVisible) 0.98f else 1f,
         animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
         label = "liveViewOverlayScale",
+    )
+    var captureReviewVisible by rememberSaveable { mutableStateOf(false) }
+    val captureReviewAlpha by animateFloatAsState(
+        targetValue = if (captureReviewVisible && reviewBitmap != null) 1f else 0f,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+        label = "captureReviewAlpha",
+    )
+    val captureReviewScale by animateFloatAsState(
+        targetValue = if (captureReviewVisible && reviewBitmap != null) 1f else 1.015f,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "captureReviewScale",
     )
     val liveViewAmbient = rememberInfiniteTransition(label = "liveViewAmbient")
     val gridPulseAlpha by liveViewAmbient.animateFloat(
@@ -361,7 +411,8 @@ fun RemoteScreen(
     val currentOnToggleLiveView by rememberUpdatedState(onToggleLiveView)
     val currentOnTouchFocus by rememberUpdatedState(onTouchFocus)
     val currentReadableRotation by rememberUpdatedState(readableRotation)
-    val currentQuarterTurn by rememberUpdatedState(rotationState.quarterTurn)
+    val currentPreviewReadableRotation by rememberUpdatedState(previewReadableRotation)
+    val currentPreviewQuarterTurn by rememberUpdatedState(isQuarterTurnRotation(previewReadableRotation))
     val touchView = LocalView.current
     val usbQuickAccessEnabled = tetheredCaptureAvailable &&
         (remoteRuntime.modePickerSurface == ModePickerSurface.Tether ||
@@ -372,6 +423,7 @@ fun RemoteScreen(
     var activeUsbExtraPropCode by remember { mutableIntStateOf(-1) }
     var activeUsbExtraPropLabel by remember { mutableStateOf("") }
     var showSkyOverlay by rememberSaveable { mutableStateOf(true) }
+    var showUsbTetherGuide by rememberSaveable { mutableStateOf(false) }
     val currentUsbQuickAccessEnabled by rememberUpdatedState(usbQuickAccessEnabled)
     val currentQuickAccessOpen by rememberUpdatedState(quickAccessOpen)
     val currentSetQuickAccessOpen by rememberUpdatedState<(Boolean) -> Unit>({ quickAccessOpen = it })
@@ -402,6 +454,15 @@ fun RemoteScreen(
     fun clearUsbExtraPicker() {
         activeUsbExtraPropCode = -1
         activeUsbExtraPropLabel = ""
+    }
+
+    fun openUsbTetherGuide() {
+        showUsbTetherGuide = true
+        if (remoteRuntime.modePickerSurface != ModePickerSurface.Tether &&
+            remoteRuntime.modePickerSurface != ModePickerSurface.TetherRetry
+        ) {
+            onSetModePickerSurface(ModePickerSurface.Tether)
+        }
     }
 
     val routedSetActivePicker: (ActivePropertyPicker) -> Unit = { picker ->
@@ -435,6 +496,16 @@ fun RemoteScreen(
         }
     }
 
+    LaunchedEffect(captureReviewAfterShotEnabled, captureReviewDurationSeconds, remoteRuntime.captureCount) {
+        if (!captureReviewAfterShotEnabled || remoteRuntime.captureCount <= 0) {
+            captureReviewVisible = false
+            return@LaunchedEffect
+        }
+        captureReviewVisible = true
+        delay(captureReviewDurationSeconds.coerceAtLeast(1) * 1000L)
+        captureReviewVisible = false
+    }
+
     // Always refresh the expanded SCP property set when the overlay opens so
     // vendor props do not stay stale across live-view restarts/re-entry.
     LaunchedEffect(quickAccessOpen) {
@@ -461,7 +532,7 @@ fun RemoteScreen(
     }
 
     LaunchedEffect(rotationState.quarterTurn, remoteRuntime.activePicker) {
-        D.layout("REMOTE_LAYOUT: orientation=${if (rotationState.quarterTurn) "LANDSCAPE" else "PORTRAIT"} rotation=$readableRotation " +
+        D.layout("REMOTE_LAYOUT: orientation=${if (landscapeChrome) "LANDSCAPE" else "PORTRAIT"} rotation=$readableRotation previewRotation=$previewReadableRotation " +
             "activePicker=${remoteRuntime.activePicker} liveViewActive=${remoteRuntime.liveViewActive} " +
             "propertiesLoaded=${remoteRuntime.propertiesLoaded}")
     }
@@ -481,7 +552,7 @@ fun RemoteScreen(
                 LiveViewPreviewLayer(
                     liveViewFrame = liveViewFrame,
                     previewAspectRatio = previewAspectRatio,
-                    readableRotation = readableRotation,
+                    readableRotation = previewReadableRotation,
                 )
             }
         } else if (
@@ -503,6 +574,7 @@ fun RemoteScreen(
                     omCaptureUsb = omCaptureUsb,
                     onRefreshOmCaptureUsb = onRefreshOmCaptureUsb,
                     onStartLiveView = onToggleLiveView,
+                    onShowUsbTetherGuide = ::openUsbTetherGuide,
                     retryMode = remoteRuntime.modePickerSurface == ModePickerSurface.TetherRetry,
                     readableRotation = readableRotation,
                     tetherPhoneImportFormat = tetherPhoneImportFormat,
@@ -511,11 +583,10 @@ fun RemoteScreen(
             }
         } else if (!remoteRuntime.liveViewActive) {
             val placeholderText = when {
-                remoteReady -> "Tap to start live view"
-                else -> "Connect to camera to use remote"
+                remoteReady -> stringResource(R.string.remote_live_view_prompt)
+                else -> stringResource(R.string.remote_connect_prompt)
             }
-            Text(
-                text = placeholderText,
+            Column(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .graphicsLayer {
@@ -525,20 +596,36 @@ fun RemoteScreen(
                         scaleY = overlayPanelScale
                     }
                     .padding(horizontal = if (landscapeChrome) 28.dp else 0.dp),
-                color = Chalk.copy(alpha = 0.78f),
-                style = if (landscapeChrome) {
-                    MaterialTheme.typography.headlineSmall
-                } else {
-                    MaterialTheme.typography.titleMedium
-                },
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-                textAlign = TextAlign.Center,
-            )
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = placeholderText,
+                    color = Chalk.copy(alpha = 0.78f),
+                    style = if (landscapeChrome) {
+                        MaterialTheme.typography.headlineSmall
+                    } else {
+                        MaterialTheme.typography.titleMedium
+                    },
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    textAlign = TextAlign.Center,
+                )
+                if (!remoteReady) {
+                    Text(
+                        text = stringResource(R.string.remote_usb_tether_guide_link),
+                        modifier = Modifier.clickable(onClick = ::openUsbTetherGuide),
+                        color = AppleBlue,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
         }
         PreviewGridOverlay(
             previewAspectRatio = previewAspectRatio,
-            readableRotation = readableRotation,
+            readableRotation = previewReadableRotation,
             strength = if (remoteRuntime.liveViewActive) gridPulseAlpha else 0.78f,
         )
         if (
@@ -549,7 +636,7 @@ fun RemoteScreen(
             DeepSkyStackFrameOverlay(
                 state = deepSkyState,
                 previewAspectRatio = previewAspectRatio,
-                readableRotation = readableRotation,
+                readableRotation = previewReadableRotation,
             )
         }
         if (
@@ -567,8 +654,42 @@ fun RemoteScreen(
             focusHeld = remoteRuntime.focusHeld,
             isFocusing = remoteRuntime.isFocusing,
             previewAspectRatio = previewAspectRatio,
-            readableRotation = readableRotation,
+            readableRotation = previewReadableRotation,
         )
+        if (captureReviewVisible && reviewBitmap != null) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .graphicsLayer {
+                        alpha = captureReviewAlpha
+                        scaleX = captureReviewScale
+                        scaleY = captureReviewScale
+                    }
+                    .background(Color.Black.copy(alpha = 0.56f)),
+            ) {
+                CaptureReviewOverlay(
+                    bitmap = reviewBitmap,
+                    previewAspectRatio = reviewAspectRatio,
+                    readableRotation = previewReadableRotation,
+                )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(16.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Graphite.copy(alpha = 0.82f))
+                        .border(1.dp, Chalk.copy(alpha = 0.18f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.settings_capture_review_after_shot_title),
+                        color = Chalk,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+        }
         if (remoteRuntime.liveViewActive) {
             Box(
                 modifier = Modifier
@@ -599,6 +720,11 @@ fun RemoteScreen(
                 onOpenChange = { quickAccessOpen = it },
                 onOpenUsbExtraProperty = openUsbExtraPicker,
                 readableRotation = readableRotation,
+            )
+        }
+        if (showUsbTetherGuide) {
+            UsbTetherGuideOverlay(
+                onClose = { showUsbTetherGuide = false },
             )
         }
     }
@@ -667,7 +793,7 @@ fun RemoteScreen(
                                 break
                             }
                             if (currentFrame == null) break
-                            val effectiveAspect = if (currentQuarterTurn) 1f / currentAspectRatio else currentAspectRatio
+                            val effectiveAspect = if (currentPreviewQuarterTurn) 1f / currentAspectRatio else currentAspectRatio
                             val previewRect = resolvePreviewRect(
                                 containerWidth = size.width.toFloat(),
                                 containerHeight = size.height.toFloat(),
@@ -690,7 +816,7 @@ fun RemoteScreen(
                                     displayY = normalizedY,
                                     focusPlaneX = sensorCoord.x,
                                     focusPlaneY = sensorCoord.y,
-                                    rotationDegrees = currentReadableRotation,
+                                    rotationDegrees = currentPreviewReadableRotation,
                                 ),
                             )
                         }
@@ -905,6 +1031,7 @@ private fun BoxScope.TetherEntryPanel(
     omCaptureUsb: OmCaptureUsbUiState,
     onRefreshOmCaptureUsb: () -> Unit,
     onStartLiveView: () -> Unit,
+    onShowUsbTetherGuide: () -> Unit,
     retryMode: Boolean,
     readableRotation: Int,
     tetherPhoneImportFormat: TetherPhoneImportFormat = TetherPhoneImportFormat.JpegOnly,
@@ -918,6 +1045,9 @@ private fun BoxScope.TetherEntryPanel(
         summary != null -> AppleGreen
         else -> AppleBlue
     }
+    val readyFallbackLabel = stringResource(R.string.remote_usb_tether_ready)
+    val liveViewFeatureLabel = stringResource(R.string.remote_usb_tether_feature_live_view)
+    val controlFeatureLabel = stringResource(R.string.remote_usb_tether_feature_control)
     Column(
         modifier = Modifier
             .align(Alignment.Center)
@@ -935,7 +1065,11 @@ private fun BoxScope.TetherEntryPanel(
             color = accent,
         )
         Text(
-            text = if (summary == null) "카메라를 연결하세요" else summary.deviceLabel.ifBlank { "USB camera ready" },
+            text = if (summary == null) {
+                stringResource(R.string.remote_usb_tether_connect_camera)
+            } else {
+                summary.deviceLabel.ifBlank { readyFallbackLabel }
+            },
             color = Chalk,
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
@@ -951,16 +1085,15 @@ private fun BoxScope.TetherEntryPanel(
             Text(
                 text = buildString {
                     append(summary.model.ifBlank { summary.manufacturer })
-                    if (summary.supportsLiveView) append("  •  Live View")
-                    if (summary.supportsPropertyControl) append("  •  Control")
+                    if (summary.supportsLiveView) append("  •  $liveViewFeatureLabel")
+                    if (summary.supportsPropertyControl) append("  •  $controlFeatureLabel")
                 },
                 color = Chalk.copy(alpha = 0.56f),
                 style = MaterialTheme.typography.labelMedium,
                 textAlign = TextAlign.Center,
             )
-            // Import format selector (JPEG / RAW / JPEG+RAW)
             Text(
-                text = "Import Format",
+                text = stringResource(R.string.remote_usb_tether_import_format),
                 color = Chalk.copy(alpha = 0.46f),
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
@@ -979,11 +1112,6 @@ private fun BoxScope.TetherEntryPanel(
                     label = "RAW",
                     accent = if (tetherPhoneImportFormat == TetherPhoneImportFormat.RawOnly) AppleBlue else Chalk.copy(alpha = 0.35f),
                 ) { onSetPhoneImportFormat(TetherPhoneImportFormat.RawOnly) }
-                TetherActionButton(
-                    modifier = Modifier.weight(1f),
-                    label = "J+RAW",
-                    accent = if (tetherPhoneImportFormat == TetherPhoneImportFormat.JpegAndRaw) AppleBlue else Chalk.copy(alpha = 0.35f),
-                ) { onSetPhoneImportFormat(TetherPhoneImportFormat.JpegAndRaw) }
             }
         }
         Row(
@@ -992,7 +1120,11 @@ private fun BoxScope.TetherEntryPanel(
         ) {
             TetherActionButton(
                 modifier = Modifier.weight(1f),
-                label = if (retryMode || summary == null || omCaptureUsb.canRetry) "카메라 연결" else "정보 새로고침",
+                label = if (retryMode || summary == null || omCaptureUsb.canRetry) {
+                    stringResource(R.string.remote_usb_tether_connect)
+                } else {
+                    stringResource(R.string.remote_usb_tether_refresh)
+                },
                 accent = AppleBlue,
             ) {
                 ViewCompat.performHapticFeedback(view, HapticFeedbackConstantsCompat.CLOCK_TICK)
@@ -1001,9 +1133,13 @@ private fun BoxScope.TetherEntryPanel(
             TetherActionButton(
                 modifier = Modifier.weight(1f),
                 label = if (summary?.supportsLiveView == true) {
-                    if (retryMode) "라이브뷰 복귀" else "라이브뷰 시작"
+                    if (retryMode) {
+                        stringResource(R.string.remote_usb_tether_return_live_view)
+                    } else {
+                        stringResource(R.string.remote_usb_tether_start_live_view)
+                    }
                 } else {
-                    "준비 중"
+                    stringResource(R.string.remote_usb_tether_preparing)
                 },
                 accent = if (summary?.supportsLiveView == true) AppleRed else Chalk.copy(alpha = 0.28f),
                 enabled = summary?.supportsLiveView == true && !omCaptureUsb.isBusy,
@@ -1012,8 +1148,144 @@ private fun BoxScope.TetherEntryPanel(
                 onStartLiveView()
             }
         }
+        Text(
+            text = stringResource(R.string.remote_usb_tether_guide_link),
+            modifier = Modifier.clickable(onClick = onShowUsbTetherGuide),
+            color = AppleBlue,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
+        )
     }
 }
+
+@Composable
+private fun BoxScope.UsbTetherGuideOverlay(
+    onClose: () -> Unit,
+) {
+    val scrollState = rememberScrollState()
+    Box(
+        modifier = Modifier
+            .matchParentSize()
+            .background(Color.Black.copy(alpha = 0.94f))
+            .border(1.dp, Chalk.copy(alpha = 0.14f)),
+    ) {
+        Column(
+            modifier = Modifier
+                .matchParentSize()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(R.string.remote_usb_tether_guide_title),
+                    color = Chalk,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                IconButton(onClick = onClose) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = stringResource(R.string.common_close),
+                        tint = Chalk,
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(scrollState),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                UsbTetherGuideStep(
+                    number = 1,
+                    text = stringResource(R.string.remote_usb_tether_guide_step_1),
+                )
+                UsbTetherGuideStep(
+                    number = 2,
+                    text = stringResource(R.string.remote_usb_tether_guide_step_2),
+                )
+                UsbTetherGuideStep(
+                    number = 3,
+                    text = stringResource(R.string.remote_usb_tether_guide_step_3),
+                )
+                UsbTetherGuideStep(
+                    number = 4,
+                    text = stringResource(R.string.remote_usb_tether_guide_step_4),
+                )
+                Text(
+                    text = stringResource(R.string.remote_usb_tether_guide_note_primary),
+                    color = Chalk.copy(alpha = 0.82f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    lineHeight = 22.sp,
+                )
+                Text(
+                    text = stringResource(R.string.remote_usb_tether_guide_note_secondary),
+                    color = Chalk.copy(alpha = 0.68f),
+                    style = MaterialTheme.typography.bodySmall,
+                    lineHeight = 20.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UsbTetherGuideStep(
+    number: Int,
+    text: String,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(24.dp)
+                .clip(CircleShape)
+                .background(AppleBlue.copy(alpha = 0.18f))
+                .border(1.dp, AppleBlue.copy(alpha = 0.42f), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = number.toString(),
+                color = Chalk,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        Text(
+            text = text,
+            modifier = Modifier.weight(1f),
+            color = Chalk.copy(alpha = 0.84f),
+            style = MaterialTheme.typography.bodyMedium,
+            lineHeight = 20.sp,
+        )
+    }
+}
+
+@Composable
+private fun rememberRemoteScpLabels(): RemoteScpLabels = RemoteScpLabels(
+    mode = stringResource(R.string.remote_scp_label_mode),
+    afMode = stringResource(R.string.remote_scp_label_af_mode),
+    pictureMode = stringResource(R.string.remote_scp_label_picture_mode),
+    drive = stringResource(R.string.remote_scp_label_drive),
+    flash = stringResource(R.string.remote_scp_label_flash),
+    metering = stringResource(R.string.remote_scp_label_metering),
+    quality = stringResource(R.string.remote_scp_label_quality),
+    faceEye = stringResource(R.string.remote_scp_label_face_eye),
+    aspect = stringResource(R.string.remote_scp_label_aspect),
+    stabilizer = stringResource(R.string.remote_scp_label_stabilizer),
+    highRes = stringResource(R.string.remote_scp_label_high_res),
+    subject = stringResource(R.string.remote_scp_label_subject),
+    subjectType = stringResource(R.string.remote_scp_label_subject_type),
+    colorSpace = stringResource(R.string.remote_scp_label_color_space),
+)
 
 @Composable
 private fun TetherActionButton(
@@ -1082,6 +1354,56 @@ private fun LiveViewPreviewLayer(
             }
         } else {
             val image = liveViewFrame.asImageBitmap()
+            drawImage(
+                image = image,
+                srcOffset = IntOffset.Zero,
+                srcSize = IntSize(image.width, image.height),
+                dstOffset = IntOffset(previewRect.left.roundToInt(), previewRect.top.roundToInt()),
+                dstSize = IntSize(
+                    previewRect.width.roundToInt().coerceAtLeast(1),
+                    previewRect.height.roundToInt().coerceAtLeast(1),
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun CaptureReviewOverlay(
+    bitmap: Bitmap,
+    previewAspectRatio: Float,
+    readableRotation: Int = 0,
+) {
+    val rotated = rememberRemoteQuarterTurn(readableRotation)
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val effectiveAspect = if (rotated) 1f / previewAspectRatio else previewAspectRatio
+        val previewRect = resolvePreviewRect(
+            containerWidth = size.width,
+            containerHeight = size.height,
+            imageAspectRatio = effectiveAspect,
+        )
+
+        if (rotated) {
+            val cx = previewRect.left + previewRect.width / 2f
+            val cy = previewRect.top + previewRect.height / 2f
+            val nativeCanvas = drawContext.canvas.nativeCanvas
+            val drawW = previewRect.height
+            val drawH = previewRect.width
+            nativeCanvas.withRotation(readableRotation.toFloat(), cx, cy) {
+                drawBitmap(
+                    bitmap,
+                    null,
+                    android.graphics.RectF(
+                        cx - drawW / 2f,
+                        cy - drawH / 2f,
+                        cx + drawW / 2f,
+                        cy + drawH / 2f,
+                    ),
+                    null,
+                )
+            }
+        } else {
+            val image = bitmap.asImageBitmap()
             drawImage(
                 image = image,
                 srcOffset = IntOffset.Zero,
@@ -1320,7 +1642,7 @@ private fun BoxScope.SuperControlPanelOverlay(
                 // Page indicator
                 if (!hasProps) {
                     Text(
-                        text = "Loading camera properties...",
+                        text = stringResource(R.string.remote_loading_camera_properties),
                         color = Chalk.copy(alpha = 0.72f),
                         style = MaterialTheme.typography.labelMedium,
                         modifier = Modifier
@@ -1357,6 +1679,7 @@ private fun ScpSinglePage(
     val stabilizerControlProp = props.findScpControlProperty(UsbScpStabilizerBinding)
     val aspectProp = props.findProperty(USB_SCP_ASPECT_PROP)
     val colorSpaceProp = props.findProperty(USB_SCP_COLOR_SPACE_PROP)
+    val labels = rememberRemoteScpLabels()
     val faceEyeDisplay = formatScpPtpValue(faceEyeProp)
     val subjectDetectDisplay = formatScpPtpValue(subjectDetectProp)
     val subjectTypeDisplay = if (subjectDetectDisplay.equals("Off", ignoreCase = true)) {
@@ -1374,9 +1697,9 @@ private fun ScpSinglePage(
     // Row 1: Exposure Mode + Exposure Triangle (matches camera SCP top row)
     ScpRow {
         ScpCell(
-            label = "Mode",
-            value = formatUsbScpExposureMode(props.exposureMode?.currentValue ?: -1L),
-            propCode = PtpConstants.OlympusProp.ExposureMode,
+            label = labels.mode,
+            value = formatUsbScpExposureMode(props.exposureMode),
+            propCode = props.exposureMode?.propCode ?: PtpConstants.OlympusProp.ExposureMode,
             modifier = Modifier.weight(1f),
             highlight = true,
             onClick = null, // Read-only — PASM/B mode is controlled on the camera body
@@ -1407,7 +1730,7 @@ private fun ScpSinglePage(
     // Row 2: AF + EV + WB + Picture Mode
     ScpRow {
         ScpCell(
-            label = "AF Mode",
+            label = labels.afMode,
             value = formatUsbScpFocusMode(props.focusMode?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.FocusMode,
             modifier = Modifier.weight(1f),
@@ -1428,7 +1751,7 @@ private fun ScpSinglePage(
             onClick = { openExtraProperty(props.whiteBalance) },
         )
         ScpCell(
-            label = "Pic Mode",
+            label = labels.pictureMode,
             value = formatScpPtpValue(pictureModeDisplayProp),
             propCode = pictureModeDisplayProp?.propCode ?: pictureModeControlProp?.propCode,
             modifier = Modifier.weight(1f),
@@ -1439,28 +1762,28 @@ private fun ScpSinglePage(
     // Row 3: Drive + Flash + Metering + Quality
     ScpRow {
         ScpCell(
-            label = "Drive",
+            label = labels.drive,
             value = formatUsbScpDrive(props.driveMode),
             propCode = PtpConstants.OlympusProp.DriveMode,
             modifier = Modifier.weight(1f),
             onClick = { openExtraProperty(props.driveMode) },
         )
         ScpCell(
-            label = "Flash",
+            label = labels.flash,
             value = formatUsbScpFlash(props.flashMode?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.FlashMode,
             modifier = Modifier.weight(1f),
             onClick = { openExtraProperty(props.flashMode) },
         )
         ScpCell(
-            label = "Metering",
+            label = labels.metering,
             value = formatUsbScpMetering(props.meteringMode?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.MeteringMode,
             modifier = Modifier.weight(1f),
             onClick = { openExtraProperty(props.meteringMode) },
         )
         ScpCell(
-            label = "Quality",
+            label = labels.quality,
             value = formatUsbScpImageQuality(props.imageQuality?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.ImageQuality,
             modifier = Modifier.weight(1f),
@@ -1471,28 +1794,28 @@ private fun ScpSinglePage(
     // Row 4: Face/Eye + Aspect + Stabilizer + High Res
     ScpRow {
         ScpCell(
-            label = "Face / Eye",
+            label = labels.faceEye,
             value = faceEyeDisplay,
             propCode = faceEyeProp?.propCode,
             modifier = Modifier.weight(1f),
             onClick = faceEyeProp?.let { { openExtraProperty(it) } },
         )
         ScpCell(
-            label = "Aspect",
+            label = labels.aspect,
             value = formatScpPtpValue(aspectProp),
             propCode = aspectProp?.propCode,
             modifier = Modifier.weight(1f),
             onClick = aspectProp?.let { { openExtraProperty(it) } },
         )
         ScpCell(
-            label = "Stabilizer",
+            label = labels.stabilizer,
             value = formatScpPtpValue(stabilizerDisplayProp),
             propCode = stabilizerDisplayProp?.propCode ?: stabilizerControlProp?.propCode,
             modifier = Modifier.weight(1f),
             onClick = stabilizerControlProp?.let { { openExtraProperty(it) } },
         )
         ScpCell(
-            label = "High Res",
+            label = labels.highRes,
             value = formatScpPtpValue(highResDisplayProp),
             propCode = highResDisplayProp?.propCode ?: highResControlProp?.propCode,
             modifier = Modifier.weight(1f),
@@ -1503,21 +1826,21 @@ private fun ScpSinglePage(
     // Row 5: Subject + Color Space
     ScpRow {
         ScpCell(
-            label = "Subject",
+            label = labels.subject,
             value = subjectDetectDisplay,
             propCode = subjectDetectProp?.propCode,
             modifier = Modifier.weight(1f),
             onClick = subjectDetectProp?.let { { openExtraProperty(it) } },
         )
         ScpCell(
-            label = "Subject Type",
+            label = labels.subjectType,
             value = subjectTypeDisplay,
             propCode = subjectTypeProp?.propCode,
             modifier = Modifier.weight(1f),
             onClick = subjectTypeProp?.let { { openExtraProperty(it) } },
         )
         ScpCell(
-            label = "Color Space",
+            label = labels.colorSpace,
             value = formatScpPtpValue(colorSpaceProp),
             propCode = colorSpaceProp?.propCode,
             modifier = Modifier.weight(1f),
@@ -1644,7 +1967,7 @@ private fun BoxScope.AdaptiveSuperControlPanelOverlay(
         val props = usbCameraProperties
         if (props.allProperties().isEmpty()) {
             Text(
-                text = "Loading camera properties...",
+                text = stringResource(R.string.remote_loading_camera_properties),
                 color = Chalk.copy(alpha = 0.72f),
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier
@@ -1692,6 +2015,7 @@ private fun AdaptiveScpSinglePage(
     val aspectProp = props.findProperty(USB_SCP_ASPECT_PROP)
     val colorSpaceProp = props.findProperty(USB_SCP_COLOR_SPACE_PROP)
     val isoPropCode = props.iso?.propCode ?: PtpConstants.OlympusProp.ISOSpeed
+    val labels = rememberRemoteScpLabels()
 
     val faceEyeDisplay = formatScpPtpValue(faceEyeProp)
     val subjectDetectDisplay = formatScpPtpValue(subjectDetectProp)
@@ -1707,9 +2031,9 @@ private fun AdaptiveScpSinglePage(
     val primaryItems = buildList {
         add(
         AdaptiveScpGridItem(
-            label = "Mode",
-            value = formatUsbScpExposureMode(props.exposureMode?.currentValue ?: -1L),
-            propCode = PtpConstants.OlympusProp.ExposureMode,
+            label = labels.mode,
+            value = formatUsbScpExposureMode(props.exposureMode),
+            propCode = props.exposureMode?.propCode ?: PtpConstants.OlympusProp.ExposureMode,
             highlight = true,
         ),
         )
@@ -1739,7 +2063,7 @@ private fun AdaptiveScpSinglePage(
         )
         add(
         AdaptiveScpGridItem(
-            label = "AF Mode",
+            label = labels.afMode,
             value = formatUsbScpFocusMode(props.focusMode?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.FocusMode,
             onClick = { openExtraProperty(props.focusMode) },
@@ -1763,7 +2087,7 @@ private fun AdaptiveScpSinglePage(
         )
         add(
         AdaptiveScpGridItem(
-            label = "Pic Mode",
+            label = labels.pictureMode,
             value = formatScpPtpValue(pictureModeDisplayProp),
             propCode = pictureModeDisplayProp?.propCode ?: pictureModeControlProp?.propCode,
             onClick = pictureModeControlProp?.let { { openExtraProperty(it) } },
@@ -1771,7 +2095,7 @@ private fun AdaptiveScpSinglePage(
         )
         add(
         AdaptiveScpGridItem(
-            label = "Drive",
+            label = labels.drive,
             value = formatUsbScpDrive(props.driveMode),
             propCode = PtpConstants.OlympusProp.DriveMode,
             onClick = { openExtraProperty(props.driveMode) },
@@ -1779,7 +2103,7 @@ private fun AdaptiveScpSinglePage(
         )
         add(
         AdaptiveScpGridItem(
-            label = "Flash",
+            label = labels.flash,
             value = formatUsbScpFlash(props.flashMode?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.FlashMode,
             onClick = { openExtraProperty(props.flashMode) },
@@ -1787,7 +2111,7 @@ private fun AdaptiveScpSinglePage(
         )
         add(
         AdaptiveScpGridItem(
-            label = "Metering",
+            label = labels.metering,
             value = formatUsbScpMetering(props.meteringMode?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.MeteringMode,
             onClick = { openExtraProperty(props.meteringMode) },
@@ -1795,7 +2119,7 @@ private fun AdaptiveScpSinglePage(
         )
         add(
         AdaptiveScpGridItem(
-            label = "Quality",
+            label = labels.quality,
             value = formatUsbScpImageQuality(props.imageQuality?.currentValue ?: -1L),
             propCode = PtpConstants.OlympusProp.ImageQuality,
             onClick = { openExtraProperty(props.imageQuality) },
@@ -1803,7 +2127,7 @@ private fun AdaptiveScpSinglePage(
         )
         add(
         AdaptiveScpGridItem(
-            label = "Face / Eye",
+            label = labels.faceEye,
             value = faceEyeDisplay,
             propCode = faceEyeProp?.propCode,
             onClick = faceEyeProp?.let { { openExtraProperty(it) } },
@@ -1811,7 +2135,7 @@ private fun AdaptiveScpSinglePage(
         )
         add(
         AdaptiveScpGridItem(
-            label = "Aspect",
+            label = labels.aspect,
             value = formatScpPtpValue(aspectProp),
             propCode = aspectProp?.propCode,
             onClick = aspectProp?.let { { openExtraProperty(it) } },
@@ -1819,7 +2143,7 @@ private fun AdaptiveScpSinglePage(
         )
         add(
         AdaptiveScpGridItem(
-            label = "Stabilizer",
+            label = labels.stabilizer,
             value = formatScpPtpValue(stabilizerDisplayProp),
             propCode = stabilizerDisplayProp?.propCode ?: stabilizerControlProp?.propCode,
             onClick = stabilizerControlProp?.let { { openExtraProperty(it) } },
@@ -1827,7 +2151,7 @@ private fun AdaptiveScpSinglePage(
         )
         add(
         AdaptiveScpGridItem(
-            label = "High Res",
+            label = labels.highRes,
             value = formatScpPtpValue(highResDisplayProp),
             propCode = highResDisplayProp?.propCode ?: highResControlProp?.propCode,
             onClick = highResControlProp?.let { { openExtraProperty(it) } },
@@ -1835,7 +2159,7 @@ private fun AdaptiveScpSinglePage(
         )
         add(
         AdaptiveScpGridItem(
-            label = "Subject",
+            label = labels.subject,
             value = subjectDetectDisplay,
             propCode = subjectDetectProp?.propCode,
             onClick = subjectDetectProp?.let { { openExtraProperty(it) } },
@@ -1844,7 +2168,7 @@ private fun AdaptiveScpSinglePage(
         if (subjectDetectionEnabled) {
             add(
         AdaptiveScpGridItem(
-            label = "Subject Type",
+            label = labels.subjectType,
             value = subjectTypeDisplay,
             propCode = subjectTypeProp?.propCode,
             onClick = subjectTypeProp?.let { { openExtraProperty(it) } },
@@ -1853,7 +2177,7 @@ private fun AdaptiveScpSinglePage(
         }
         add(
         AdaptiveScpGridItem(
-            label = "Color Space",
+            label = labels.colorSpace,
             value = formatScpPtpValue(colorSpaceProp),
             propCode = colorSpaceProp?.propCode,
             onClick = colorSpaceProp?.let { { openExtraProperty(it) } },
@@ -1961,7 +2285,8 @@ private fun AdaptiveScpCell(
     val verticalGap = if (compact) 4.dp else 6.dp
     val labelFontSize = if (compact) 8.sp else 9.sp
     val badgeFontSize = if (compact) 7.sp else 8.sp
-    val isExposureMode = propCode == PtpConstants.OlympusProp.ExposureMode
+    val isExposureMode = propCode == PtpConstants.OlympusProp.ExposureMode ||
+        propCode == PtpConstants.Prop.ExposureProgramMode
     val valueFontSize = when {
         isExposureMode && compact -> 24.sp
         isExposureMode -> 28.sp
@@ -2202,7 +2527,8 @@ private fun ScpCell(
                 }
             }
         }
-        val isExposureMode = propCode == PtpConstants.OlympusProp.ExposureMode
+    val isExposureMode = propCode == PtpConstants.OlympusProp.ExposureMode ||
+        propCode == PtpConstants.Prop.ExposureProgramMode
         Text(
             text = value,
             color = visual.valueColor,
@@ -2254,7 +2580,8 @@ private fun resolveScpCellVisual(
     }
 
     val (accent, badge, helper) = when (propCode) {
-        PtpConstants.OlympusProp.ExposureMode -> when {
+        PtpConstants.OlympusProp.ExposureMode,
+        PtpConstants.Prop.ExposureProgramMode -> when {
             normalized in setOf("M") -> Triple(Color(0xFFCCFF00), null, "Manual exposure")
             normalized in setOf("A") -> Triple(AppleGreen, null, "Aperture priority")
             normalized in setOf("S") -> Triple(AppleBlue, null, "Shutter priority")
@@ -2519,7 +2846,9 @@ private fun formatUsbScpDrive(
 
 private fun formatUsbScpImageQuality(value: Long): String = if (value < 0) "--" else formatOlympusImageQuality(value)
 
-private fun formatUsbScpExposureMode(value: Long): String = if (value < 0) "--" else formatOlympusExposureMode(value)
+private fun formatUsbScpExposureMode(
+    property: OmCaptureUsbManager.CameraPropertyState?,
+): String = property?.let { formatOlympusExposureMode(it.propCode, it.currentValue) } ?: "--"
 
 private fun formatUsbScpShutterSpeed(value: Long): String = if (value < 0) "--" else formatOlympusShutterSpeed(value)
 
@@ -2963,7 +3292,7 @@ private fun RemoteControlPanel(
                     .height(panelHeight),
             ) {
                 DialSection(
-                    label = "Aperture",
+                    label = stringResource(R.string.remote_dial_aperture),
                     values = runtime.aperture,
                     propName = "focalvalue",
                     reverseDial = reverseDialMap["focalvalue"] == true,
@@ -2978,7 +3307,7 @@ private fun RemoteControlPanel(
                     .height(panelHeight),
             ) {
                 DialSection(
-                    label = "Shutter Speed",
+                    label = stringResource(R.string.remote_dial_shutter_speed),
                     values = runtime.shutterSpeed,
                     propName = "shutspeedvalue",
                     reverseDial = reverseDialMap["shutspeedvalue"] == true,
@@ -2993,7 +3322,7 @@ private fun RemoteControlPanel(
                     .height(panelHeight),
             ) {
                 DialSection(
-                    label = "ISO",
+                    label = stringResource(R.string.remote_dial_iso),
                     values = runtime.iso,
                     propName = "isospeedvalue",
                     reverseDial = reverseDialMap["isospeedvalue"] == true,
@@ -3008,7 +3337,7 @@ private fun RemoteControlPanel(
                     .height(panelHeight),
             ) {
                 DialSection(
-                    label = "White Balance",
+                    label = stringResource(R.string.remote_dial_white_balance),
                     values = runtime.whiteBalance,
                     propName = "wbvalue",
                     reverseDial = reverseDialMap["wbvalue"] == true,
@@ -3019,7 +3348,7 @@ private fun RemoteControlPanel(
         ActivePropertyPicker.FocusMode -> {
             Box(modifier = Modifier.fillMaxWidth().height(panelHeight)) {
                 UsbPropertyDialSection(
-                    label = "AF Mode",
+                    label = stringResource(R.string.remote_scp_label_af_mode),
                     prop = usbCameraProperties.focusMode,
                     propCode = PtpConstants.OlympusProp.FocusMode,
                     readableRotation = readableRotation,
@@ -3030,7 +3359,7 @@ private fun RemoteControlPanel(
         ActivePropertyPicker.Metering -> {
             Box(modifier = Modifier.fillMaxWidth().height(panelHeight)) {
                 UsbPropertyDialSection(
-                    label = "Metering",
+                    label = stringResource(R.string.remote_scp_label_metering),
                     prop = usbCameraProperties.meteringMode,
                     propCode = PtpConstants.OlympusProp.MeteringMode,
                     readableRotation = readableRotation,
@@ -3041,7 +3370,7 @@ private fun RemoteControlPanel(
         ActivePropertyPicker.Flash -> {
             Box(modifier = Modifier.fillMaxWidth().height(panelHeight)) {
                 UsbPropertyDialSection(
-                    label = "Flash",
+                    label = stringResource(R.string.remote_scp_label_flash),
                     prop = usbCameraProperties.flashMode,
                     propCode = PtpConstants.OlympusProp.FlashMode,
                     readableRotation = readableRotation,
@@ -3052,7 +3381,7 @@ private fun RemoteControlPanel(
         ActivePropertyPicker.ImageQuality -> {
             Box(modifier = Modifier.fillMaxWidth().height(panelHeight)) {
                 UsbPropertyDialSection(
-                    label = "Image Quality",
+                    label = stringResource(R.string.remote_scp_label_image_quality),
                     prop = usbCameraProperties.imageQuality,
                     propCode = PtpConstants.OlympusProp.ImageQuality,
                     readableRotation = readableRotation,
@@ -3064,7 +3393,7 @@ private fun RemoteControlPanel(
         ActivePropertyPicker.PictureMode -> {
             Box(modifier = Modifier.fillMaxWidth().height(panelHeight)) {
                 UsbPropertyDialSection(
-                    label = "Picture Mode",
+                    label = stringResource(R.string.remote_scp_label_picture_mode),
                     prop = usbCameraProperties.findProperty(0xD00C),
                     propCode = 0xD00C,
                     readableRotation = readableRotation,
@@ -3075,7 +3404,7 @@ private fun RemoteControlPanel(
         ActivePropertyPicker.HighRes -> {
             Box(modifier = Modifier.fillMaxWidth().height(panelHeight)) {
                 UsbPropertyDialSection(
-                    label = "High Res Shot",
+                    label = stringResource(R.string.remote_scp_label_high_res_shot),
                     prop = usbCameraProperties.findProperty(0xD065),
                     propCode = 0xD065,
                     readableRotation = readableRotation,
@@ -3102,6 +3431,7 @@ private fun DeepSkyInlinePanel(
     val animatedRotation = rememberAnimatedReadableRotation(readableRotation, label = "deepSkyInlineRotation")
     val manualDialCurrent = state.manualFocalLengthMm ?: state.autoFocalLengthMm ?: state.activeFocalLengthMm ?: 50f
     val showManualDial = state.usingManualFocalLength || state.autoFocalLengthMm == null
+    val manualFocalLengthLabel = stringResource(R.string.remote_deep_sky_manual)
     val manualDialValues = remember(
         state.manualFocalLengthMm,
         state.autoFocalLengthMm,
@@ -3126,7 +3456,7 @@ private fun DeepSkyInlinePanel(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = "Deep Sky",
+                    text = stringResource(R.string.remote_deep_sky_title),
                     color = Chalk,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
@@ -3140,7 +3470,11 @@ private fun DeepSkyInlinePanel(
                 )
             }
             StatusBadge(
-                label = if (state.isSessionActive) "STACKING" else "READY",
+                label = if (state.isSessionActive) {
+                    stringResource(R.string.remote_deep_sky_stacking)
+                } else {
+                    stringResource(R.string.remote_deep_sky_ready)
+                },
                 color = if (state.isSessionActive) AppleGreen else AppleBlue,
             )
         }
@@ -3151,7 +3485,10 @@ private fun DeepSkyInlinePanel(
         {
             state.autoFocalLengthMm?.let { autoFocalLength ->
                 TetheredActionChip(
-                    label = "Camera ${formatDeepSkyFocalLengthMm(autoFocalLength)}",
+                    label = stringResource(
+                        R.string.remote_deep_sky_camera_focal_length,
+                        formatDeepSkyFocalLengthMm(autoFocalLength),
+                    ),
                     accent = AppleBlue,
                     selected = !state.usingManualFocalLength,
                     modifier = Modifier.weight(1f),
@@ -3160,7 +3497,7 @@ private fun DeepSkyInlinePanel(
             }
             TetheredActionChip(
                 label = buildString {
-                    append("Manual")
+                    append(manualFocalLengthLabel)
                     if (state.manualFocalLengthMm != null) {
                         append(" ")
                         append(formatDeepSkyFocalLengthMm(state.manualFocalLengthMm))
@@ -3182,17 +3519,17 @@ private fun DeepSkyInlinePanel(
         ) {
             DeepSkyInfoTile(
                 modifier = Modifier.weight(1f),
-                title = "Preset",
+                title = stringResource(R.string.remote_deep_sky_preset),
                 value = state.selectedPreset?.displayName ?: "--",
             )
             DeepSkyInfoTile(
                 modifier = Modifier.weight(1f),
-                title = "Focal",
+                title = stringResource(R.string.remote_deep_sky_focal),
                 value = state.activeFocalLengthMm?.let(::formatDeepSkyFocalLengthMm) ?: "--",
             )
             DeepSkyInfoTile(
                 modifier = Modifier.weight(1f),
-                title = "Guide",
+                title = stringResource(R.string.remote_deep_sky_guide),
                 value = state.stackFrameLabel,
             )
         }
@@ -3201,7 +3538,11 @@ private fun DeepSkyInlinePanel(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             TetheredActionChip(
-                label = if (showSkyOverlay) "Sky Overlay On" else "Sky Overlay Off",
+                label = if (showSkyOverlay) {
+                    stringResource(R.string.remote_deep_sky_overlay_on)
+                } else {
+                    stringResource(R.string.remote_deep_sky_overlay_off)
+                },
                 accent = AppleBlue,
                 selected = showSkyOverlay,
                 modifier = Modifier.weight(1f),
@@ -3231,9 +3572,9 @@ private fun DeepSkyInlinePanel(
             ) {
                 Text(
                     text = if (state.autoFocalLengthMm == null) {
-                        "Set focal length to size the center stack guide."
+                        stringResource(R.string.remote_deep_sky_manual_hint_primary)
                     } else {
-                        "Override the camera focal length when the optical setup differs."
+                        stringResource(R.string.remote_deep_sky_manual_hint_secondary)
                     },
                     color = Chalk.copy(alpha = 0.72f),
                     style = MaterialTheme.typography.labelSmall,
@@ -3267,20 +3608,24 @@ private fun DeepSkyInlinePanel(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TetheredActionChip(
-                label = if (state.isSessionActive) "Running" else "Start",
+                label = if (state.isSessionActive) {
+                    stringResource(R.string.remote_deep_sky_running)
+                } else {
+                    stringResource(R.string.remote_deep_sky_start)
+                },
                 accent = AppleGreen,
                 selected = state.isSessionActive,
                 onClick = onStartSession,
             )
             TetheredActionChip(
-                label = "Stop",
+                label = stringResource(R.string.remote_deep_sky_stop),
                 accent = AppleOrange,
                 selected = false,
                 enabled = state.isSessionActive,
                 onClick = onStopSession,
             )
             TetheredActionChip(
-                label = "Reset",
+                label = stringResource(R.string.remote_deep_sky_reset),
                 accent = AppleBlue,
                 selected = false,
                 onClick = onResetSession,
@@ -4001,19 +4346,19 @@ private fun TetheredLiveViewWorkspace(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = "Tether Live View",
+                    text = stringResource(R.string.remote_tether_live_view_title),
                     color = Chalk,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = "USB/PTP tether controls are active",
+                    text = stringResource(R.string.remote_tether_live_view_subtitle),
                     color = Chalk.copy(alpha = 0.56f),
                     style = MaterialTheme.typography.labelSmall,
                 )
             }
             TetheredActionChip(
-                label = "Camera Controls",
+                label = stringResource(R.string.remote_camera_controls),
                 accent = AppleBlue,
                 selected = false,
                 onClick = onOpenOmCapture,
@@ -4030,7 +4375,7 @@ private fun TetheredLiveViewWorkspace(
             onOpenDeepSkyLiveStack = onOpenDeepSkyLiveStack,
         )
         TetheredActionChip(
-            label = "Back To Camera",
+            label = stringResource(R.string.remote_back_to_camera),
             accent = AppleOrange,
             selected = false,
             onClick = onReturnToCamera,
@@ -4062,10 +4407,10 @@ private fun TetheredCapturePanel(
         else -> omCaptureUsb.statusLabel
     }
     val connectLabel = when {
-        omCaptureUsb.isBusy -> "Connecting..."
-        omCaptureUsb.canRetry -> "Retry USB"
-        omCaptureUsb.summary != null -> "Reconnect USB"
-        else -> "Connect USB"
+        omCaptureUsb.isBusy -> stringResource(R.string.remote_connecting_usb)
+        omCaptureUsb.canRetry -> stringResource(R.string.remote_retry_usb)
+        omCaptureUsb.summary != null -> stringResource(R.string.remote_reconnect_usb)
+        else -> stringResource(R.string.remote_connect_usb)
     }
     val liveViewLabel = if (liveViewActive) {
         stringResource(R.string.remote_tethered_live_view_stop)
@@ -4145,7 +4490,7 @@ private fun TetheredCapturePanel(
                 onClick = onRefreshOmCaptureUsb,
             )
             TetheredActionChip(
-                label = "Clear Status",
+                label = stringResource(R.string.remote_clear_status),
                 accent = AppleOrange,
                 selected = false,
                 enabled = !omCaptureUsb.isBusy && canClearStatus,
@@ -4166,7 +4511,7 @@ private fun TetheredCapturePanel(
                 onClick = onToggleLiveView,
             )
             TetheredActionChip(
-                label = "Camera Controls",
+                label = stringResource(R.string.remote_camera_controls),
                 accent = AppleBlue,
                 selected = false,
                 enabled = omCaptureUsb.summary != null,
@@ -4175,7 +4520,7 @@ private fun TetheredCapturePanel(
             )
         }
         TetheredActionChip(
-            label = "Deep Sky Live Stack",
+            label = stringResource(R.string.remote_deep_sky_live_stack),
             accent = AppleBlue,
             selected = false,
             enabled = omCaptureUsb.summary != null,
@@ -4666,7 +5011,7 @@ private fun UsbDriveSettingsPanel(
 ) {
     if (driveProp == null) {
         Text(
-            text = "Drive Mode: not available",
+            text = stringResource(R.string.remote_drive_mode_unavailable),
             color = Chalk.copy(alpha = 0.5f),
             style = MaterialTheme.typography.labelMedium,
         )
@@ -5301,11 +5646,11 @@ private fun formatDeepSkyFocalLengthMm(focalLengthMm: Float): String {
 private fun modeFromTakeModeRaw(rawMode: String): CameraExposureMode? {
     val normalized = rawMode.trim().uppercase()
     return when {
-        normalized == "P" || "PROGRAM" in normalized -> CameraExposureMode.P
+        normalized == "P" || normalized == "PS" || "PROGRAM" in normalized -> CameraExposureMode.P
         normalized == "A" || "APERTURE" in normalized -> CameraExposureMode.A
         normalized == "S" || "SHUTTER" in normalized -> CameraExposureMode.S
         normalized == "M" || "MANUAL" in normalized -> CameraExposureMode.M
-        normalized == "B" || "BULB" in normalized -> CameraExposureMode.B
+        normalized == "B" || "BULB" in normalized || "TIME" in normalized || "COMP" in normalized -> CameraExposureMode.B
         "MOVIE" in normalized || "VIDEO" in normalized -> CameraExposureMode.VIDEO
         else -> null
     }

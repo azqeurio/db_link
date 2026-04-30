@@ -1,6 +1,8 @@
 package dev.dblink.ui
 
 import android.app.Application
+import android.content.ContentUris
+import android.content.Intent
 import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -11,18 +13,23 @@ import android.os.Build
 import android.os.Environment
 import android.os.SystemClock
 import android.provider.MediaStore
+import android.provider.Settings
+import androidx.annotation.StringRes
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.exifinterface.media.ExifInterface
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.dblink.BuildConfig
 import dev.dblink.DbLinkApplication
+import dev.dblink.R
 import dev.dblink.core.config.AppConfig
 import dev.dblink.core.config.AppEnvironment
 import dev.dblink.core.deepsky.CapturedFrame
 import dev.dblink.core.deepsky.DeepSkyLiveStackUiState
 import dev.dblink.core.deepsky.DeepSkyPerformanceMode
 import dev.dblink.core.deepsky.DeepSkyPresetId
+import dev.dblink.core.deepsky.RawDecoder
 import dev.dblink.core.geotag.GeoTagStatusNotifier
 import dev.dblink.core.geotag.GeoTagMatcher
 import dev.dblink.core.geotag.GeoTagTrackingState
@@ -65,6 +72,8 @@ import dev.dblink.core.session.CameraSessionStateMachine
 import dev.dblink.core.stream.LiveViewMetadata
 import dev.dblink.core.stream.LiveViewReceiver
 import dev.dblink.core.stream.StreamHealth
+import dev.dblink.core.update.AppReleaseInfo
+import dev.dblink.core.update.GitHubAppUpdateManager
 import dev.dblink.core.usb.OmCaptureUsbCameraEvent
 import dev.dblink.core.usb.OmCaptureUsbImportResult
 import dev.dblink.core.usb.OmCaptureUsbLibraryItem
@@ -73,6 +82,8 @@ import dev.dblink.core.usb.OmCaptureUsbOperationState
 import dev.dblink.core.usb.OmCaptureUsbRuntimeState
 import dev.dblink.core.usb.OmCaptureUsbSavedMedia
 import dev.dblink.core.usb.PtpConstants
+import dev.dblink.core.usb.UsbTetheringProfile
+import dev.dblink.core.usb.UsbSessionDomain
 import dev.dblink.core.usb.encodeOlympusAfArea
 import dev.dblink.core.usb.enumerateOlympusUsbPropertyValues
 import dev.dblink.core.usb.formatOlympusApertureValueOnly
@@ -105,6 +116,8 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 import java.text.SimpleDateFormat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -131,6 +144,9 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private const val MEDIA_STORE_PRIMARY_VOLUME = "external_primary"
+private const val DEFAULT_CAPTURE_REVIEW_DURATION_SECONDS = 2
+private const val MIN_CAPTURE_REVIEW_DURATION_SECONDS = 1
+private const val MAX_CAPTURE_REVIEW_DURATION_SECONDS = 5
 
 data class AutoImportConfig(
     val saveLocation: String = "Pictures/db link",
@@ -154,6 +170,23 @@ enum class LibraryCompatibilityMode(val preferenceValue: String) {
         fun fromPreferenceValue(value: String?): LibraryCompatibilityMode {
             return entries.firstOrNull { it.preferenceValue == value } ?: HighSpeed
         }
+    }
+}
+
+enum class UsbTetheringMode(val preferenceValue: String) {
+    Om("om"),
+    Olympus("olympus"),
+    ;
+
+    companion object {
+        fun fromPreferenceValue(value: String?): UsbTetheringMode {
+            return entries.firstOrNull { it.preferenceValue == value } ?: Om
+        }
+    }
+
+    fun toUsbTetheringProfile(): UsbTetheringProfile = when (this) {
+        Om -> UsbTetheringProfile.Om
+        Olympus -> UsbTetheringProfile.Olympus
     }
 }
 
@@ -183,12 +216,23 @@ data class MainUiState(
     val autoImportConfig: AutoImportConfig = AutoImportConfig(),
     val geotagConfig: GeotagConfig = GeotagConfig(),
     val libraryCompatibilityMode: LibraryCompatibilityMode = LibraryCompatibilityMode.HighSpeed,
+    val usbTetheringMode: UsbTetheringMode = UsbTetheringMode.Om,
     val tetherSaveTarget: TetherSaveTarget = TetherSaveTarget.SdAndPhone,
     val tetherPhoneImportFormat: TetherPhoneImportFormat = TetherPhoneImportFormat.JpegOnly,
+    val captureReviewDurationSeconds: Int = DEFAULT_CAPTURE_REVIEW_DURATION_SECONDS,
+    val appUpdate: AppUpdateUiState = AppUpdateUiState(),
     val pendingReconnectHandoffToken: Long? = null,
     val omCaptureUsb: OmCaptureUsbUiState = OmCaptureUsbUiState(),
     val omCaptureStudio: OmCaptureStudioUiState = OmCaptureCapabilityRegistry.defaultState(),
     val deepSkyState: DeepSkyLiveStackUiState = DeepSkyLiveStackUiState(),
+)
+
+data class AppUpdateUiState(
+    val checking: Boolean = false,
+    val downloading: Boolean = false,
+    val updateAvailable: Boolean = false,
+    val latestVersion: String? = null,
+    val statusLabel: String = "",
 )
 
 class MainViewModel(
@@ -206,7 +250,9 @@ class MainViewModel(
     private val omCaptureUsbManager = appContainer.omCaptureUsbManager
     private val deepSkyLiveStackCoordinator = appContainer.deepSkyLiveStackCoordinator
     private val liveViewReceiver = LiveViewReceiver(appConfig.liveViewPort)
+    private val appUpdateManager = GitHubAppUpdateManager(application)
     private val initialWorkspace = repository.initialWorkspace()
+    private val normalizedAppVersionName = BuildConfig.VERSION_NAME.removeSuffix("-debug")
 
     private var liveViewReceiverJob: Job? = null
     private var liveViewFrameJob: Job? = null
@@ -261,8 +307,13 @@ class MainViewModel(
         const val USB_AUTO_IMPORT_COMPLETED_HANDLE_LIMIT = 24
         const val USB_LIBRARY_CACHE_TTL_MS = 15_000L
         const val DEEP_SKY_PROTECTION_PROBE_BACKOFF_MS = 15_000L
+        const val USB_AF_TARGET_EVENT_PROP = PtpConstants.OlympusProp.AFTargetArea
         const val USB_MODE_DIAL_EVENT_PROP = 0xD062
         const val USB_MODE_DIAL_REFRESH_SUPPRESS_MS = 800L
+        const val USB_CAPTURE_PROPERTY_SETTLE_MS = 6_000L
+        const val USB_AUTO_IMPORT_BATCH_WINDOW_MS = 450L
+        const val USB_TRANSFER_THUMBNAIL_PREFETCH_LIMIT = 4
+        const val USB_TRANSFER_THUMBNAIL_PREFETCH_DELAY_MS = 60L
         const val EMPTY_PROPERTY_LOAD_RETRY_LIMIT = 5
         const val USB_OM1_ISO_PROP = 0xD005
         const val USB_INTERVAL_COUNT_PROP = 0xD0CC
@@ -278,6 +329,7 @@ class MainViewModel(
     @Volatile private var reconnectRestorationActive = false
     @Volatile private var autoImportArmed = false
     private var pendingLastCapturePreviewOpen = false
+    private var pendingLastCapturePreviewFileName: String? = null
     private var pendingAutoImportMarker: String? = null
     private var pendingAutoImportMarkerSsid: String? = null
     private val sessionLaunchImportBaselineBySsid = linkedMapOf<String, String>()
@@ -291,18 +343,24 @@ class MainViewModel(
     private var activePlayTargetSlot: Int? = null
     private var latestLiveViewMetadata: LiveViewMetadata? = null
     private var lastRawApertureOptions: List<String> = emptyList()
+    private var latestAppRelease: AppReleaseInfo? = null
+    private var downloadedUpdateApk: File? = null
     private var pendingReconnectWorkspace: CameraWorkspace? = null
     private var pendingReconnectRestoreLiveView = false
     private var pendingReconnectCompletion: CompletableDeferred<Unit>? = null
     private var lastAutoImportedUsbHandle: Int? = null
     private val pendingUsbAutoImportHandles = linkedSetOf<Int>()
     private val completedUsbAutoImportHandles = linkedSetOf<Int>()
+    private val usbSavedMediaByFileName = linkedMapOf<String, OmCaptureUsbSavedMedia>()
     private var usbCaptureEventMonitoringEnabled = false
     private var usbAutoImportJob: Job? = null
     private var deepSkyAutoCaptureJob: Job? = null
     private var usbPropertySyncJob: Job? = null
+    private var usbModeDialRefreshJob: Job? = null
+    private var usbLiveViewStartupRefreshJob: Job? = null
+    @Volatile private var usbTransferThumbnailPrefetchActive = false
     private val pendingUsbExtraPropertyJobs = linkedMapOf<Int, Job>()
-    private var lastUsbModeDialEventAtMs = 0L
+    private var usbCaptureSettleUntilMs = 0L
     private var nextDeepSkyProtectionProbeAtMs = 0L
     private val pendingUsbPropertyRefreshCodes = linkedSetOf<Int>()
     private val _uiState = MutableStateFlow(
@@ -368,12 +426,20 @@ class MainViewModel(
 
     init {
         D.lifecycle("MainViewModel init, config=$appConfig")
+        omCaptureUsbManager.setUsbTetheringProfile(_uiState.value.usbTetheringMode.toUsbTetheringProfile())
         viewModelScope.launch {
             loadPersistedUiState()
+        }
+        viewModelScope.launch {
+            delay(2_500L)
+            checkForAppUpdate(silent = true)
         }
         omCaptureUsbManager.runtimeState
             .onEach { runtimeState ->
                 val currentState = _uiState.value
+                val usbSessionJustBecameAvailable =
+                    currentState.omCaptureUsb.summary == null &&
+                        runtimeState.summary != null
                 // Drop live view from UI when the manager says it's no longer active
                 // — regardless of whether it ended in error or just stopped.
                 val shouldDropUsbLiveView =
@@ -396,6 +462,9 @@ class MainViewModel(
                         omCaptureUsb = runtimeState.toUiState(),
                     ),
                 )
+                if (usbSessionJustBecameAvailable) {
+                    clearUsbLibraryCache()
+                }
                 if (shouldDropUsbLiveView && canAttemptUsbLiveViewRecovery(currentState)) {
                     scheduleUsbLiveViewRecovery(
                         reason = "runtime-${runtimeState.operationState.name.lowercase()}",
@@ -575,6 +644,8 @@ class MainViewModel(
         deepSkyAutoCaptureJob?.cancel()
         usbAutoImportJob?.cancel()
         usbPropertySyncJob?.cancel()
+        usbModeDialRefreshJob?.cancel()
+        usbLiveViewStartupRefreshJob?.cancel()
         pendingUsbAutoImportHandles.clear()
         completedUsbAutoImportHandles.clear()
         clearPendingReconnectHandoffState(cancelCompletion = true)
@@ -933,8 +1004,12 @@ class MainViewModel(
         }
 
         val runtime = baseState.remoteRuntime
-        val resolvedExposureMode = snapshot.exposureMode?.currentValue?.let(::olympusExposureModeFromRaw)
-            ?: runtime.exposureMode
+        val reportedExposureMode = snapshot.exposureMode?.let(::usbExposureModeFromProperty)
+        val resolvedExposureMode = resolveUsbExposureMode(
+            reportedMode = reportedExposureMode,
+            apertureProperty = snapshot.aperture,
+            shutterProperty = snapshot.shutterSpeed,
+        )
         val nextActivePicker = coerceActivePickerForMode(runtime.activePicker, resolvedExposureMode)
         val apertureValues = snapshot.aperture?.let { usbRemotePropertyValues("focalvalue", it) }
             ?: runtime.aperture
@@ -947,7 +1022,8 @@ class MainViewModel(
         val exposureValues = snapshot.exposureComp?.let { usbRemotePropertyValues("expcomp", it) }
             ?: runtime.exposureCompensationValues
         val takeModeValues = snapshot.exposureMode?.let(::usbTakeModeValues)
-            ?: runtime.takeMode
+            ?.let { normalizeUsbTakeModeValues(it, resolvedExposureMode) }
+            ?: runtime.takeMode.copy(currentValue = resolvedExposureMode.label)
         val driveModeValues = snapshot.driveMode?.let(::usbDriveModeValues)
             ?: runtime.driveModeValues
         val (driveMode, timerMode) = snapshot.driveMode
@@ -982,12 +1058,23 @@ class MainViewModel(
             ?.toInt()
             ?.coerceAtLeast(1)
             ?: runtime.timerDelay
+        if (snapshot.aperture != null) {
+            // For Olympus USB tethering, libgphoto2/OM Capture rely on the
+            // descriptor's aperture enumeration itself. Keep those formatted
+            // values around so live-view metadata cannot fall back to stale raw
+            // tenths from a previous non-USB session.
+            lastRawApertureOptions = apertureValues.availableValues
+        }
+        val apertureEnabled = snapshot.aperture?.isReadOnly?.not()
+            ?: isApertureControlEnabled(resolvedExposureMode)
+        val shutterEnabled = snapshot.shutterSpeed?.isReadOnly?.not()
+            ?: isShutterControlEnabled(resolvedExposureMode)
         val nextRuntime = runtime.copy(
             aperture = apertureValues.copy(
-                enabled = isApertureControlEnabled(resolvedExposureMode),
+                enabled = apertureEnabled,
             ),
             shutterSpeed = shutterValues.copy(
-                enabled = isShutterControlEnabled(resolvedExposureMode),
+                enabled = shutterEnabled,
             ),
             iso = isoValues,
             whiteBalance = whiteBalanceValues,
@@ -1050,10 +1137,10 @@ class MainViewModel(
     private fun usbTakeModeValues(
         property: OmCaptureUsbManager.CameraPropertyState,
     ): CameraPropertyValues {
-        val currentValue = usbExposureModeLabel(property.currentValue)
+        val currentValue = usbExposureModeLabel(property)
         val availableValues = enumerateUsbPropertyValues(property)
             .mapNotNull { raw ->
-                usbExposureModeLabel(raw).takeIf { it.isNotBlank() }
+                usbExposureModeLabel(property.propCode, raw).takeIf { it.isNotBlank() }
             }
             .ifEmpty { listOf(currentValue) }
             .distinct()
@@ -1104,9 +1191,23 @@ class MainViewModel(
         return enumerateOlympusUsbPropertyValues(property)
     }
 
-    private fun usbExposureModeFromRaw(rawValue: Long): CameraExposureMode? = olympusExposureModeFromRaw(rawValue)
+    private fun usbExposureModeFromRaw(
+        propCode: Int,
+        rawValue: Long,
+    ): CameraExposureMode? = olympusExposureModeFromRaw(propCode, rawValue)
 
-    private fun usbExposureModeLabel(rawValue: Long): String = formatOlympusExposureMode(rawValue)
+    private fun usbExposureModeFromProperty(
+        property: OmCaptureUsbManager.CameraPropertyState,
+    ): CameraExposureMode? = usbExposureModeFromRaw(property.propCode, property.currentValue)
+
+    private fun usbExposureModeLabel(
+        property: OmCaptureUsbManager.CameraPropertyState,
+    ): String = usbExposureModeLabel(property.propCode, property.currentValue)
+
+    private fun usbExposureModeLabel(
+        propCode: Int,
+        rawValue: Long,
+    ): String = formatOlympusExposureMode(propCode, rawValue)
 
     private fun usbWhiteBalanceLabel(rawValue: Long): String = formatOlympusWhiteBalance(rawValue)
 
@@ -1148,13 +1249,18 @@ class MainViewModel(
             propCode == PtpConstants.OlympusProp.ExposureCompensation -> "expcomp"
             propCode == PtpConstants.OlympusProp.WhiteBalance -> "wbvalue"
             propCode == PtpConstants.OlympusProp.DriveMode -> "drivemode"
-            propCode == PtpConstants.OlympusProp.ExposureMode -> "takemode"
+            propCode == PtpConstants.Prop.ExposureProgramMode ||
+                propCode == PtpConstants.OlympusProp.ExposureMode -> "takemode"
             else -> ""
         }
         if (property != null) {
             val candidates = enumerateUsbPropertyValues(property)
             candidates.firstOrNull { raw ->
-                val candidateValue = formatUsbRemoteValue(propName, raw, candidates)
+                val candidateValue = if (propName == "takemode") {
+                    usbExposureModeLabel(property.propCode, raw)
+                } else {
+                    formatUsbRemoteValue(propName, raw, candidates)
+                }
                 propertyValueMatches(propName, candidateValue, selectedValue) ||
                     candidateValue.equals(selectedValue, ignoreCase = true) ||
                     PropertyFormatter.formatForDisplay(propName, candidateValue)
@@ -1163,15 +1269,22 @@ class MainViewModel(
         }
         return when (propCode) {
             PtpConstants.OlympusProp.ExposureCompensation -> parseOlympusExposureCompRaw(selectedValue)
+            PtpConstants.Prop.ExposureProgramMode -> when (selectedValue.trim().uppercase()) {
+                "M" -> 1L
+                "P", "PS" -> 2L
+                "A" -> 3L
+                "S" -> 4L
+                else -> null
+            }
             PtpConstants.OlympusProp.ExposureMode -> when (selectedValue.trim().uppercase()) {
                 "M" -> 1L
-                "P" -> 2L
+                "P", "PS" -> 2L
                 "A" -> 3L
                 "S" -> 4L
                 "B", "BULB" -> 5L
                 "TIME" -> 6L
                 "COMPOSITE" -> 7L
-                "VIDEO", "MOVIE" -> 8L
+                "VIDEO", "MOVIE" -> property?.allowedValues?.firstOrNull { it == 0L || it == 8L } ?: 0L
                 else -> null
             }
             else -> null
@@ -1230,8 +1343,10 @@ class MainViewModel(
         mode: CameraExposureMode,
         closePicker: Boolean,
     ): Boolean {
+        val exposureModePropCode = omCaptureUsbManager.cameraProperties.value.exposureMode?.propCode
+            ?: PtpConstants.OlympusProp.ExposureMode
         val rawValue = resolveUsbRawValue(
-            propCode = PtpConstants.OlympusProp.ExposureMode,
+            propCode = exposureModePropCode,
             selectedValue = mode.label,
         )
         if (rawValue == null) {
@@ -1248,7 +1363,7 @@ class MainViewModel(
                 statusLabel = "Switching to ${mode.label}...",
             ),
         ) }
-        val result = omCaptureUsbManager.setCameraProperty(PtpConstants.OlympusProp.ExposureMode, rawValue)
+        val result = omCaptureUsbManager.setCameraProperty(exposureModePropCode, rawValue)
         result.onSuccess {
             val currentRuntime = _uiState.value.remoteRuntime
             refreshOmCaptureStudioState(
@@ -1364,7 +1479,7 @@ class MainViewModel(
                 omCaptureUsbManager.captureAndImportLatestImage(
                     saveMedia = { fileName, data ->
                         withContext(Dispatchers.IO) {
-                            saveToGalleryDetailed(fileName, data)
+                            saveToGalleryDetailed(fileName, data, currentUsbImportDateFolder())
                                 ?: error("Failed to save $fileName to the phone gallery.")
                         }
                     },
@@ -1411,7 +1526,7 @@ class MainViewModel(
         fileName: String,
         data: ByteArray,
     ): OmCaptureUsbSavedMedia = withContext(Dispatchers.IO) {
-        saveToGalleryDetailed(fileName, data)
+        saveToGalleryDetailed(fileName, data, currentUsbImportDateFolder())
             ?: error("Failed to save $fileName to the phone gallery.")
     }
 
@@ -1419,14 +1534,32 @@ class MainViewModel(
         image: OmCaptureUsbImportResult,
         scanFilesNow: Boolean,
     ) {
-        val previewSource = image.thumbnailBytes ?: image.objectBytes
-        val preview = decodeTransferPreviewBitmap(previewSource)
-            ?: decodeSampledPreviewBitmap(previewSource)
-            ?: decodeTransferPreviewBitmap(image.objectBytes)
+        invalidateUsbLibraryCache(reloadIfVisible = true)
+        val preview = decodeTransferPreviewBitmap(image.objectBytes)
             ?: decodeSampledPreviewBitmap(image.objectBytes)
+            ?: image.thumbnailBytes?.let(::decodeTransferPreviewBitmap)
+            ?: image.thumbnailBytes?.let(::decodeSampledPreviewBitmap)
         updateUiState { current -> current.copy(
             lastCaptureThumbnail = preview ?: current.lastCaptureThumbnail,
         ) }
+        if (image.savedMedia.isRaw || preview == null) {
+            viewModelScope.launch {
+                val savedPreview = decodeSavedMediaPreview(image.savedMedia) ?: return@launch
+                updateLastCaptureThumbnail(savedPreview)
+                updateUiState { current ->
+                    if (current.transferState.selectedSavedMedia?.uriString == image.savedMedia.uriString) {
+                        current.copy(
+                            transferState = current.transferState.copy(
+                                selectedSavedMediaBitmap = savedPreview,
+                                selectedSavedMediaLoading = false,
+                            ),
+                        )
+                    } else {
+                        current
+                    }
+                }
+            }
+        }
         submitDeepSkyCapturedFrame(image)
         if (scanFilesNow) {
             scanDownloadedFiles()
@@ -1443,6 +1576,9 @@ class MainViewModel(
                     detail = "handle=${usbPropHex(event.handle)}",
                 )
                 D.usb("Received OM USB auto-import trigger for handle=${event.handle.toString(16)}")
+                invalidateUsbLibraryCache(
+                    reloadIfVisible = _uiState.value.transferState.sourceKind == TransferSourceKind.OmCaptureUsb,
+                )
                 maybeAutoImportUsbHandle(event.handle)
             }
             is OmCaptureUsbCameraEvent.PropertyChanged -> {
@@ -1454,7 +1590,7 @@ class MainViewModel(
                 }
                 recordQaCameraEvent(
                     title = if (event.propCode == USB_MODE_DIAL_EVENT_PROP) {
-                        "Mode dial event"
+                        "Camera mode/state hint"
                     } else {
                         "Camera property event"
                     },
@@ -1468,6 +1604,7 @@ class MainViewModel(
                     detail = event.reason,
                 )
                 usbPropertySyncJob?.cancel()
+                usbModeDialRefreshJob?.cancel()
                 pendingUsbPropertyRefreshCodes.clear()
                 D.usb("USB session reset requested (${event.reason}); dropping pending property refresh batch")
                 if (isUsbModeSurface(_uiState.value.remoteRuntime.modePickerSurface)) {
@@ -1488,52 +1625,143 @@ class MainViewModel(
     }
 
     private fun queueUsbPropertyRefresh(propCode: Int, rawValue: Long?) {
-        if (_uiState.value.omCaptureUsb.summary == null) {
+        val currentState = _uiState.value
+        if (currentState.omCaptureUsb.summary == null) {
             return
         }
-        if (propCode == USB_MODE_DIAL_EVENT_PROP) {
-            lastUsbModeDialEventAtMs = SystemClock.elapsedRealtime()
-            // Mode-dial changes during live view: queue a delayed refresh
-            // instead of skipping entirely. The delay gives CameraControlOff
-            // (0xC105) time to arrive — if it does, the session reset will
-            // supersede this refresh. If it doesn't, we still pick up the
-            // new exposure mode. refreshCameraPropertiesForCodes() already
-            // handles pausing / resuming live view internally.
-            if (omCaptureUsbManager.isLiveViewActive) {
-                D.usb(
-                    "Scheduling delayed USB mode-dial refresh for 0x${propCode.toString(16)} " +
-                        "while live view is active (will fire after ${USB_MODE_DIAL_REFRESH_SUPPRESS_MS}ms " +
-                        "unless CameraControlOff resets the session first)",
-                )
-                pendingUsbPropertyRefreshCodes += propCode
-                usbPropertySyncJob?.cancel()
-                usbPropertySyncJob = viewModelScope.launch {
-                    // Wait long enough for CameraControlOff to arrive and supersede.
-                    delay(USB_MODE_DIAL_REFRESH_SUPPRESS_MS)
-                    val refreshCodes = pendingUsbPropertyRefreshCodes.toSet()
-                    pendingUsbPropertyRefreshCodes.clear()
-                    if (refreshCodes.isEmpty()) return@launch
-                    val codesLabel = refreshCodes.joinToString { "0x${it.toString(16)}" }
-                    D.usb(
-                        "Executing delayed mode-dial property refresh codes=$codesLabel",
-                    )
-                    omCaptureUsbManager.refreshCameraPropertiesForCodes(refreshCodes)
-                        .onFailure { throwable ->
-                            D.err("USB", "Failed to refresh USB camera properties after mode-dial change", throwable)
-                        }
-                }
-                return
-            }
-        }
+        val allowModeHintRefreshWhileTransfer =
+            propCode == USB_MODE_DIAL_EVENT_PROP &&
+                (usbLiveViewDesired ||
+                    omCaptureUsbManager.isLiveViewActive ||
+                    isUsbModeSurface(currentState.remoteRuntime.modePickerSurface))
         if (
-            omCaptureUsbManager.isLiveViewActive &&
-            lastUsbModeDialEventAtMs != 0L &&
-            SystemClock.elapsedRealtime() - lastUsbModeDialEventAtMs <= USB_MODE_DIAL_REFRESH_SUPPRESS_MS
+            omCaptureUsbManager.preferredSessionDomain() == UsbSessionDomain.Transfer &&
+            !allowModeHintRefreshWhileTransfer
         ) {
             D.usb(
-                "Skipping live USB property refresh for 0x${propCode.toString(16)} " +
-                    "because a body mode-dial transition is still settling",
+                "Skipping USB property refresh for 0x${propCode.toString(16)} " +
+                    "because the session is currently in transfer mode",
             )
+            return
+        }
+        val liveViewBusy = currentState.omCaptureUsb.isBusy && omCaptureUsbManager.isLiveViewActive
+        if (propCode == USB_MODE_DIAL_EVENT_PROP) {
+            usbModeDialRefreshJob?.cancel()
+            usbModeDialRefreshJob = viewModelScope.launch {
+                val settleDelayMs = (usbCaptureSettleUntilMs - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+                val extraDelayMs = if (settleDelayMs > 0L) settleDelayMs + 120L else USB_MODE_DIAL_REFRESH_SUPPRESS_MS
+                if (extraDelayMs > 0L) {
+                    D.usb(
+                        "Scheduling USB mode/state refresh for 0x${propCode.toString(16)} " +
+                            "after ${extraDelayMs}ms so we can re-read D01D/500E from the camera",
+                    )
+                    delay(extraDelayMs)
+                }
+                var remainingWaitMs = 3_500L
+                while (
+                    remainingWaitMs > 0L &&
+                    (_uiState.value.omCaptureUsb.isBusy || propertyApplyJob?.isActive == true)
+                ) {
+                    delay(100L)
+                    remainingWaitMs -= 100L
+                }
+                D.usb(
+                    "Refreshing USB exposure-mode properties from D062 hint " +
+                        "using actual camera props (D01D/500E)",
+                )
+                omCaptureUsbManager.refreshCameraPropertiesForCodes(setOf(propCode))
+                    .onFailure { throwable ->
+                        D.err("USB", "Failed to refresh USB camera mode after D062 hint", throwable)
+                    }
+            }
+            return
+        }
+        if (propCode == USB_AF_TARGET_EVENT_PROP) {
+            D.usb(
+                "Skipping USB AF target readback for 0x${propCode.toString(16)} " +
+                    "because the event already carried the latest target value",
+            )
+            return
+        }
+        if (omCaptureUsbManager.isLiveViewActive) {
+            pendingUsbPropertyRefreshCodes += propCode
+            usbPropertySyncJob?.cancel()
+            usbPropertySyncJob = viewModelScope.launch {
+                D.usb(
+                    "Deferring USB property refresh for 0x${propCode.toString(16)} " +
+                        "while live view stays active; using event value first to match libgphoto2's " +
+                        "Olympus DevicePropChanged flow",
+                )
+                while (
+                    omCaptureUsbManager.isLiveViewActive ||
+                    _uiState.value.omCaptureUsb.isBusy ||
+                    propertyApplyJob?.isActive == true
+                ) {
+                    delay(120L)
+                }
+                val refreshCodes = pendingUsbPropertyRefreshCodes.toSet()
+                pendingUsbPropertyRefreshCodes.clear()
+                if (refreshCodes.isEmpty()) {
+                    return@launch
+                }
+                omCaptureUsbManager.refreshCameraPropertiesForCodes(refreshCodes)
+                    .onFailure { throwable ->
+                        D.err("USB", "Failed deferred USB property refresh after live view settled", throwable)
+                    }
+            }
+            return
+        }
+        if (usbTransferThumbnailPrefetchActive) {
+            pendingUsbPropertyRefreshCodes += propCode
+            usbPropertySyncJob?.cancel()
+            usbPropertySyncJob = viewModelScope.launch {
+                D.usb(
+                    "Deferring USB property refresh for 0x${propCode.toString(16)} " +
+                        "until USB thumbnail prefetch settles",
+                )
+                var remainingWaitMs = 3_000L
+                while (usbTransferThumbnailPrefetchActive && remainingWaitMs > 0L) {
+                    delay(100L)
+                    remainingWaitMs -= 100L
+                }
+                val refreshCodes = pendingUsbPropertyRefreshCodes.toSet()
+                pendingUsbPropertyRefreshCodes.clear()
+                if (refreshCodes.isEmpty()) {
+                    return@launch
+                }
+                omCaptureUsbManager.refreshCameraPropertiesForCodes(refreshCodes)
+                    .onFailure { throwable ->
+                        D.err("USB", "Failed deferred USB property refresh after thumbnail prefetch", throwable)
+                }
+            }
+            return
+        }
+        if (liveViewBusy) {
+            pendingUsbPropertyRefreshCodes += propCode
+            usbPropertySyncJob?.cancel()
+            usbPropertySyncJob = viewModelScope.launch {
+                D.usb(
+                    "Deferring USB property refresh for 0x${propCode.toString(16)} " +
+                        "until the current tether transfer settles",
+                )
+                var remainingWaitMs = 3_500L
+                while (
+                    remainingWaitMs > 0L &&
+                    (_uiState.value.omCaptureUsb.isBusy || propertyApplyJob?.isActive == true)
+                ) {
+                    delay(100L)
+                    remainingWaitMs -= 100L
+                }
+                val refreshCodes = pendingUsbPropertyRefreshCodes.toSet()
+                pendingUsbPropertyRefreshCodes.clear()
+                if (refreshCodes.isEmpty()) {
+                    return@launch
+                }
+                omCaptureUsbManager.refreshCameraPropertiesForCodes(refreshCodes)
+                    .onFailure { throwable ->
+                        D.err("USB", "Failed deferred USB property refresh after tether transfer", throwable)
+                }
+            }
             return
         }
         pendingUsbPropertyRefreshCodes += propCode
@@ -1576,6 +1804,13 @@ class MainViewModel(
             )
             return
         }
+        if (isCapturing && currentState.omCaptureUsb.isBusy) {
+            D.usb(
+                "Ignoring OM USB auto-import trigger for handle=${handle.toString(16)} " +
+                    "because an app-initiated USB capture/import is already resolving this shot",
+            )
+            return
+        }
         if (currentState.omCaptureUsb.isBusy || reconnectRestorationActive) {
             D.usb(
                 "Queueing OM USB auto-import for handle=${handle.toString(16)} " +
@@ -1591,6 +1826,20 @@ class MainViewModel(
             return
         }
         pendingUsbAutoImportHandles += handle
+        usbCaptureSettleUntilMs = maxOf(
+            usbCaptureSettleUntilMs,
+            SystemClock.elapsedRealtime() + USB_CAPTURE_PROPERTY_SETTLE_MS,
+        )
+        if (isUsbRemoteTransportActive()) {
+            val previewFrame = _liveViewFrame.value ?: currentState.lastCaptureThumbnail
+            updateUiState { state -> state.copy(
+                remoteRuntime = state.remoteRuntime.copy(
+                    statusLabel = "Importing latest shot...",
+                    isBusy = true,
+                ),
+                lastCaptureThumbnail = previewFrame ?: state.lastCaptureThumbnail,
+            ) }
+        }
         D.usb(
             "Queued OM USB auto-import handle=${handle.toString(16)} " +
                 "pending=${pendingUsbAutoImportHandles.joinToString { it.toString(16) }}",
@@ -1622,6 +1871,18 @@ class MainViewModel(
 
                 val handle = pendingUsbAutoImportHandles.firstOrNull() ?: continue
                 pendingUsbAutoImportHandles.remove(handle)
+                delay(USB_AUTO_IMPORT_BATCH_WINDOW_MS)
+                val relatedHandlesHint = linkedSetOf<Int>()
+                val iterator = pendingUsbAutoImportHandles.iterator()
+                while (iterator.hasNext()) {
+                    val pendingHandle = iterator.next()
+                    if (pendingHandle in completedUsbAutoImportHandles) {
+                        iterator.remove()
+                        continue
+                    }
+                    relatedHandlesHint += pendingHandle
+                    iterator.remove()
+                }
                 if (lastAutoImportedUsbHandle == handle) {
                     D.usb("Skipping already-imported OM USB handle=${handle.toString(16)}")
                     continue
@@ -1638,12 +1899,13 @@ class MainViewModel(
                     handle = handle,
                     saveMedia = { fileName, data ->
                         withContext(Dispatchers.IO) {
-                            saveToGalleryDetailed(fileName, data)
+                            saveToGalleryDetailed(fileName, data, currentUsbImportDateFolder())
                                 ?: error("Failed to save $fileName to the phone gallery.")
                         }
                     },
                     importFormat = _uiState.value.tetherPhoneImportFormat,
                     keepLiveViewVisible = keepLiveViewVisible,
+                    relatedHandlesHint = relatedHandlesHint,
                 ).onSuccess { result ->
                     if (result == null) {
                         D.usb(
@@ -1655,11 +1917,14 @@ class MainViewModel(
                     recordCompletedUsbAutoImport(handle, result)
                     handleOmCaptureUsbImportResult(result, scanFilesNow = false)
                     if (isUsbModeSurface(_uiState.value.remoteRuntime.modePickerSurface)) {
+                        val current = _uiState.value
                         refreshOmCaptureStudioState(
-                            _uiState.value.copy(
-                                remoteRuntime = _uiState.value.remoteRuntime.copy(
+                            current.copy(
+                                remoteRuntime = current.remoteRuntime.copy(
                                     liveViewActive = omCaptureUsbManager.isLiveViewActive,
+                                    captureCount = current.remoteRuntime.captureCount + 1,
                                     statusLabel = "Saved latest OM camera shot to phone",
+                                    isBusy = false,
                                 ),
                             ),
                         )
@@ -1671,6 +1936,18 @@ class MainViewModel(
                         "Automatic OM camera phone save failed for handle=${handle.toString(16)}",
                         throwable,
                     )
+                    if (isUsbModeSurface(_uiState.value.remoteRuntime.modePickerSurface)) {
+                        val current = _uiState.value
+                        refreshOmCaptureStudioState(
+                            current.copy(
+                                remoteRuntime = current.remoteRuntime.copy(
+                                    liveViewActive = omCaptureUsbManager.isLiveViewActive,
+                                    statusLabel = throwable.message ?: "Latest-shot import failed",
+                                    isBusy = false,
+                                ),
+                            ),
+                        )
+                    }
                 }
             }
         } finally {
@@ -1688,9 +1965,11 @@ class MainViewModel(
 
     private fun rememberImportedUsbResult(result: OmCaptureUsbImportResult) {
         rememberImportedUsbHandle(result.objectHandle)
+        rememberSavedMediaLookup(result.savedMedia)
         result.relatedObjectHandles.forEach(::rememberImportedUsbHandle)
         result.companionImports.forEach { companion ->
             rememberImportedUsbHandle(companion.objectHandle)
+            rememberSavedMediaLookup(companion.savedMedia)
         }
     }
 
@@ -1870,6 +2149,22 @@ class MainViewModel(
         usbLibraryCacheUpdatedAtMs = 0L
     }
 
+    private fun invalidateUsbLibraryCache(reloadIfVisible: Boolean) {
+        clearUsbLibraryCache()
+        if (!reloadIfVisible) {
+            return
+        }
+        val transferState = _uiState.value.transferState
+        if (
+            transferState.sourceKind != TransferSourceKind.OmCaptureUsb ||
+            transferState.isLoading ||
+            omCaptureUsbManager.isLiveViewActive
+        ) {
+            return
+        }
+        loadCameraImages()
+    }
+
     private fun wifiTransferSourceLabel(slot: Int?, ssid: String?): String {
         return when (slot) {
             1 -> "Slot 1"
@@ -1923,6 +2218,9 @@ class MainViewModel(
         viewModelScope.launch {
             val starting = !omCaptureUsbManager.isLiveViewActive
             D.usb("toggleUsbLiveView: starting=$starting")
+            if (starting) {
+                prepareOmCaptureUsbForControlMode()
+            }
 
             if (!starting) {
                 setUsbLiveViewDesired(false, "toggle-stop")
@@ -2008,17 +2306,192 @@ class MainViewModel(
      * Open the last USB-captured image using its content URI.
      */
     fun openUsbCapturedImage(context: android.content.Context) {
-        val savedMedia = _uiState.value.omCaptureUsb.lastSavedMedia ?: return
-        try {
-            val uri = savedMedia.uriString.toUri()
-            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "image/*")
-                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            context.startActivity(intent)
-        } catch (e: Exception) {
-            D.err("USB", "Failed to open captured image", e)
+        _uiState.value.omCaptureUsb.lastSavedMedia?.let(::openSavedMediaPreview)
+    }
+
+    private suspend fun resolveSavedMediaForFileName(fileName: String): OmCaptureUsbSavedMedia? {
+        usbSavedMediaByFileName[normalizeSavedMediaKey(fileName)]?.let { return it }
+        return findSavedMediaByFileName(fileName)?.also { rememberSavedMediaLookup(it) }
+    }
+
+    private suspend fun findSavedMediaByFileName(fileName: String): OmCaptureUsbSavedMedia? = withContext(Dispatchers.IO) {
+        val resolver = getApplication<Application>().contentResolver
+        val basePath = buildConfiguredSaveBasePath().trimEnd('/') + "/"
+        val projection = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.RELATIVE_PATH,
+            MediaStore.MediaColumns.MIME_TYPE,
+        )
+        val selection = buildString {
+            append("${MediaStore.MediaColumns.DISPLAY_NAME}=?")
+            append(" AND ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?")
         }
+        val selectionArgs = arrayOf(fileName, "$basePath%")
+        val collections = listOf(
+            MediaStore.Images.Media.getContentUri(MEDIA_STORE_PRIMARY_VOLUME),
+            MediaStore.Files.getContentUri(MEDIA_STORE_PRIMARY_VOLUME),
+            MediaStore.Video.Media.getContentUri(MEDIA_STORE_PRIMARY_VOLUME),
+        )
+        collections.firstNotNullOfOrNull { collection ->
+            resolver.query(
+                collection,
+                projection,
+                selection,
+                selectionArgs,
+                "${MediaStore.MediaColumns.DATE_ADDED} DESC",
+            )?.use { cursor ->
+                if (!cursor.moveToFirst()) {
+                    return@use null
+                }
+                val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                val relativePathCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
+                val mimeTypeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
+                val displayName = cursor.getString(nameCol) ?: fileName
+                val relativePath = cursor.getString(relativePathCol).orEmpty()
+                val mimeType = cursor.getString(mimeTypeCol).orEmpty().ifBlank { resolveSavedMediaMimeType(displayName) }
+                val dateFolder = relativePath
+                    .removePrefix(basePath)
+                    .trim('/')
+                OmCaptureUsbSavedMedia(
+                    uriString = ContentUris.withAppendedId(collection, cursor.getLong(idCol)).toString(),
+                    relativePath = relativePath,
+                    absolutePath = "/storage/emulated/0/$relativePath$displayName",
+                    displayName = displayName,
+                    mimeType = mimeType,
+                    dateFolder = dateFolder,
+                    isRaw = isRawFileName(displayName),
+                )
+            }
+        }
+    }
+
+    private suspend fun decodeSavedMediaPreview(savedMedia: OmCaptureUsbSavedMedia): Bitmap? {
+        if (savedMedia.isRaw) {
+            decodeSavedRawPreview(savedMedia)?.let { return it }
+        }
+        decodeSavedMediaPlatformPreview(savedMedia)?.let { return it }
+        val bytes = readSavedMediaBytes(savedMedia) ?: return null
+        return withContext(Dispatchers.Default) {
+            decodeTransferPreviewBitmap(bytes) ?: decodeSampledPreviewBitmap(bytes)
+        }
+    }
+
+    private suspend fun decodeSavedRawPreview(savedMedia: OmCaptureUsbSavedMedia): Bitmap? {
+        val rawPath = ensureSavedMediaRawPath(savedMedia) ?: return null
+        val frameId = "saved-${savedMedia.displayName}"
+        val frame = CapturedFrame(
+            id = frameId,
+            captureTimeMs = System.currentTimeMillis(),
+            rawPath = rawPath,
+            previewPath = "",
+            width = 0,
+            height = 0,
+            exposureSec = null,
+            iso = null,
+            focalLengthMm = null,
+            aperture = null,
+        )
+        val rawDecoder = RawDecoder()
+        val decoded = rawDecoder.decodeOrNull(frame) ?: return null
+        return try {
+            Bitmap.createBitmap(decoded.previewWidth, decoded.previewHeight, Bitmap.Config.ARGB_8888).apply {
+                setPixels(
+                    decoded.previewArgb,
+                    0,
+                    decoded.previewWidth,
+                    0,
+                    0,
+                    decoded.previewWidth,
+                    decoded.previewHeight,
+                )
+            }
+        } finally {
+            rawDecoder.recycle(frameId, decoded)
+        }
+    }
+
+    private suspend fun decodeSavedMediaPlatformPreview(savedMedia: OmCaptureUsbSavedMedia): Bitmap? = withContext(Dispatchers.IO) {
+        val resolver = getApplication<Application>().contentResolver
+        val uri = savedMedia.uriString.toUri()
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val source = ImageDecoder.createSource(resolver, uri)
+                ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    val longestSide = maxOf(info.size.width, info.size.height)
+                    if (longestSide > 2048) {
+                        val scale = 2048f / longestSide.toFloat()
+                        decoder.setTargetSize(
+                            (info.size.width * scale).toInt().coerceAtLeast(1),
+                            (info.size.height * scale).toInt().coerceAtLeast(1),
+                        )
+                    }
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                }
+            } else {
+                resolver.openInputStream(uri)?.use { inputStream ->
+                    BitmapFactory.decodeStream(inputStream)
+                }
+            }
+        }.getOrNull()
+    }
+
+    private suspend fun ensureSavedMediaRawPath(savedMedia: OmCaptureUsbSavedMedia): String? = withContext(Dispatchers.IO) {
+        val absolutePath = savedMedia.absolutePath
+        if (absolutePath.isNotBlank() && File(absolutePath).isFile) {
+            return@withContext absolutePath
+        }
+        val bytes = readSavedMediaBytes(savedMedia) ?: return@withContext null
+        val cacheFile = File(getApplication<Application>().cacheDir, "saved-preview-${savedMedia.displayName}")
+        runCatching {
+            if (!cacheFile.exists() || cacheFile.length() != bytes.size.toLong()) {
+                cacheFile.writeBytes(bytes)
+            }
+            cacheFile.absolutePath
+        }.getOrNull()
+    }
+
+    private suspend fun readSavedMediaBytes(savedMedia: OmCaptureUsbSavedMedia): ByteArray? = withContext(Dispatchers.IO) {
+        val resolver = getApplication<Application>().contentResolver
+        resolver.openInputStream(savedMedia.uriString.toUri())?.use { inputStream ->
+            inputStream.readBytes()
+        }
+    }
+
+    private fun rememberSavedMediaLookup(savedMedia: OmCaptureUsbSavedMedia) {
+        usbSavedMediaByFileName[normalizeSavedMediaKey(savedMedia.displayName)] = savedMedia
+        while (usbSavedMediaByFileName.size > 64) {
+            val oldestKey = usbSavedMediaByFileName.keys.firstOrNull() ?: break
+            usbSavedMediaByFileName.remove(oldestKey)
+        }
+    }
+
+    private fun normalizeSavedMediaKey(fileName: String): String = fileName.lowercase(Locale.US)
+
+    private fun buildConfiguredSaveBasePath(): String {
+        val saveLocation = _uiState.value.autoImportConfig.saveLocation.ifBlank { "Pictures/db link" }
+        return if (saveLocation.startsWith(Environment.DIRECTORY_PICTURES)) {
+            saveLocation
+        } else {
+            "${Environment.DIRECTORY_PICTURES}/${saveLocation.removePrefix("Pictures/")}"
+        }
+    }
+
+    private fun resolveSavedMediaMimeType(fileName: String): String = when {
+        fileName.uppercase(Locale.US).endsWith(".JPG") || fileName.uppercase(Locale.US).endsWith(".JPEG") -> "image/jpeg"
+        isRawFileName(fileName) -> "image/x-olympus-orf"
+        fileName.uppercase(Locale.US).endsWith(".MOV") -> "video/quicktime"
+        fileName.uppercase(Locale.US).endsWith(".MP4") -> "video/mp4"
+        else -> "application/octet-stream"
+    }
+
+    private fun isRawFileName(fileName: String): Boolean {
+        return fileName.uppercase(Locale.US).endsWith(".ORF") || fileName.uppercase(Locale.US).endsWith(".RAW")
+    }
+
+    private fun currentUsbImportDateFolder(): String {
+        return LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)
     }
 
     private fun OmCaptureUsbRuntimeState.toUiState(): OmCaptureUsbUiState {
@@ -3487,6 +3960,49 @@ class MainViewModel(
         }
     }
 
+    fun onRemoteScreenVisible() {
+        val state = _uiState.value
+        val surface = state.remoteRuntime.modePickerSurface
+        if (!isUsbModeSurface(surface)) {
+            return
+        }
+        if (surface == ModePickerSurface.TetherRetry) {
+            if (!state.omCaptureUsb.isBusy) {
+                refreshOmCaptureUsb()
+            }
+            return
+        }
+        prepareOmCaptureUsbForControlMode()
+        setUsbLiveViewDesired(true, "remote-visible")
+        if (omCaptureUsbManager.isLiveViewActive) {
+            if (!state.remoteRuntime.liveViewActive) {
+                refreshOmCaptureStudioState(
+                    state.copy(
+                        remoteRuntime = state.remoteRuntime.copy(
+                            liveViewActive = true,
+                            activePicker = ActivePropertyPicker.None,
+                            statusLabel = "USB live view",
+                        ),
+                    ),
+                )
+            }
+            return
+        }
+        if (state.omCaptureUsb.isBusy) {
+            scheduleUsbLiveViewRecovery(
+                reason = "remote-visible",
+                delayMs = 150L,
+                waitingStatus = "Resuming USB live view...",
+            )
+            return
+        }
+        if (state.omCaptureUsb.summary?.supportsLiveView == true) {
+            startUsbLiveViewSession(waitingStatus = "Waiting for USB live view frame...")
+        } else {
+            refreshOmCaptureUsb()
+        }
+    }
+
     fun updateLibraryCompatibilityMode(mode: LibraryCompatibilityMode) {
         if (_uiState.value.libraryCompatibilityMode == mode) return
         wifiMediaRequestCooldownUntilMs = 0L
@@ -3498,6 +4014,15 @@ class MainViewModel(
         if (transfer.sourceKind == TransferSourceKind.WifiCamera && transfer.images.isNotEmpty()) {
             thumbnailJob?.cancel()
             loadThumbnails(transfer.images)
+        }
+    }
+
+    fun updateUsbTetheringMode(mode: UsbTetheringMode) {
+        if (_uiState.value.usbTetheringMode == mode) return
+        omCaptureUsbManager.setUsbTetheringProfile(mode.toUsbTetheringProfile())
+        updateUiState { it.copy(usbTetheringMode = mode) }
+        viewModelScope.launch {
+            preferencesRepository.saveStringPref("usb_tethering_mode", mode.preferenceValue)
         }
     }
 
@@ -3575,6 +4100,163 @@ class MainViewModel(
             preferencesRepository.saveStringPref("tether_phone_import_format", format.preferenceValue)
         }
     }
+
+    fun updateCaptureReviewDurationSeconds(seconds: Int) {
+        val normalized = normalizeCaptureReviewDurationSeconds(seconds)
+        if (_uiState.value.captureReviewDurationSeconds == normalized) return
+        updateUiState { it.copy(captureReviewDurationSeconds = normalized) }
+        viewModelScope.launch {
+            preferencesRepository.saveStringPref("capture_review_duration_seconds", normalized.toString())
+        }
+    }
+
+    fun checkForAppUpdate(silent: Boolean = false) {
+        val current = _uiState.value.appUpdate
+        if (current.checking || current.downloading) return
+        updateUiState { state ->
+            state.copy(
+                appUpdate = state.appUpdate.copy(
+                    checking = true,
+                    statusLabel = if (silent) state.appUpdate.statusLabel else appString(R.string.settings_update_checking),
+                ),
+            )
+        }
+        viewModelScope.launch {
+            runCatching { appUpdateManager.fetchLatestRelease() }
+                .onSuccess { release ->
+                    latestAppRelease = release
+                    downloadedUpdateApk = downloadedUpdateApk?.takeIf {
+                        it.exists() && it.name.equals(release.assetFileName, ignoreCase = true)
+                    }
+                    val updateAvailable = compareVersionNames(release.versionName, normalizedAppVersionName) > 0
+                    updateUiState { state ->
+                        state.copy(
+                            appUpdate = state.appUpdate.copy(
+                                checking = false,
+                                downloading = false,
+                                updateAvailable = updateAvailable,
+                                latestVersion = release.versionName,
+                                statusLabel = when {
+                                    updateAvailable && downloadedUpdateApk != null ->
+                                        appString(R.string.settings_update_downloaded, release.versionName)
+                                    updateAvailable ->
+                                        appString(R.string.settings_update_available, release.versionName)
+                                    silent -> ""
+                                    else -> appString(R.string.settings_update_current)
+                                },
+                            ),
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    D.http("GitHub update check failed: ${error.message}")
+                    if (!silent) {
+                        updateUiState { state ->
+                            state.copy(
+                                appUpdate = state.appUpdate.copy(
+                                    checking = false,
+                                    downloading = false,
+                                    statusLabel = appString(R.string.settings_update_failed),
+                                ),
+                            )
+                        }
+                    } else {
+                        updateUiState { state ->
+                            state.copy(appUpdate = state.appUpdate.copy(checking = false))
+                        }
+                    }
+                }
+        }
+    }
+
+    fun installLatestAppUpdate() {
+        val current = _uiState.value.appUpdate
+        if (current.checking || current.downloading) return
+        val release = latestAppRelease
+        if (release == null) {
+            checkForAppUpdate(silent = false)
+            return
+        }
+        if (!appUpdateManager.canRequestPackageInstalls()) {
+            updateUiState { state ->
+                state.copy(
+                    appUpdate = state.appUpdate.copy(
+                        statusLabel = appString(R.string.settings_update_install_permission),
+                    ),
+                )
+            }
+            val permissionIntent = appUpdateManager.buildUnknownSourcesIntent().apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching { getApplication<Application>().startActivity(permissionIntent) }
+            return
+        }
+        viewModelScope.launch {
+            updateUiState { state ->
+                state.copy(
+                    appUpdate = state.appUpdate.copy(
+                        downloading = downloadedUpdateApk?.exists() != true,
+                        statusLabel = if (downloadedUpdateApk?.exists() == true) {
+                            appString(R.string.settings_update_downloaded, release.versionName)
+                        } else {
+                            appString(R.string.settings_update_downloading)
+                        },
+                    ),
+                )
+            }
+            runCatching {
+                val apkFile = downloadedUpdateApk?.takeIf { it.exists() }
+                    ?: appUpdateManager.downloadReleaseApk(release).also { downloadedUpdateApk = it }
+                updateUiState { state ->
+                    state.copy(
+                        appUpdate = state.appUpdate.copy(
+                            downloading = false,
+                            updateAvailable = true,
+                            latestVersion = release.versionName,
+                            statusLabel = appString(R.string.settings_update_downloaded, release.versionName),
+                        ),
+                    )
+                }
+                val installIntent = appUpdateManager.buildInstallIntent(apkFile).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                getApplication<Application>().startActivity(installIntent)
+            }.onFailure { error ->
+                D.http("GitHub update install failed: ${error.message}")
+                updateUiState { state ->
+                    state.copy(
+                        appUpdate = state.appUpdate.copy(
+                            downloading = false,
+                            statusLabel = appString(R.string.settings_update_failed),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun compareVersionNames(left: String, right: String): Int {
+        val leftParts = left.trim().removePrefix("v").removePrefix("V")
+            .split('.', '-', '_')
+            .mapNotNull { part -> part.toIntOrNull() }
+        val rightParts = right.trim().removePrefix("v").removePrefix("V")
+            .split('.', '-', '_')
+            .mapNotNull { part -> part.toIntOrNull() }
+        val maxSize = maxOf(leftParts.size, rightParts.size)
+        repeat(maxSize) { index ->
+            val leftValue = leftParts.getOrElse(index) { 0 }
+            val rightValue = rightParts.getOrElse(index) { 0 }
+            if (leftValue != rightValue) {
+                return leftValue.compareTo(rightValue)
+            }
+        }
+        return 0
+    }
+
+    private fun appString(
+        @StringRes resId: Int,
+        vararg args: Any,
+    ): String = getApplication<Application>().getString(resId, *args)
 
     private fun startSessionKeepAlive() {
         sessionKeepAliveSuspendedForTransfer = false
@@ -4026,11 +4708,18 @@ class MainViewModel(
         val liveViewActive = _uiState.value.remoteRuntime.liveViewActive
         if (isUsbRemoteTransportActive()) {
             D.ui("captureRemotePhoto[USB]: liveView=$liveViewActive")
+            prepareOmCaptureUsbForControlMode()
+            usbCaptureSettleUntilMs = maxOf(
+                usbCaptureSettleUntilMs,
+                SystemClock.elapsedRealtime() + USB_CAPTURE_PROPERTY_SETTLE_MS,
+            )
+            val previewFrame = _liveViewFrame.value ?: _uiState.value.lastCaptureThumbnail
             updateUiState { current -> current.copy(
                 remoteRuntime = current.remoteRuntime.copy(
                     statusLabel = "Capturing...",
                     isBusy = true,
                 ),
+                lastCaptureThumbnail = previewFrame ?: current.lastCaptureThumbnail,
             ) }
             viewModelScope.launch {
                 try {
@@ -4047,6 +4736,7 @@ class MainViewModel(
                                     },
                                     isBusy = false,
                                 ),
+                                lastCaptureThumbnail = it.lastCaptureThumbnail ?: previewFrame,
                             ) }
                         }
                         .onFailure { throwable ->
@@ -4057,6 +4747,12 @@ class MainViewModel(
                                     isBusy = false,
                                 ),
                             ) }
+                            if (liveViewActive) {
+                                scheduleUsbLiveViewRecovery(
+                                    reason = "capture-failed",
+                                    waitingStatus = "Reconnecting USB live view...",
+                                )
+                            }
                         }
                 } finally {
                     isCapturing = false
@@ -4137,6 +4833,13 @@ class MainViewModel(
 
     private fun shouldSaveCapturedImageToPhone(): Boolean {
         return _uiState.value.tetherSaveTarget.savesToPhone
+    }
+
+    private fun normalizeCaptureReviewDurationSeconds(seconds: Int): Int {
+        return seconds.coerceIn(
+            MIN_CAPTURE_REVIEW_DURATION_SECONDS,
+            MAX_CAPTURE_REVIEW_DURATION_SECONDS,
+        )
     }
 
     private suspend fun runLatestCaptureFollowup(previousTopMarker: String?): String {
@@ -4429,6 +5132,9 @@ class MainViewModel(
             startDeepSkySession()
         }
         if (isUsbModeSurface(surface)) {
+            if (surface != ModePickerSurface.TetherRetry) {
+                setUsbLiveViewDesired(true, "enter-usb-surface")
+            }
             viewModelScope.launch {
                 if (enteringUsbSurface) {
                     prepareWifiRemoteForUsbTether(previousLiveViewActive = runtime.liveViewActive)
@@ -5480,6 +6186,9 @@ class MainViewModel(
         val requestGeneration = transferLoadGeneration.incrementAndGet()
         val requestSsid = _uiState.value.selectedCameraSsid
         val usbLibraryRequested = shouldAttemptOmCaptureUsbLibraryConnection()
+        if (usbLibraryRequested) {
+            prepareOmCaptureUsbForTransferMode()
+        }
         fun isCurrentTransferRequest(): Boolean {
             if (requestGeneration != transferLoadGeneration.get()) {
                 return false
@@ -5702,26 +6411,34 @@ class MainViewModel(
                 val handleMap = transferState.usbObjectHandlesByPath
                 val toLoad = images
                     .filter { it.fileName !in transferState.thumbnails }
-                    .take(18)
+                    .take(USB_TRANSFER_THUMBNAIL_PREFETCH_LIMIT)
                 // Batch-pause live view ONCE for all thumbnails instead of
                 // per-thumbnail pause/resume which causes visible stutter.
                 val paused = omCaptureUsbManager.pauseLiveViewBatch("thumbnail-batch")
+                usbTransferThumbnailPrefetchActive = true
                 try {
-                    toLoad.chunked(6).forEach { batch ->
-                        val deferred = batch.map { image ->
-                            async(Dispatchers.IO) {
-                                val handle = handleMap[image.fullPath] ?: return@async null
-                                omCaptureUsbManager.loadLibraryThumbnail(handle).getOrNull()?.let { bytes ->
-                                    decodeTransferPreviewBitmap(bytes)?.let { bitmap ->
-                                        image.fileName to bitmap
-                                    }
-                                }
-                            }
+                    for ((index, image) in toLoad.withIndex()) {
+                        ensureActive()
+                        if (index > 0) {
+                            delay(USB_TRANSFER_THUMBNAIL_PREFETCH_DELAY_MS)
                         }
-                        val results = deferred.awaitAll().filterNotNull()
-                        updateTransferThumbnails(results, overwriteExisting = false)
+                        val handle = handleMap[image.fullPath] ?: continue
+                        val bytes = omCaptureUsbManager.loadLibraryThumbnail(handle).getOrNull()
+                        if (bytes == null) {
+                            D.usb(
+                                "Stopping USB thumbnail prefetch after a failed thumbnail " +
+                                    "handle=${handle.toString(16)} file=${image.fileName}",
+                            )
+                            break
+                        }
+                        val bitmap = decodeTransferPreviewBitmap(bytes) ?: continue
+                        updateTransferThumbnails(
+                            listOf(image.fileName to bitmap),
+                            overwriteExisting = false,
+                        )
                     }
                 } finally {
+                    usbTransferThumbnailPrefetchActive = false
                     if (paused) omCaptureUsbManager.resumeLiveViewBatch("thumbnail-batch")
                 }
                 return@launch
@@ -6097,6 +6814,38 @@ class MainViewModel(
         detailPreviewJob = null
     }
 
+    private fun prepareOmCaptureUsbForControlMode() {
+        invalidateTransferLoads()
+        usbPropertySyncJob?.cancel()
+        usbModeDialRefreshJob?.cancel()
+        usbLiveViewStartupRefreshJob?.cancel()
+        pendingUsbPropertyRefreshCodes.clear()
+        omCaptureUsbManager.requestSessionDomain(UsbSessionDomain.Control, "viewmodel-control-mode")
+    }
+
+    private fun prepareOmCaptureUsbForTransferMode() {
+        thumbnailJob?.cancel()
+        thumbnailJob = null
+        detailPreviewJob?.cancel()
+        detailPreviewJob = null
+        usbPropertySyncJob?.cancel()
+        usbModeDialRefreshJob?.cancel()
+        usbLiveViewStartupRefreshJob?.cancel()
+        pendingUsbPropertyRefreshCodes.clear()
+        if (omCaptureUsbManager.isLiveViewActive || _uiState.value.remoteRuntime.liveViewActive) {
+            setUsbLiveViewDesired(false, "usb-transfer-mode")
+            stopLiveViewInternal()
+            updateUiState { current -> current.copy(
+                remoteRuntime = current.remoteRuntime.copy(
+                    liveViewActive = false,
+                    focusHeld = false,
+                    activePicker = ActivePropertyPicker.None,
+                ),
+            ) }
+        }
+        omCaptureUsbManager.requestSessionDomain(UsbSessionDomain.Transfer, "viewmodel-transfer-mode")
+    }
+
     private suspend fun refreshTransferImagesAfterDelete(
         deletedPaths: Set<String>,
         errorMessage: String? = null,
@@ -6193,6 +6942,9 @@ class MainViewModel(
         updateUiState { it.copy(
             transferState = currentTransfer.copy(
                 selectedImage = image,
+                selectedSavedMedia = null,
+                selectedSavedMediaBitmap = null,
+                selectedSavedMediaLoading = false,
             ),
         ) }
         detailPreviewJob?.cancel()
@@ -6201,28 +6953,92 @@ class MainViewModel(
         }
     }
 
+    fun closeSavedMediaPreview() {
+        detailPreviewJob?.cancel()
+        updateUiState { current -> current.copy(
+            transferState = current.transferState.copy(
+                selectedSavedMedia = null,
+                selectedSavedMediaBitmap = null,
+                selectedSavedMediaLoading = false,
+            ),
+        ) }
+    }
+
     fun openLastCapturedPreview() {
+        val savedMedia = _uiState.value.omCaptureUsb.lastSavedMedia
+            ?: _uiState.value.omCaptureUsb.lastImportedFileName?.let { fileName ->
+                usbSavedMediaByFileName[normalizeSavedMediaKey(fileName)]
+            }
+        if (savedMedia != null) {
+            openSavedMediaPreview(savedMedia)
+            return
+        }
+        val targetFileName = _uiState.value.omCaptureUsb.lastImportedFileName
         val images = _uiState.value.transferState.images
         if (images.isNotEmpty()) {
-            applyPendingLastCapturePreview(images.sortedByDescending { "${it.captureDateKey}_${it.fileName}" }, force = true)
+            applyPendingLastCapturePreview(
+                images.sortedByDescending { "${it.captureDateKey}_${it.fileName}" },
+                force = true,
+                targetFileName = targetFileName,
+            )
             return
         }
         pendingLastCapturePreviewOpen = true
+        pendingLastCapturePreviewFileName = targetFileName
         loadCameraImages()
+    }
+
+    private fun openSavedMediaPreview(
+        savedMedia: OmCaptureUsbSavedMedia,
+        placeholder: Bitmap? = _uiState.value.lastCaptureThumbnail,
+    ) {
+        detailPreviewJob?.cancel()
+        updateUiState { current -> current.copy(
+            transferState = current.transferState.copy(
+                selectedImage = null,
+                selectedSavedMedia = savedMedia,
+                selectedSavedMediaBitmap = placeholder,
+                selectedSavedMediaLoading = true,
+                isSelectionMode = false,
+                typeFilter = dev.dblink.feature.transfer.ImageTypeFilter.ALL,
+            ),
+        ) }
+        detailPreviewJob = viewModelScope.launch {
+            val bitmap = decodeSavedMediaPreview(savedMedia)
+            updateUiState { current ->
+                if (current.transferState.selectedSavedMedia?.uriString != savedMedia.uriString) {
+                    current
+                } else {
+                    current.copy(
+                        transferState = current.transferState.copy(
+                            selectedSavedMediaBitmap = bitmap ?: current.transferState.selectedSavedMediaBitmap,
+                            selectedSavedMediaLoading = false,
+                        ),
+                    )
+                }
+            }
+        }
     }
 
     private fun applyPendingLastCapturePreview(
         images: List<CameraImage>,
         force: Boolean = false,
+        targetFileName: String? = pendingLastCapturePreviewFileName,
     ) {
         if (!force && !pendingLastCapturePreviewOpen) {
             return
         }
-        val target = images.firstOrNull() ?: return
+        val target = targetFileName?.let { fileName ->
+            images.firstOrNull { it.fileName.equals(fileName, ignoreCase = true) }
+        } ?: images.firstOrNull() ?: return
         pendingLastCapturePreviewOpen = false
+        pendingLastCapturePreviewFileName = null
         updateUiState { current -> current.copy(
             transferState = current.transferState.copy(
                 selectedImage = target,
+                selectedSavedMedia = null,
+                selectedSavedMediaBitmap = null,
+                selectedSavedMediaLoading = false,
                 isSelectionMode = false,
                 typeFilter = dev.dblink.feature.transfer.ImageTypeFilter.ALL,
             ),
@@ -6236,6 +7052,16 @@ class MainViewModel(
                 return@launch
             }
             if (_uiState.value.transferState.sourceKind == TransferSourceKind.OmCaptureUsb) {
+                val localSavedMedia = resolveSavedMediaForFileName(image.fileName)
+                if (localSavedMedia != null) {
+                    val localBitmap = decodeSavedMediaPreview(localSavedMedia)
+                    if (localBitmap != null) {
+                        previewThumbnailUpgrades += image.fileName
+                        clearPreviewUnavailable(image.fileName)
+                        updateTransferThumbnails(listOf(image.fileName to localBitmap), overwriteExisting = true)
+                        return@launch
+                    }
+                }
                 val handle = resolveUsbTransferHandle(image)
                 if (handle == null) {
                     markPreviewUnavailable(image.fileName)
@@ -6854,17 +7680,13 @@ class MainViewModel(
                 put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
                 put(MediaStore.MediaColumns.RELATIVE_PATH, normalizedRelativePath)
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
-                if (isRawImage) {
-                    put(MediaStore.Files.FileColumns.MEDIA_TYPE, MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE)
-                } else if (isVideo) {
+                if (isVideo) {
                     put(MediaStore.Files.FileColumns.MEDIA_TYPE, MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO)
                 }
             }
 
             val collection = if (isVideo) {
                 MediaStore.Video.Media.getContentUri(MEDIA_STORE_PRIMARY_VOLUME)
-            } else if (isRawImage) {
-                MediaStore.Files.getContentUri(MEDIA_STORE_PRIMARY_VOLUME)
             } else {
                 MediaStore.Images.Media.getContentUri(MEDIA_STORE_PRIMARY_VOLUME)
             }
@@ -6910,6 +7732,9 @@ class MainViewModel(
                 relativePath = normalizedRelativePath,
                 absolutePath = absolutePath,
                 displayName = fileName,
+                mimeType = mimeType,
+                dateFolder = dateFolder,
+                isRaw = isRawImage,
             )
         } catch (e: Exception) {
             D.err("TRANSFER", "saveToGallery failed for $fileName", e)
@@ -7532,6 +8357,7 @@ class MainViewModel(
     private fun startUsbLiveViewSession(
         waitingStatus: String,
     ) {
+        prepareOmCaptureUsbForControlMode()
         setUsbLiveViewDesired(true, "start-session")
         usbLiveViewRecoveryJob?.cancel()
         usbLiveViewRecoveryJob = null
@@ -7544,7 +8370,16 @@ class MainViewModel(
         usbLiveViewFrameJob?.cancel()
         usbLiveViewFrameJob = null
         omCaptureUsbManager.startUsbLiveView()
-        refreshUsbProperties(includeExtras = false)
+        usbLiveViewStartupRefreshJob?.cancel()
+        usbLiveViewStartupRefreshJob = viewModelScope.launch {
+            delay(350L)
+            if (
+                omCaptureUsbManager.isLiveViewActive &&
+                isUsbModeSurface(_uiState.value.remoteRuntime.modePickerSurface)
+            ) {
+                refreshUsbProperties(includeExtras = false)
+            }
+        }
         usbLiveViewFrameJob?.cancel()
         usbLiveViewFrameJob = viewModelScope.launch {
             omCaptureUsbManager.usbLiveViewFrame.collect { bitmap ->
@@ -7765,6 +8600,12 @@ class MainViewModel(
     )
 
     private fun applyLiveViewApertureMetadata(metadata: LiveViewMetadata) {
+        if (_uiState.value.omCaptureUsb.summary != null) {
+            // Match the original USB tools: for tethered Olympus bodies, aperture
+            // options come from the property descriptor enumeration rather than
+            // live-view min/max metadata.
+            return
+        }
         val liveViewRange = currentLiveViewApertureRange(metadata) ?: return
         val runtime = _uiState.value.remoteRuntime
         val rawOptions = lastRawApertureOptions.ifEmpty { runtime.aperture.availableValues }
@@ -8179,16 +9020,55 @@ class MainViewModel(
     ): CameraExposureMode {
         val normalized = takeModeRaw.orEmpty().uppercase()
         val result = when {
-            normalized == "P" || "PROGRAM" in normalized -> CameraExposureMode.P
+            normalized == "P" || normalized == "PS" || "PROGRAM" in normalized -> CameraExposureMode.P
             normalized == "A" || "APERTURE" in normalized -> CameraExposureMode.A
             normalized == "S" || "SHUTTER" in normalized -> CameraExposureMode.S
             normalized == "M" || "MANUAL" in normalized -> CameraExposureMode.M
-            normalized == "B" || "BULB" in normalized -> CameraExposureMode.B
+            normalized == "B" || "BULB" in normalized || "TIME" in normalized || "COMP" in normalized -> CameraExposureMode.B
             "MOVIE" in normalized || "VIDEO" in normalized -> CameraExposureMode.VIDEO
             else -> fallbackMode
         }
         D.exposure("resolveExposureMode: takemode=$takeModeRaw fallback=${fallbackMode.label} → ${result.label}")
         return result
+    }
+
+    private fun resolveUsbExposureMode(
+        reportedMode: CameraExposureMode?,
+        apertureProperty: OmCaptureUsbManager.CameraPropertyState?,
+        shutterProperty: OmCaptureUsbManager.CameraPropertyState?,
+    ): CameraExposureMode {
+        if (reportedMode == CameraExposureMode.VIDEO) {
+            return CameraExposureMode.VIDEO
+        }
+        val shutterDisplay = shutterProperty?.currentValue?.let(::formatUsbShutterSpeedValue)
+        if (
+            reportedMode == CameraExposureMode.B ||
+            shutterDisplay.equals("Bulb", ignoreCase = true) ||
+            shutterDisplay.equals("Time", ignoreCase = true) ||
+            shutterDisplay.equals("Composite", ignoreCase = true)
+        ) {
+            return CameraExposureMode.B
+        }
+        val apertureWritable = apertureProperty?.isReadOnly == false
+        val shutterWritable = shutterProperty?.isReadOnly == false
+        return when {
+            apertureWritable && shutterWritable -> reportedMode ?: CameraExposureMode.M
+            apertureWritable && !shutterWritable -> CameraExposureMode.A
+            !apertureWritable && shutterWritable -> CameraExposureMode.S
+            else -> reportedMode ?: CameraExposureMode.P
+        }
+    }
+
+    private fun normalizeUsbTakeModeValues(
+        values: CameraPropertyValues,
+        resolvedMode: CameraExposureMode,
+    ): CameraPropertyValues {
+        val currentMode = resolveExposureMode(values.currentValue, resolvedMode)
+        if (currentMode == resolvedMode) {
+            return values
+        }
+        val normalizedCurrent = resolveTakeModeRaw(resolvedMode, values.availableValues) ?: resolvedMode.label
+        return values.copy(currentValue = normalizedCurrent)
     }
 
     private fun isApertureControlEnabled(mode: CameraExposureMode): Boolean {
@@ -8236,7 +9116,12 @@ class MainViewModel(
             CameraExposureMode.A -> options.firstOrNull { it.equals("A", true) || it.contains("aperture", true) } ?: mode.label
             CameraExposureMode.S -> options.firstOrNull { it.equals("S", true) || it.contains("shutter", true) } ?: mode.label
             CameraExposureMode.M -> options.firstOrNull { it.equals("M", true) || it.contains("manual", true) } ?: mode.label
-            CameraExposureMode.B -> options.firstOrNull { it.equals("B", true) || it.contains("bulb", true) } ?: mode.label
+            CameraExposureMode.B -> options.firstOrNull {
+                it.equals("B", true) ||
+                    it.contains("bulb", true) ||
+                    it.contains("time", true) ||
+                    it.contains("comp", true)
+            } ?: mode.label
             CameraExposureMode.VIDEO -> options.firstOrNull { it.contains("movie", true) || it.contains("video", true) } ?: mode.label
         }
     }
@@ -8545,17 +9430,28 @@ class MainViewModel(
                 LibraryCompatibilityMode.HighSpeed.preferenceValue,
             ),
         )
+        val usbTetheringMode = UsbTetheringMode.fromPreferenceValue(
+            preferencesRepository.loadStringPref(
+                "usb_tethering_mode",
+                UsbTetheringMode.Om.preferenceValue,
+            ),
+        )
         val tetherSaveTarget = TetherSaveTarget.fromPreferenceValue(
             preferencesRepository.loadStringPref(
                 "tether_save_target",
                 TetherSaveTarget.SdAndPhone.preferenceValue,
             ),
         )
-        val tetherPhoneImportFormat = TetherPhoneImportFormat.fromPreferenceValue(
+        val savedTetherPhoneImportFormat = preferencesRepository.loadStringPref(
+            "tether_phone_import_format",
+            TetherPhoneImportFormat.JpegOnly.preferenceValue,
+        )
+        val tetherPhoneImportFormat = TetherPhoneImportFormat.fromPreferenceValue(savedTetherPhoneImportFormat)
+        val captureReviewDurationSeconds = normalizeCaptureReviewDurationSeconds(
             preferencesRepository.loadStringPref(
-                "tether_phone_import_format",
-                TetherPhoneImportFormat.JpegOnly.preferenceValue,
-            ),
+                "capture_review_duration_seconds",
+                DEFAULT_CAPTURE_REVIEW_DURATION_SECONDS.toString(),
+            ).toIntOrNull() ?: DEFAULT_CAPTURE_REVIEW_DURATION_SECONDS,
         )
         val geoConfig = GeotagConfig(
             matchWindowMinutes = preferencesRepository.loadStringPref("geotag_match_window", "2").toIntOrNull() ?: 2,
@@ -8567,6 +9463,7 @@ class MainViewModel(
             "loadPersistedUiState: savedCameras=${savedCameras.size}, " +
                 "selectedCameraSsid=${selectedCameraSsid ?: "<none>"}",
         )
+        omCaptureUsbManager.setUsbTetheringProfile(usbTetheringMode.toUsbTetheringProfile())
         updateUiState { current ->
             current.copy(
                 settings = persistedSettings,
@@ -8579,10 +9476,20 @@ class MainViewModel(
                 selectedLanguageTag = selectedLanguageTag,
                 autoImportConfig = importConfig,
                 libraryCompatibilityMode = libraryCompatibilityMode,
+                usbTetheringMode = usbTetheringMode,
                 geotagConfig = geoConfig,
                 tetherSaveTarget = tetherSaveTarget,
                 tetherPhoneImportFormat = tetherPhoneImportFormat,
+                captureReviewDurationSeconds = captureReviewDurationSeconds,
             )
+        }
+        if (savedTetherPhoneImportFormat != tetherPhoneImportFormat.preferenceValue) {
+            viewModelScope.launch {
+                preferencesRepository.saveStringPref(
+                    "tether_phone_import_format",
+                    tetherPhoneImportFormat.preferenceValue,
+                )
+            }
         }
         refreshOmCaptureStudioState()
         deepSkyLiveStackCoordinator.updateSkyHintContext(persistedGeoTagging.latestSample, null)

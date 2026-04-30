@@ -50,6 +50,8 @@ import java.io.EOFException
 import java.net.ConnectException
 import java.net.SocketException
 import java.net.SocketTimeoutException
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 
 data class DownloadProgress(
     val total: Int = 0,
@@ -849,8 +851,9 @@ class ImageDownloadService : Service() {
     }
 
     private suspend fun processUsbRequest(request: DownloadRequestItem): Boolean {
+        val dateFolder = expectedDateFolderFor(request)
         val saveMedia: suspend (String, ByteArray) -> OmCaptureUsbSavedMedia = { fileName, data ->
-            saveToGalleryDetailed(fileName, data)
+            saveToGalleryDetailed(fileName, data, dateFolder)
                 ?: error("Failed to save $fileName to the phone gallery.")
         }
         return when (request.usbMode) {
@@ -875,13 +878,15 @@ class ImageDownloadService : Service() {
             else -> {
                 val handle = request.usbHandle
                     ?: error("USB transfer request missing object handle for ${request.fileName}")
-                if (isAlreadySaved(request.fileName, "")) {
+                if (isAlreadySaved(request.fileName, dateFolder)) {
                     D.transfer("Skipping already-imported USB media ${request.fileName}")
                     return true
                 }
+                val importFormat = TetherPhoneImportFormat.fromPreferenceValue(request.usbImportFormat)
                 omCaptureUsbManager.importLibraryHandle(
                     handle = handle,
                     saveMedia = saveMedia,
+                    importFormat = importFormat,
                 ).getOrThrow()
                 true
             }
@@ -1021,6 +1026,9 @@ class ImageDownloadService : Service() {
                 relativePath = relativePath,
                 absolutePath = absolutePath,
                 displayName = fileName,
+                mimeType = mimeType,
+                dateFolder = dateFolder,
+                isRaw = fileName.uppercase().endsWith(".ORF") || fileName.uppercase().endsWith(".RAW"),
             )
         } catch (e: Exception) {
             if (e is CancellationException) {
@@ -1243,6 +1251,9 @@ class ImageDownloadService : Service() {
     }
 
     private fun expectedDateFolderFor(request: DownloadRequestItem): String {
+        if (request.source == SOURCE_USB) {
+            return currentUsbImportDateFolder()
+        }
         if (request.source != SOURCE_WIFI || request.directory.isBlank()) {
             return ""
         }
@@ -1261,6 +1272,10 @@ class ImageDownloadService : Service() {
         val relativePath: String,
         val fileName: String,
     )
+
+    private fun currentUsbImportDateFolder(): String {
+        return LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)
+    }
 
     private fun isTransientWifiTransferFailure(throwable: Throwable): Boolean {
         return when (throwable) {

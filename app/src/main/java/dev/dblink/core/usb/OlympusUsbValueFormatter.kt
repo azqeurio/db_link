@@ -8,6 +8,7 @@ import kotlin.math.roundToInt
 internal fun olympusExposureModeFromRaw(rawValue: Long): CameraExposureMode? {
     return when (rawValue.toInt()) {
         // OM-1 / OM System ExposureMode (0xd01d) — enum[4]=4,1,2,3
+        0 -> CameraExposureMode.VIDEO
         1 -> CameraExposureMode.M
         2 -> CameraExposureMode.P
         3 -> CameraExposureMode.A
@@ -21,6 +22,7 @@ internal fun olympusExposureModeFromRaw(rawValue: Long): CameraExposureMode? {
 internal fun formatOlympusExposureMode(rawValue: Long): String {
     return when (rawValue.toInt()) {
         // OM-1 / OM System ExposureMode (0xd01d) — enum[4]=4,1,2,3
+        0 -> "Movie"
         1 -> "M"
         2 -> "P"
         3 -> "A"
@@ -30,6 +32,38 @@ internal fun formatOlympusExposureMode(rawValue: Long): String {
         7 -> "Composite"
         8 -> "Movie"
         else -> "Mode 0x${rawValue.toString(16)}"
+    }
+}
+
+internal fun olympusExposureModeFromRaw(
+    propCode: Int,
+    rawValue: Long,
+): CameraExposureMode? {
+    return when (propCode) {
+        PtpConstants.Prop.ExposureProgramMode -> when (rawValue.toInt()) {
+            1 -> CameraExposureMode.M
+            2 -> CameraExposureMode.P
+            3 -> CameraExposureMode.A
+            4 -> CameraExposureMode.S
+            else -> null
+        }
+        else -> olympusExposureModeFromRaw(rawValue)
+    }
+}
+
+internal fun formatOlympusExposureMode(
+    propCode: Int,
+    rawValue: Long,
+): String {
+    return when (propCode) {
+        PtpConstants.Prop.ExposureProgramMode -> when (rawValue.toInt()) {
+            1 -> "M"
+            2 -> "P"
+            3 -> "A"
+            4 -> "S"
+            else -> "Mode 0x${rawValue.toString(16)}"
+        }
+        else -> formatOlympusExposureMode(rawValue)
     }
 }
 
@@ -357,6 +391,7 @@ private val olympusUsbScpPriority = listOf(
 )
 
 private val olympusUsbBasePropCodes = setOf(
+    PtpConstants.Prop.ExposureProgramMode,
     PtpConstants.OlympusProp.ShutterSpeed,
     PtpConstants.OlympusProp.Aperture,
     PtpConstants.OlympusProp.FocusMode,
@@ -392,6 +427,7 @@ internal fun olympusUsbPropertyPriority(propCode: Int): Int {
 
 internal fun olympusUsbPropertyLabel(propCode: Int): String = when (propCode) {
     PtpConstants.Prop.FocalLength -> "Focal Length"
+    PtpConstants.Prop.ExposureProgramMode -> "Exposure Program"
     PtpConstants.OlympusProp.ShutterSpeed -> "Shutter Speed"
     PtpConstants.OlympusProp.Aperture -> "Aperture"
     PtpConstants.OlympusProp.ISOSpeed -> "ISO"
@@ -431,6 +467,7 @@ internal fun formatOlympusUsbPropertyValue(
     options: List<Long> = emptyList(),
 ): String = when (propCode) {
     PtpConstants.Prop.FocalLength -> formatOlympusFocalLength(rawValue)
+    PtpConstants.Prop.ExposureProgramMode -> formatOlympusExposureMode(propCode, rawValue)
     PtpConstants.OlympusProp.ShutterSpeed -> formatOlympusShutterSpeed(rawValue)
     PtpConstants.OlympusProp.Aperture -> formatOlympusAperture(rawValue)
     PtpConstants.OlympusProp.ISOSpeed -> formatOlympusIso(rawValue)
@@ -470,7 +507,8 @@ internal fun enumerateOlympusUsbPropertyValues(
 ): List<Long> {
     val descriptorValues = when {
         property.allowedValues.isNotEmpty() -> property.allowedValues
-        property.propCode == PtpConstants.OlympusProp.ExposureMode -> listOf(2L, 3L, 4L, 1L, 5L, 6L, 7L, 8L)
+        property.propCode == PtpConstants.Prop.ExposureProgramMode -> listOf(2L, 3L, 4L, 1L)
+        property.propCode == PtpConstants.OlympusProp.ExposureMode -> listOf(2L, 3L, 4L, 1L, 5L, 6L, 7L, 8L, 0L)
         property.propCode == PtpConstants.OlympusProp.ExposureCompensation -> defaultOlympusExposureCompRawValues(
             rangeMin = property.rangeMin,
             rangeMax = property.rangeMax,
@@ -540,6 +578,7 @@ private fun enumerateOlympusRangeValues(
 }
 
 private fun syntheticOlympusUsbPropertyValues(propCode: Int): List<Long> = when (propCode) {
+    PtpConstants.Prop.ExposureProgramMode -> listOf(2L, 3L, 4L, 1L)
     PtpConstants.OlympusProp.ExposureMode -> listOf(2L, 3L, 4L, 1L, 5L, 6L, 7L, 8L)
     PtpConstants.OlympusProp.ExposureCompensation -> defaultOlympusExposureCompRawValues()
     PtpConstants.OlympusProp.FocusMode -> listOf(0x0002L, 0x8002L, 0x0001L, 0x8004L, 0x8007L)

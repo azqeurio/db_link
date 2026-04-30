@@ -28,7 +28,7 @@ class DeepSkyWorkflowPresenterTest {
             uiState = DeepSkyLiveStackUiState(),
             omCaptureUsb = OmCaptureUsbUiState(),
             tetherSaveTarget = TetherSaveTarget.SdAndPhone,
-            tetherPhoneImportFormat = TetherPhoneImportFormat.JpegAndRaw,
+            tetherPhoneImportFormat = TetherPhoneImportFormat.RawOnly,
         )
 
         assertEquals("Connect Camera", presentation.headline)
@@ -42,7 +42,7 @@ class DeepSkyWorkflowPresenterTest {
             uiState = DeepSkyLiveStackUiState(),
             omCaptureUsb = connectedUsbState(),
             tetherSaveTarget = TetherSaveTarget.SdCard,
-            tetherPhoneImportFormat = TetherPhoneImportFormat.JpegAndRaw,
+            tetherPhoneImportFormat = TetherPhoneImportFormat.RawOnly,
         )
 
         assertEquals("Enable Phone Import", presentation.headline)
@@ -66,7 +66,7 @@ class DeepSkyWorkflowPresenterTest {
             ),
             omCaptureUsb = connectedUsbState(),
             tetherSaveTarget = TetherSaveTarget.SdAndPhone,
-            tetherPhoneImportFormat = TetherPhoneImportFormat.JpegAndRaw,
+            tetherPhoneImportFormat = TetherPhoneImportFormat.RawOnly,
         )
 
         assertEquals("Electing Reference", presentation.headline)
@@ -93,7 +93,7 @@ class DeepSkyWorkflowPresenterTest {
             ),
             omCaptureUsb = connectedUsbState(),
             tetherSaveTarget = TetherSaveTarget.SdAndPhone,
-            tetherPhoneImportFormat = TetherPhoneImportFormat.JpegAndRaw,
+            tetherPhoneImportFormat = TetherPhoneImportFormat.RawOnly,
         )
 
         assertEquals("Alignment Unstable", presentation.headline)
@@ -114,7 +114,7 @@ class DeepSkyWorkflowPresenterTest {
             ),
             omCaptureUsb = connectedUsbState(),
             tetherSaveTarget = TetherSaveTarget.SdAndPhone,
-            tetherPhoneImportFormat = TetherPhoneImportFormat.JpegAndRaw,
+            tetherPhoneImportFormat = TetherPhoneImportFormat.RawOnly,
         )
 
         assertEquals("Preview Throttled", presentation.headline)
@@ -139,7 +139,7 @@ class DeepSkyWorkflowPresenterTest {
             ),
             omCaptureUsb = connectedUsbState(),
             tetherSaveTarget = TetherSaveTarget.SdAndPhone,
-            tetherPhoneImportFormat = TetherPhoneImportFormat.JpegAndRaw,
+            tetherPhoneImportFormat = TetherPhoneImportFormat.RawOnly,
         )
 
         assertEquals("Stack Running", presentation.headline)

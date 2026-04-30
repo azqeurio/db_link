@@ -95,6 +95,7 @@ import dev.dblink.R
 import dev.dblink.core.protocol.CameraImage
 import dev.dblink.core.ui.GlassCard
 import dev.dblink.core.ui.SectionHeader
+import dev.dblink.core.usb.OmCaptureUsbSavedMedia
 import dev.dblink.ui.theme.AppleBlue
 import dev.dblink.ui.theme.AppleGreen
 import dev.dblink.ui.theme.Graphite
@@ -142,6 +143,9 @@ data class TransferUiState(
     val usbObjectHandlesByPath: Map<String, Int> = emptyMap(),
     val usbAvailableStorageIds: List<Int> = emptyList(),
     val selectedUsbStorageIds: Set<Int>? = null,
+    val selectedSavedMedia: OmCaptureUsbSavedMedia? = null,
+    val selectedSavedMediaBitmap: Bitmap? = null,
+    val selectedSavedMediaLoading: Boolean = false,
 )
 
 data class ImageGeoTagInfo(
@@ -178,6 +182,7 @@ fun TransferScreen(
     onSetTypeFilter: (ImageTypeFilter) -> Unit = {},
     onToggleDateSelection: (String) -> Unit = {},
     onSelectUsbSource: (Set<Int>?) -> Unit = {},
+    onCloseSavedMediaPreview: () -> Unit = {},
     selectedCardSlotSource: Int? = null,
     wifiSourceSelectionAvailable: Boolean = false,
     onSelectWifiSource: (Int) -> Unit = {},
@@ -217,6 +222,16 @@ fun TransferScreen(
     // Sort for detail pager (newest first across all dates)
     val sortedFilteredImages = remember(filteredImages) {
         filteredImages.sortedByDescending { it.captureDateKey + it.fileName }
+    }
+
+    if (transferState.selectedSavedMedia != null && !transferState.isSelectionMode) {
+        SavedMediaDetailView(
+            savedMedia = transferState.selectedSavedMedia,
+            bitmap = transferState.selectedSavedMediaBitmap,
+            isLoading = transferState.selectedSavedMediaLoading,
+            onClose = onCloseSavedMediaPreview,
+        )
+        return
     }
 
     // Detail view (single image with pager for swipe)
@@ -1002,6 +1017,122 @@ private fun ImageThumbnailCell(
                     softWrap = false,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun SavedMediaDetailView(
+    savedMedia: OmCaptureUsbSavedMedia,
+    bitmap: Bitmap?,
+    isLoading: Boolean,
+    onClose: () -> Unit,
+) {
+    val extension = remember(savedMedia.displayName) {
+        savedMedia.displayName.substringAfterLast('.', "").uppercase(Locale.US)
+    }
+    BackHandler(onBack = onClose)
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .background(Color.Black),
+            contentAlignment = Alignment.Center,
+        ) {
+            when {
+                bitmap != null -> {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = savedMedia.displayName,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit,
+                    )
+                }
+
+                isLoading -> {
+                    CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp)
+                }
+
+                else -> {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.BrokenImage,
+                            contentDescription = null,
+                            tint = Color.White.copy(alpha = 0.48f),
+                            modifier = Modifier.size(68.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.transfer_saved_media_preview_unavailable),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.72f),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 24.dp),
+                        )
+                    }
+                }
+            }
+
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = stringResource(R.string.common_close),
+                    tint = Color.White,
+                )
+            }
+
+            if (extension.isNotBlank()) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(12.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(
+                            if (savedMedia.isRaw) AppleGreen.copy(alpha = 0.85f)
+                            else Color.Black.copy(alpha = 0.6f),
+                        )
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = extension,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF0A0A0A))
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = savedMedia.displayName,
+                style = MaterialTheme.typography.labelLarge,
+                color = Color.White,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = savedMedia.relativePath,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White.copy(alpha = 0.56f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

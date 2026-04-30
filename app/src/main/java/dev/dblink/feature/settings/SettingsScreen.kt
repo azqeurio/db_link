@@ -5,6 +5,7 @@ import android.widget.Toast
 import androidx.core.net.toUri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,6 +21,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LinkOff
 import androidx.compose.material.icons.rounded.LocationOn
@@ -27,17 +30,23 @@ import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,6 +55,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -58,18 +69,21 @@ import dev.dblink.core.model.CameraWorkspace
 import dev.dblink.core.model.SavedCameraProfile
 import dev.dblink.core.model.SettingItem
 import dev.dblink.core.model.TetherSaveTarget
+import dev.dblink.ui.UsbTetheringMode
 import dev.dblink.core.permissions.PermissionPlan
 import dev.dblink.core.ui.GlassCard
 import dev.dblink.core.ui.KeyValueRow
 import dev.dblink.core.ui.SectionHeader
 import dev.dblink.core.ui.SettingToggleRow
 import dev.dblink.ui.AutoImportConfig
+import dev.dblink.ui.AppUpdateUiState
 import dev.dblink.ui.GeotagConfig
 import dev.dblink.ui.LibraryCompatibilityMode
 import dev.dblink.ui.theme.AppleBlue
 import dev.dblink.ui.theme.AppleRed
 import dev.dblink.ui.theme.Chalk
 import dev.dblink.ui.theme.LeicaBorder
+import kotlin.math.roundToInt
 
 /**
  * Maps a setting ID to its localized title resource.
@@ -143,6 +157,8 @@ private val autoImportIds = setOf("auto_import", "import_new_only", "import_skip
 private val autoGeotagIds = setOf("time_match_geotags", "geotag_sync_clock", "geotag_include_altitude")
 private val developerIds = setOf("debug_workbench", "verbose_logs")
 private const val DonateUrl = "https://buymeacoffee.com/modang"
+private const val CaptureReviewDurationMinSeconds = 1
+private const val CaptureReviewDurationMaxSeconds = 5
 
 @Composable
 fun SettingsScreen(
@@ -159,7 +175,10 @@ fun SettingsScreen(
     autoImportConfig: AutoImportConfig = AutoImportConfig(),
     geotagConfig: GeotagConfig = GeotagConfig(),
     libraryCompatibilityMode: LibraryCompatibilityMode = LibraryCompatibilityMode.HighSpeed,
+    usbTetheringMode: UsbTetheringMode = UsbTetheringMode.Om,
     tetherSaveTarget: TetherSaveTarget = TetherSaveTarget.SdAndPhone,
+    captureReviewDurationSeconds: Int = 2,
+    appUpdate: AppUpdateUiState = AppUpdateUiState(),
     onSelectSavedCamera: (String) -> Unit = {},
     onSelectLanguage: (String) -> Unit = {},
     onSettingChanged: (String, Boolean) -> Unit,
@@ -167,13 +186,20 @@ fun SettingsScreen(
     onSelectCardSlotSource: (Int) -> Unit = {},
     onGeotagConfigChanged: (GeotagConfig) -> Unit = {},
     onLibraryCompatibilityModeChanged: (LibraryCompatibilityMode) -> Unit = {},
+    onUsbTetheringModeChanged: (UsbTetheringMode) -> Unit = {},
     onTetherSaveTargetChanged: (TetherSaveTarget) -> Unit = {},
+    onCaptureReviewDurationSecondsChanged: (Int) -> Unit = {},
+    onCheckForUpdates: () -> Unit = {},
+    onInstallUpdate: () -> Unit = {},
     onExportLogs: () -> Unit,
     onForgetCamera: () -> Unit = {},
     onForgetSavedCamera: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val donateUnavailableMessage = stringResource(R.string.settings_support_donate_unavailable)
+    var remoteControlExpanded by rememberSaveable { mutableStateOf(false) }
+    var autoImportExpanded by rememberSaveable { mutableStateOf(false) }
+    var autoGeotagExpanded by rememberSaveable { mutableStateOf(false) }
     val connectionSettings = settings.filter { it.id in connectionIds }
     val dialSettings = settings.filter { it.id in dialIds }
     val tetheredCaptureSettings = settings.filter { it.id in tetheredCaptureIds }
@@ -261,7 +287,10 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         color = Chalk.copy(alpha = 0.58f),
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
                         LanguageButton(
                             modifier = Modifier.weight(1f),
                             selected = selectedLanguageTag == AppLanguageManager.LANGUAGE_SYSTEM,
@@ -318,29 +347,205 @@ fun SettingsScreen(
         // 2. Remote Control / Dial
         if (dialSettings.isNotEmpty()) {
             item {
-                GlassCard {
-                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        SectionIcon(Icons.Rounded.Tune, stringResource(R.string.settings_section_dial))
-                        Text(
-                            text = stringResource(R.string.settings_section_dial_subtitle),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Chalk.copy(alpha = 0.58f),
+                ExpandableSettingsSection(
+                    icon = Icons.Rounded.Tune,
+                    title = stringResource(R.string.settings_section_dial),
+                    subtitle = stringResource(R.string.settings_section_dial_subtitle),
+                    expanded = remoteControlExpanded,
+                    onExpandedChange = { remoteControlExpanded = it },
+                ) {
+                    dialSettings.forEach { item ->
+                        SettingToggleRow(
+                            title = localizedTitle(item.id),
+                            summary = localizedSummary(item.id),
+                            checked = item.enabled,
+                            onCheckedChange = { onSettingChanged(item.id, it) },
                         )
-                        dialSettings.forEach { item ->
-                            SettingToggleRow(
-                                title = localizedTitle(item.id),
-                                summary = localizedSummary(item.id),
-                                checked = item.enabled,
-                                onCheckedChange = { onSettingChanged(item.id, it) },
-                            )
-                        }
                     }
                 }
             }
         }
 
-        // 3. Live View
-        // 4. Auto Import
+        item {
+            ExpandableSettingsSection(
+                icon = Icons.Rounded.PhotoLibrary,
+                title = stringResource(R.string.settings_section_auto_import),
+                expanded = autoImportExpanded,
+                onExpandedChange = { autoImportExpanded = it },
+            ) {
+                autoImportSettings.forEach { item ->
+                    SettingToggleRow(
+                        title = localizedTitle(item.id),
+                        summary = localizedSummary(item.id),
+                        checked = item.enabled,
+                        onCheckedChange = { onSettingChanged(item.id, it) },
+                    )
+                }
+                EditablePathRow(
+                    label = stringResource(R.string.settings_auto_import_dest_label),
+                    currentValue = autoImportConfig.saveLocation,
+                    onValueChanged = { newPath ->
+                        onAutoImportConfigChanged(autoImportConfig.copy(saveLocation = newPath))
+                    },
+                )
+                Text(
+                    text = stringResource(R.string.settings_auto_import_format_label),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Chalk.copy(alpha = 0.46f),
+                    fontWeight = FontWeight.Bold,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OptionChip(
+                        label = stringResource(R.string.settings_auto_import_format_jpeg),
+                        selected = autoImportConfig.fileFormat == "jpeg",
+                        modifier = Modifier.weight(1f),
+                    ) { onAutoImportConfigChanged(autoImportConfig.copy(fileFormat = "jpeg")) }
+                    OptionChip(
+                        label = stringResource(R.string.settings_auto_import_format_jpeg_raw),
+                        selected = autoImportConfig.fileFormat == "jpeg_raw",
+                        modifier = Modifier.weight(1f),
+                    ) { onAutoImportConfigChanged(autoImportConfig.copy(fileFormat = "jpeg_raw")) }
+                    OptionChip(
+                        label = stringResource(R.string.settings_auto_import_format_raw),
+                        selected = autoImportConfig.fileFormat == "raw",
+                        modifier = Modifier.weight(1f),
+                    ) { onAutoImportConfigChanged(autoImportConfig.copy(fileFormat = "raw")) }
+                }
+                Text(
+                    text = stringResource(R.string.settings_auto_import_timing_label),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Chalk.copy(alpha = 0.46f),
+                    fontWeight = FontWeight.Bold,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OptionChip(
+                        label = stringResource(R.string.settings_auto_import_timing_on_connect),
+                        selected = autoImportConfig.importTiming == "on_connect",
+                        modifier = Modifier.weight(1f),
+                    ) { onAutoImportConfigChanged(autoImportConfig.copy(importTiming = "on_connect")) }
+                    OptionChip(
+                        label = stringResource(R.string.settings_auto_import_timing_since_launch),
+                        selected = autoImportConfig.importTiming == "since_launch",
+                        modifier = Modifier.weight(1f),
+                    ) { onAutoImportConfigChanged(autoImportConfig.copy(importTiming = "since_launch")) }
+                    OptionChip(
+                        label = stringResource(R.string.settings_auto_import_timing_manual),
+                        selected = autoImportConfig.importTiming == "manual",
+                        modifier = Modifier.weight(1f),
+                    ) { onAutoImportConfigChanged(autoImportConfig.copy(importTiming = "manual")) }
+                }
+                if (selectedCameraSsid != null && supportsPlayTargetSlotSelection) {
+                    Text(
+                        text = stringResource(R.string.settings_photo_source_label),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Chalk.copy(alpha = 0.46f),
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OptionChip(
+                            label = stringResource(R.string.settings_photo_source_slot_1),
+                            selected = selectedCardSlotSource == 1,
+                            modifier = Modifier.weight(1f),
+                        ) { onSelectCardSlotSource(1) }
+                        OptionChip(
+                            label = stringResource(R.string.settings_photo_source_slot_2),
+                            selected = selectedCardSlotSource == 2,
+                            modifier = Modifier.weight(1f),
+                        ) { onSelectCardSlotSource(2) }
+                    }
+                    if (selectedCardSlotSource != null) {
+                        Text(
+                            text = when (selectedCardSlotSource) {
+                                2 -> stringResource(R.string.settings_photo_source_current_slot_2)
+                                else -> stringResource(R.string.settings_photo_source_current_slot_1)
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Chalk.copy(alpha = 0.48f),
+                        )
+                    }
+                }
+                Text(
+                    text = stringResource(R.string.settings_auto_import_note),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Chalk.copy(alpha = 0.48f),
+                    lineHeight = 18.sp,
+                )
+            }
+        }
+
+        item {
+            ExpandableSettingsSection(
+                icon = Icons.Rounded.LocationOn,
+                title = stringResource(R.string.settings_section_auto_geotag),
+                expanded = autoGeotagExpanded,
+                onExpandedChange = { autoGeotagExpanded = it },
+            ) {
+                autoGeotagSettings.forEach { item ->
+                    SettingToggleRow(
+                        title = localizedTitle(item.id),
+                        summary = localizedSummary(item.id),
+                        checked = item.enabled,
+                        onCheckedChange = { onSettingChanged(item.id, it) },
+                    )
+                }
+                Text(
+                    text = stringResource(R.string.settings_auto_geotag_accuracy_label),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Chalk.copy(alpha = 0.46f),
+                    fontWeight = FontWeight.Bold,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OptionChip(
+                        label = stringResource(R.string.settings_auto_geotag_accuracy_1m),
+                        selected = geotagConfig.matchWindowMinutes == 1,
+                        modifier = Modifier.weight(1f),
+                    ) { onGeotagConfigChanged(geotagConfig.copy(matchWindowMinutes = 1)) }
+                    OptionChip(
+                        label = stringResource(R.string.settings_auto_geotag_accuracy_2m),
+                        selected = geotagConfig.matchWindowMinutes == 2,
+                        modifier = Modifier.weight(1f),
+                    ) { onGeotagConfigChanged(geotagConfig.copy(matchWindowMinutes = 2)) }
+                    OptionChip(
+                        label = stringResource(R.string.settings_auto_geotag_accuracy_5m),
+                        selected = geotagConfig.matchWindowMinutes == 5,
+                        modifier = Modifier.weight(1f),
+                    ) { onGeotagConfigChanged(geotagConfig.copy(matchWindowMinutes = 5)) }
+                    OptionChip(
+                        label = stringResource(R.string.settings_auto_geotag_accuracy_10m),
+                        selected = geotagConfig.matchWindowMinutes == 10,
+                        modifier = Modifier.weight(1f),
+                    ) { onGeotagConfigChanged(geotagConfig.copy(matchWindowMinutes = 10)) }
+                }
+                Text(
+                    text = stringResource(R.string.settings_auto_geotag_requires),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Chalk.copy(alpha = 0.48f),
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color.White.copy(alpha = 0.03f))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    KeyValueRow(
+                        stringResource(R.string.settings_auto_geotag_method_label),
+                        stringResource(R.string.settings_auto_geotag_method_value),
+                    )
+                    KeyValueRow(
+                        stringResource(R.string.settings_auto_geotag_source_label),
+                        stringResource(R.string.settings_auto_geotag_source_value),
+                    )
+                    KeyValueRow(
+                        stringResource(R.string.settings_auto_geotag_writes_label),
+                        stringResource(R.string.settings_auto_geotag_writes_value),
+                    )
+                }
+            }
+        }
+
+        // 5. Tethered Capture
         if (tetheredCaptureSettings.isNotEmpty()) {
             item {
                 GlassCard {
@@ -354,6 +559,10 @@ fun SettingsScreen(
                                 onCheckedChange = { onSettingChanged(item.id, it) },
                             )
                         }
+                        CaptureReviewDurationDial(
+                            durationSeconds = captureReviewDurationSeconds,
+                            onDurationSecondsChanged = onCaptureReviewDurationSecondsChanged,
+                        )
                     }
                 }
             }
@@ -388,6 +597,42 @@ fun SettingsScreen(
                     }
                     Text(
                         text = tetherSaveTargetSummary(tetherSaveTarget),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Chalk.copy(alpha = 0.58f),
+                        lineHeight = 18.sp,
+                    )
+                }
+            }
+        }
+
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    SectionIcon(Icons.Rounded.CameraAlt, stringResource(R.string.settings_section_usb_tethering))
+                    Text(
+                        text = stringResource(R.string.settings_usb_tethering_label),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Chalk.copy(alpha = 0.46f),
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OptionChip(
+                            label = stringResource(R.string.settings_usb_tethering_mode_om),
+                            selected = usbTetheringMode == UsbTetheringMode.Om,
+                            modifier = Modifier.weight(1f),
+                        ) { onUsbTetheringModeChanged(UsbTetheringMode.Om) }
+                        OptionChip(
+                            label = stringResource(R.string.settings_usb_tethering_mode_olympus),
+                            selected = usbTetheringMode == UsbTetheringMode.Olympus,
+                            modifier = Modifier.weight(1f),
+                        ) { onUsbTetheringModeChanged(UsbTetheringMode.Olympus) }
+                    }
+                    Text(
+                        text = if (usbTetheringMode == UsbTetheringMode.Olympus) {
+                            stringResource(R.string.settings_usb_tethering_mode_olympus_summary)
+                        } else {
+                            stringResource(R.string.settings_usb_tethering_mode_om_summary)
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = Chalk.copy(alpha = 0.58f),
                         lineHeight = 18.sp,
@@ -434,182 +679,45 @@ fun SettingsScreen(
 
         item {
             GlassCard {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    SectionIcon(Icons.Rounded.PhotoLibrary, stringResource(R.string.settings_section_auto_import))
-                    autoImportSettings.forEach { item ->
-                        SettingToggleRow(
-                            title = localizedTitle(item.id),
-                            summary = localizedSummary(item.id),
-                            checked = item.enabled,
-                            onCheckedChange = { onSettingChanged(item.id, it) },
-                        )
-                    }
-                    // Save location — editable
-                    EditablePathRow(
-                        label = stringResource(R.string.settings_auto_import_dest_label),
-                        currentValue = autoImportConfig.saveLocation,
-                        onValueChanged = { newPath ->
-                            onAutoImportConfigChanged(autoImportConfig.copy(saveLocation = newPath))
-                        },
-                    )
-                    // File format selector
-                    Text(
-                        text = stringResource(R.string.settings_auto_import_format_label),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Chalk.copy(alpha = 0.46f),
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OptionChip(
-                            label = stringResource(R.string.settings_auto_import_format_jpeg),
-                            selected = autoImportConfig.fileFormat == "jpeg",
-                            modifier = Modifier.weight(1f),
-                        ) { onAutoImportConfigChanged(autoImportConfig.copy(fileFormat = "jpeg")) }
-                        OptionChip(
-                            label = stringResource(R.string.settings_auto_import_format_jpeg_raw),
-                            selected = autoImportConfig.fileFormat == "jpeg_raw",
-                            modifier = Modifier.weight(1f),
-                        ) { onAutoImportConfigChanged(autoImportConfig.copy(fileFormat = "jpeg_raw")) }
-                        OptionChip(
-                            label = stringResource(R.string.settings_auto_import_format_raw),
-                            selected = autoImportConfig.fileFormat == "raw",
-                            modifier = Modifier.weight(1f),
-                        ) { onAutoImportConfigChanged(autoImportConfig.copy(fileFormat = "raw")) }
-                    }
-                    // Import timing selector
-                    Text(
-                        text = stringResource(R.string.settings_auto_import_timing_label),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Chalk.copy(alpha = 0.46f),
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OptionChip(
-                            label = stringResource(R.string.settings_auto_import_timing_on_connect),
-                            selected = autoImportConfig.importTiming == "on_connect",
-                            modifier = Modifier.weight(1f),
-                        ) { onAutoImportConfigChanged(autoImportConfig.copy(importTiming = "on_connect")) }
-                        OptionChip(
-                            label = stringResource(R.string.settings_auto_import_timing_since_launch),
-                            selected = autoImportConfig.importTiming == "since_launch",
-                            modifier = Modifier.weight(1f),
-                        ) { onAutoImportConfigChanged(autoImportConfig.copy(importTiming = "since_launch")) }
-                        OptionChip(
-                            label = stringResource(R.string.settings_auto_import_timing_manual),
-                            selected = autoImportConfig.importTiming == "manual",
-                            modifier = Modifier.weight(1f),
-                        ) { onAutoImportConfigChanged(autoImportConfig.copy(importTiming = "manual")) }
-                    }
-                    if (selectedCameraSsid != null && supportsPlayTargetSlotSelection) {
-                        Text(
-                            text = stringResource(R.string.settings_photo_source_label),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = Chalk.copy(alpha = 0.46f),
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OptionChip(
-                                label = stringResource(R.string.settings_photo_source_slot_1),
-                                selected = selectedCardSlotSource == 1,
-                                modifier = Modifier.weight(1f),
-                            ) { onSelectCardSlotSource(1) }
-                            OptionChip(
-                                label = stringResource(R.string.settings_photo_source_slot_2),
-                                selected = selectedCardSlotSource == 2,
-                                modifier = Modifier.weight(1f),
-                            ) { onSelectCardSlotSource(2) }
-                        }
-                        if (selectedCardSlotSource != null) {
-                            Text(
-                                text = when (selectedCardSlotSource) {
-                                    2 -> stringResource(R.string.settings_photo_source_current_slot_2)
-                                    else -> stringResource(R.string.settings_photo_source_current_slot_1)
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Chalk.copy(alpha = 0.48f),
-                            )
-                        }
-                    }
-                    Text(
-                        text = stringResource(R.string.settings_auto_import_note),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Chalk.copy(alpha = 0.48f),
-                        lineHeight = 18.sp,
-                    )
-                }
-            }
-        }
-
-        // 5. Auto Geotag
-        item {
-            GlassCard {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    SectionIcon(Icons.Rounded.LocationOn, stringResource(R.string.settings_section_auto_geotag))
-                    autoGeotagSettings.forEach { item ->
-                        SettingToggleRow(
-                            title = localizedTitle(item.id),
-                            summary = localizedSummary(item.id),
-                            checked = item.enabled,
-                            onCheckedChange = { onSettingChanged(item.id, it) },
-                        )
-                    }
-                    // Match window selector
-                    Text(
-                        text = stringResource(R.string.settings_auto_geotag_accuracy_label),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Chalk.copy(alpha = 0.46f),
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OptionChip(
-                            label = stringResource(R.string.settings_auto_geotag_accuracy_1m),
-                            selected = geotagConfig.matchWindowMinutes == 1,
-                            modifier = Modifier.weight(1f),
-                        ) { onGeotagConfigChanged(geotagConfig.copy(matchWindowMinutes = 1)) }
-                        OptionChip(
-                            label = stringResource(R.string.settings_auto_geotag_accuracy_2m),
-                            selected = geotagConfig.matchWindowMinutes == 2,
-                            modifier = Modifier.weight(1f),
-                        ) { onGeotagConfigChanged(geotagConfig.copy(matchWindowMinutes = 2)) }
-                        OptionChip(
-                            label = stringResource(R.string.settings_auto_geotag_accuracy_5m),
-                            selected = geotagConfig.matchWindowMinutes == 5,
-                            modifier = Modifier.weight(1f),
-                        ) { onGeotagConfigChanged(geotagConfig.copy(matchWindowMinutes = 5)) }
-                        OptionChip(
-                            label = stringResource(R.string.settings_auto_geotag_accuracy_10m),
-                            selected = geotagConfig.matchWindowMinutes == 10,
-                            modifier = Modifier.weight(1f),
-                        ) { onGeotagConfigChanged(geotagConfig.copy(matchWindowMinutes = 10)) }
-                    }
-                    KeyValueRow(
-                        stringResource(R.string.settings_auto_geotag_method_label),
-                        stringResource(R.string.settings_auto_geotag_method_value),
-                    )
-                    KeyValueRow(
-                        stringResource(R.string.settings_auto_geotag_source_label),
-                        stringResource(R.string.settings_auto_geotag_source_value),
-                    )
-                    KeyValueRow(
-                        stringResource(R.string.settings_auto_geotag_writes_label),
-                        stringResource(R.string.settings_auto_geotag_writes_value),
-                    )
-                    Text(
-                        text = stringResource(R.string.settings_auto_geotag_requires),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Chalk.copy(alpha = 0.48f),
-                    )
-                }
-            }
-        }
-
-        // 6. App / Info
-        item {
-            GlassCard {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SectionIcon(Icons.Rounded.Info, stringResource(R.string.settings_section_app_info))
                     KeyValueRow(stringResource(R.string.settings_app_version_label), appVersion)
                     KeyValueRow(stringResource(R.string.settings_camera_base_url), appConfig.cameraBaseUrl)
+                    if (appUpdate.statusLabel.isNotBlank()) {
+                        Text(
+                            text = appUpdate.statusLabel,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Chalk.copy(alpha = 0.62f),
+                            lineHeight = 18.sp,
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = if (appUpdate.updateAvailable) onInstallUpdate else onCheckForUpdates,
+                        enabled = !appUpdate.checking && !appUpdate.downloading,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Chalk),
+                        border = BorderStroke(1.dp, LeicaBorder),
+                        shape = RoundedCornerShape(18.dp),
+                    ) {
+                        if (appUpdate.checking || appUpdate.downloading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = Chalk,
+                            )
+                            Spacer(modifier = Modifier.size(8.dp))
+                        }
+                        Text(
+                            if (appUpdate.updateAvailable) {
+                                stringResource(
+                                    R.string.settings_update_install,
+                                    appUpdate.latestVersion ?: appVersion,
+                                )
+                            } else {
+                                stringResource(R.string.settings_update_check)
+                            },
+                        )
+                    }
                     Spacer(modifier = Modifier.size(4.dp))
                     Text(
                         text = stringResource(R.string.settings_section_licenses),
@@ -670,6 +778,196 @@ fun SettingsScreen(
                             Text(stringResource(R.string.settings_clear_logs))
                         }
                     }
+                }
+            }
+        }
+
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = stringResource(R.string.settings_support_report_title),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Chalk.copy(alpha = 0.52f),
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text = stringResource(
+                            R.string.settings_support_report_body,
+                            stringResource(R.string.settings_export_logs),
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Chalk.copy(alpha = 0.62f),
+                        lineHeight = 19.sp,
+                    )
+                    Text(
+                        text = "https://github.com/azqeurio/db_link/issues\n" +
+                            "godthou0727@gmail.com",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Chalk.copy(alpha = 0.78f),
+                        lineHeight = 19.sp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CaptureReviewDurationDial(
+    durationSeconds: Int,
+    onDurationSecondsChanged: (Int) -> Unit,
+) {
+    val normalizedDuration = durationSeconds.coerceIn(
+        CaptureReviewDurationMinSeconds,
+        CaptureReviewDurationMaxSeconds,
+    )
+    var sliderValue by remember(normalizedDuration) {
+        mutableFloatStateOf(normalizedDuration.toFloat())
+    }
+    LaunchedEffect(normalizedDuration) {
+        sliderValue = normalizedDuration.toFloat()
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_capture_review_duration_label),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Chalk.copy(alpha = 0.46f),
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = stringResource(R.string.settings_capture_review_duration_summary),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Chalk.copy(alpha = 0.58f),
+                    lineHeight = 18.sp,
+                )
+            }
+            Spacer(modifier = Modifier.size(12.dp))
+            Text(
+                text = stringResource(
+                    R.string.settings_capture_review_duration_value,
+                    normalizedDuration,
+                ),
+                style = MaterialTheme.typography.titleMedium,
+                color = Chalk,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        Slider(
+            value = sliderValue,
+            onValueChange = { value ->
+                sliderValue = value
+                    .roundToInt()
+                    .coerceIn(
+                        CaptureReviewDurationMinSeconds,
+                        CaptureReviewDurationMaxSeconds,
+                    )
+                    .toFloat()
+            },
+            onValueChangeFinished = {
+                val updatedDuration = sliderValue
+                    .roundToInt()
+                    .coerceIn(
+                        CaptureReviewDurationMinSeconds,
+                        CaptureReviewDurationMaxSeconds,
+                    )
+                if (updatedDuration != durationSeconds) {
+                    onDurationSecondsChanged(updatedDuration)
+                }
+            },
+            valueRange = CaptureReviewDurationMinSeconds.toFloat()..CaptureReviewDurationMaxSeconds.toFloat(),
+            steps = CaptureReviewDurationMaxSeconds - CaptureReviewDurationMinSeconds - 1,
+            colors = SliderDefaults.colors(
+                thumbColor = Chalk,
+                activeTrackColor = AppleBlue,
+                inactiveTrackColor = Chalk.copy(alpha = 0.18f),
+                activeTickColor = AppleBlue.copy(alpha = 0.65f),
+                inactiveTickColor = Chalk.copy(alpha = 0.28f),
+            ),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            (CaptureReviewDurationMinSeconds..CaptureReviewDurationMaxSeconds).forEach { second ->
+                Text(
+                    text = stringResource(
+                        R.string.settings_capture_review_duration_value,
+                        second,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (second == normalizedDuration) {
+                        Chalk
+                    } else {
+                        Chalk.copy(alpha = 0.42f)
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExpandableSettingsSection(
+    icon: ImageVector,
+    title: String,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    subtitle: String? = null,
+    content: @Composable () -> Unit,
+) {
+    GlassCard {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { onExpandedChange(!expanded) }
+                    .padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SectionIcon(icon, title)
+                Spacer(modifier = Modifier.weight(1f))
+                TextButton(
+                    onClick = { onExpandedChange(!expanded) },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = Chalk.copy(alpha = 0.78f),
+                    ),
+                ) {
+                    Text(
+                        text = stringResource(
+                            if (expanded) R.string.common_collapse else R.string.common_expand,
+                        ),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    Spacer(modifier = Modifier.size(4.dp))
+                    Icon(
+                        imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+            subtitle?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Chalk.copy(alpha = 0.58f),
+                )
+            }
+            if (expanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    content()
                 }
             }
         }
@@ -775,8 +1073,16 @@ private fun LanguageButton(
         ),
         border = BorderStroke(1.dp, if (selected) AppleBlue else LeicaBorder),
         shape = RoundedCornerShape(18.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
     ) {
-        Text(label)
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

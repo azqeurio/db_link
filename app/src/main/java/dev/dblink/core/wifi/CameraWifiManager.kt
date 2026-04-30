@@ -8,6 +8,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.LinkProperties
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
@@ -53,7 +54,7 @@ class CameraWifiManager(private val context: Context) {
     private val requestGeneration = AtomicLong(0)
     private var requestTimeoutRunnable: Runnable? = null
     private val requestSettleIntervalMillis = 150L
-    private val requestSettleMaxChecks = 20
+    private val requestSettleMaxChecks = 60
 
     /**
      * Programmatically request connection to a specific WiFi network (used with QR scan).
@@ -118,8 +119,10 @@ class CameraWifiManager(private val context: Context) {
 
         fun finishWhenCameraNetworkReady(settleCheck: Int = 0) {
             if (requestGeneration.get() != generation || completed.get()) return
-            val active = isRequestedCameraNetworkActive() || isConnectedToCameraSsid(ssid)
+            val active = isRequestedCameraNetworkActive() ||
+                (isConnectedToCameraSsid(ssid) && getCameraNetwork() != null)
             if (active) {
+                updateNetworkBinding()
                 D.wifi("requestNetwork settle complete for $ssid: active=true after ${settleCheck + 1} checks")
                 finish(true)
                 return
@@ -156,8 +159,12 @@ class CameraWifiManager(private val context: Context) {
                 if (requestGeneration.get() != generation) return
                 D.timeEnd("WIFI", "wifi_connect", "requestNetwork onAvailable: network=$network")
                 requestedCameraNetwork = network
-                D.wifi("Binding process to network")
-                connectivityManager.bindProcessToNetwork(network)
+                if (isCameraNetwork(network)) {
+                    D.wifi("Binding process to ready camera network")
+                    connectivityManager.bindProcessToNetwork(network)
+                } else {
+                    D.wifi("Deferring process bind until camera subnet is ready")
+                }
                 finishWhenCameraNetworkReady()
             }
             override fun onLost(network: Network) {
@@ -202,7 +209,7 @@ class CameraWifiManager(private val context: Context) {
 
         requestTimeoutRunnable = Runnable {
             if (requestGeneration.get() != generation) return@Runnable
-            if (!isConnectedToCameraSsid(ssid)) {
+            if (!isRequestedCameraNetworkActive()) {
                 D.wifi("WiFi request timed out for $ssid after ${timeoutMillis}ms")
                 finish(false)
             }
@@ -529,11 +536,7 @@ class CameraWifiManager(private val context: Context) {
             }
             hasWifiTransport = true
             val linkProperties = connectivityManager.getLinkProperties(network) ?: continue
-            val gateway = linkProperties.routes
-                .firstOrNull { it.isDefaultRoute }
-                ?.gateway
-                ?.hostAddress
-            if (gateway?.startsWith("192.168.0.") == true) {
+            if (hasCameraSubnet(linkProperties)) {
                 hasCameraGateway = true
                 break
             }
@@ -564,22 +567,34 @@ class CameraWifiManager(private val context: Context) {
         if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
             return false
         }
-        if (requestedCameraNetwork == network && !requestedCameraSsid.isNullOrBlank()) {
-            return true
-        }
         val linkProperties = connectivityManager.getLinkProperties(network)
-        val gateway = linkProperties?.routes
-            ?.firstOrNull { it.isDefaultRoute }
-            ?.gateway
-            ?.hostAddress
-        if (gateway?.startsWith("192.168.0.") == true) {
+        if (hasCameraSubnet(linkProperties)) {
             return true
         }
         val targetSsid = requestedCameraSsid ?: return false
         val currentSsid = getCurrentSsid()
         return requestedCameraNetwork == network &&
             currentSsid != null &&
-            currentSsid.equals(targetSsid, ignoreCase = true)
+            currentSsid.equals(targetSsid, ignoreCase = true) &&
+            hasCameraIpv4LinkAddress(linkProperties)
+    }
+
+    private fun hasCameraSubnet(linkProperties: LinkProperties?): Boolean {
+        return hasCameraGateway(linkProperties) || hasCameraIpv4LinkAddress(linkProperties)
+    }
+
+    private fun hasCameraGateway(linkProperties: LinkProperties?): Boolean {
+        val gateway = linkProperties?.routes
+            ?.firstOrNull { it.isDefaultRoute }
+            ?.gateway
+            ?.hostAddress
+        return gateway?.startsWith("192.168.0.") == true
+    }
+
+    private fun hasCameraIpv4LinkAddress(linkProperties: LinkProperties?): Boolean {
+        return linkProperties?.linkAddresses
+            ?.mapNotNull { it.address?.hostAddress }
+            ?.any { it.startsWith("192.168.0.") } == true
     }
 
     private fun normalizeSsid(rawSsid: String?): String? {

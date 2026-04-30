@@ -54,6 +54,7 @@ import dev.dblink.core.ui.KeyValueRow
 import dev.dblink.core.usb.OmCaptureUsbManager
 import dev.dblink.core.usb.OmCaptureUsbOperationState
 import dev.dblink.core.usb.PtpConstants
+import dev.dblink.core.usb.formatOlympusExposureMode
 import dev.dblink.ui.OmCaptureUsbUiState
 import dev.dblink.ui.theme.AppleBlue
 import dev.dblink.ui.theme.AppleGreen
@@ -210,9 +211,6 @@ fun OmCaptureScreen(
                         }
                         SaveTargetChip("RAW", studioState.phoneImportFormat == TetherPhoneImportFormat.RawOnly) {
                             onDispatchAction(OmCaptureAction.SetPhoneImportFormat(TetherPhoneImportFormat.RawOnly))
-                        }
-                        SaveTargetChip("JPEG + RAW", studioState.phoneImportFormat == TetherPhoneImportFormat.JpegAndRaw) {
-                            onDispatchAction(OmCaptureAction.SetPhoneImportFormat(TetherPhoneImportFormat.JpegAndRaw))
                         }
                     }
                 }
@@ -395,9 +393,8 @@ private fun formatPtpValue(propCode: Int, value: Long): String = when (propCode)
     PtpConstants.OlympusProp.DriveMode -> when (value.toInt()) {
         0 -> "Single"; 1 -> "Sequential"; 5 -> "SH"; 6 -> "Silent"; else -> "0x${value.toString(16)}"
     }
-    PtpConstants.OlympusProp.ExposureMode -> when (value.toInt()) {
-        1 -> "P"; 2 -> "A"; 3 -> "S"; 4 -> "M"; 5 -> "B"; else -> "0x${value.toString(16)}"
-    }
+    PtpConstants.Prop.ExposureProgramMode,
+    PtpConstants.OlympusProp.ExposureMode -> formatOlympusExposureMode(propCode, value)
     PtpConstants.OlympusProp.ImageQuality -> when (value.toInt()) {
         1 -> "RAW"; 2 -> "JPEG"; 3 -> "RAW+JPEG"; else -> "0x${value.toString(16)}"
     }
@@ -794,9 +791,6 @@ private fun SectionActionPanel(
                         }
                         SaveTargetChip("RAW", studioState.phoneImportFormat == TetherPhoneImportFormat.RawOnly) {
                             onDispatchAction(OmCaptureAction.SetPhoneImportFormat(TetherPhoneImportFormat.RawOnly))
-                        }
-                        SaveTargetChip("JPEG + RAW", studioState.phoneImportFormat == TetherPhoneImportFormat.JpegAndRaw) {
-                            onDispatchAction(OmCaptureAction.SetPhoneImportFormat(TetherPhoneImportFormat.JpegAndRaw))
                         }
                     }
                 }

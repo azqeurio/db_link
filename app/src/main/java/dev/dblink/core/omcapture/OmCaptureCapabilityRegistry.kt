@@ -222,7 +222,6 @@ object OmCaptureCapabilityRegistry {
     private fun TetherPhoneImportFormat.toLabel(): String = when (this) {
         TetherPhoneImportFormat.JpegOnly -> "JPEG"
         TetherPhoneImportFormat.RawOnly -> "RAW"
-        TetherPhoneImportFormat.JpegAndRaw -> "JPEG + RAW"
     }
 
     private fun focusStateLabel(runtime: RemoteRuntimeState): String = when {

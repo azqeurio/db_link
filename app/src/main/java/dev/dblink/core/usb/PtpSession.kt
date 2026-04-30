@@ -753,13 +753,9 @@ class PtpSession(
             "OMD.Capture shutter-release failed: ${PtpConstants.Resp.name(releaseResp.code)}"
         }
 
-        // Step 3: brief settle before reading ChangedProperties (blocking, non-suspend layer)
-        Thread.sleep(1)
-
-        // Step 4: read ChangedProperties (0x9486)
-        getChangedProperties().onFailure { throwable ->
-            D.ptp("OMD.Capture: ChangedProperties read after capture failed (non-fatal): ${throwable.message}")
-        }
+        // libgphoto2-2.5.33 issues only the two Olympus capture writes
+        // (0x3 press, 0x6 release) and then waits for object/capture events.
+        // Keep the transport quiet here and let the caller observe the event stream.
     }
 
     /**
@@ -1031,14 +1027,14 @@ class PtpSession(
     /**
      * Download a thumbnail by handle.
      */
-    fun getThumb(handle: Int): Result<ByteArray> = runCatching {
+    fun getThumb(handle: Int, timeoutMs: Int = 5_000): Result<ByteArray> = runCatching {
         checkOpen()
         val cmd = PtpContainer.command(
             PtpConstants.Op.GetThumb, nextTransactionId(), handle,
         )
         check(transport.sendCommand(cmd)) { "Failed to send GetThumb" }
 
-        val (data, response) = transport.receiveDataAndResponse()
+        val (data, response) = transport.receiveDataAndResponse(timeoutMs = timeoutMs)
             ?: throw IllegalStateException("No response to GetThumb")
         check(response.code == PtpConstants.Resp.OK) {
             "GetThumb failed: ${PtpConstants.Resp.name(response.code)}"
