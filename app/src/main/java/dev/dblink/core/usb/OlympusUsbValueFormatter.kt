@@ -507,6 +507,7 @@ internal fun enumerateOlympusUsbPropertyValues(
 ): List<Long> {
     val descriptorValues = when {
         property.allowedValues.isNotEmpty() -> property.allowedValues
+        property.propCode == PtpConstants.OlympusProp.Aperture -> emptyList()
         property.propCode == PtpConstants.Prop.ExposureProgramMode -> listOf(2L, 3L, 4L, 1L)
         property.propCode == PtpConstants.OlympusProp.ExposureMode -> listOf(2L, 3L, 4L, 1L, 5L, 6L, 7L, 8L, 0L)
         property.propCode == PtpConstants.OlympusProp.ExposureCompensation -> defaultOlympusExposureCompRawValues(

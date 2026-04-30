@@ -146,6 +146,9 @@ data class TransferUiState(
     val selectedSavedMedia: OmCaptureUsbSavedMedia? = null,
     val selectedSavedMediaBitmap: Bitmap? = null,
     val selectedSavedMediaLoading: Boolean = false,
+    val selectedSavedMediaItems: List<OmCaptureUsbSavedMedia> = emptyList(),
+    val selectedSavedMediaIndex: Int = 0,
+    val selectedSavedMediaBitmaps: Map<String, Bitmap> = emptyMap(),
 )
 
 data class ImageGeoTagInfo(
@@ -183,6 +186,7 @@ fun TransferScreen(
     onToggleDateSelection: (String) -> Unit = {},
     onSelectUsbSource: (Set<Int>?) -> Unit = {},
     onCloseSavedMediaPreview: () -> Unit = {},
+    onSelectSavedMediaPreviewPage: (OmCaptureUsbSavedMedia, Int) -> Unit = { _, _ -> },
     selectedCardSlotSource: Int? = null,
     wifiSourceSelectionAvailable: Boolean = false,
     onSelectWifiSource: (Int) -> Unit = {},
@@ -226,9 +230,15 @@ fun TransferScreen(
 
     if (transferState.selectedSavedMedia != null && !transferState.isSelectionMode) {
         SavedMediaDetailView(
-            savedMedia = transferState.selectedSavedMedia,
+            savedMediaItems = transferState.selectedSavedMediaItems.ifEmpty {
+                listOf(transferState.selectedSavedMedia)
+            },
+            selectedIndex = transferState.selectedSavedMediaIndex,
+            selectedSavedMedia = transferState.selectedSavedMedia,
             bitmap = transferState.selectedSavedMediaBitmap,
+            bitmapCache = transferState.selectedSavedMediaBitmaps,
             isLoading = transferState.selectedSavedMediaLoading,
+            onSelectSavedMediaPage = onSelectSavedMediaPreviewPage,
             onClose = onCloseSavedMediaPreview,
         )
         return
@@ -1023,15 +1033,40 @@ private fun ImageThumbnailCell(
 
 @Composable
 private fun SavedMediaDetailView(
-    savedMedia: OmCaptureUsbSavedMedia,
+    savedMediaItems: List<OmCaptureUsbSavedMedia>,
+    selectedIndex: Int,
+    selectedSavedMedia: OmCaptureUsbSavedMedia,
     bitmap: Bitmap?,
+    bitmapCache: Map<String, Bitmap>,
     isLoading: Boolean,
+    onSelectSavedMediaPage: (OmCaptureUsbSavedMedia, Int) -> Unit,
     onClose: () -> Unit,
 ) {
+    val items = remember(savedMediaItems, selectedSavedMedia) {
+        savedMediaItems.ifEmpty { listOf(selectedSavedMedia) }
+    }
+    val pagerState = rememberPagerState(initialPage = selectedIndex.coerceIn(0, items.lastIndex)) { items.size }
+    val currentPage by remember(pagerState, items.size) {
+        derivedStateOf { pagerState.currentPage.coerceIn(0, items.lastIndex) }
+    }
+    val savedMedia = items.getOrElse(currentPage) { selectedSavedMedia }
     val extension = remember(savedMedia.displayName) {
         savedMedia.displayName.substringAfterLast('.', "").uppercase(Locale.US)
     }
     BackHandler(onBack = onClose)
+
+    LaunchedEffect(selectedIndex, items.size) {
+        val targetPage = selectedIndex.coerceIn(0, items.lastIndex)
+        if (pagerState.currentPage != targetPage) {
+            pagerState.scrollToPage(targetPage)
+        }
+    }
+
+    LaunchedEffect(pagerState, items) {
+        snapshotFlow { pagerState.currentPage }.distinctUntilChanged().collect { page ->
+            items.getOrNull(page)?.let { onSelectSavedMediaPage(it, page) }
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Box(
@@ -1039,40 +1074,59 @@ private fun SavedMediaDetailView(
                 .fillMaxWidth()
                 .weight(1f)
                 .background(Color.Black),
-            contentAlignment = Alignment.Center,
         ) {
-            when {
-                bitmap != null -> {
-                    Image(
-                        bitmap = bitmap.asImageBitmap(),
-                        contentDescription = savedMedia.displayName,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit,
-                    )
-                }
-
-                isLoading -> {
-                    CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp)
-                }
-
-                else -> {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize(),
+            ) { page ->
+                val pageMedia = items[page]
+                val pageBitmap = bitmapCache[pageMedia.uriString]
+                    ?: if (
+                        page == currentPage &&
+                        selectedSavedMedia.uriString == pageMedia.uriString
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.BrokenImage,
-                            contentDescription = null,
-                            tint = Color.White.copy(alpha = 0.48f),
-                            modifier = Modifier.size(68.dp),
-                        )
-                        Text(
-                            text = stringResource(R.string.transfer_saved_media_preview_unavailable),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color.White.copy(alpha = 0.72f),
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(horizontal = 24.dp),
-                        )
+                        bitmap
+                    } else {
+                        null
+                    }
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    when {
+                        pageBitmap != null -> {
+                            Image(
+                                bitmap = pageBitmap.asImageBitmap(),
+                                contentDescription = pageMedia.displayName,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Fit,
+                            )
+                        }
+
+                        page == currentPage && isLoading -> {
+                            CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp)
+                        }
+
+                        else -> {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.BrokenImage,
+                                    contentDescription = null,
+                                    tint = Color.White.copy(alpha = 0.48f),
+                                    modifier = Modifier.size(68.dp),
+                                )
+                                Text(
+                                    text = stringResource(R.string.transfer_saved_media_preview_unavailable),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = Color.White.copy(alpha = 0.72f),
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(horizontal = 24.dp),
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1110,6 +1164,20 @@ private fun SavedMediaDetailView(
                         fontWeight = FontWeight.Bold,
                     )
                 }
+            }
+
+            if (items.size > 1) {
+                Text(
+                    text = "${currentPage + 1} / ${items.size}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.8f),
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 14.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
             }
         }
 

@@ -543,6 +543,7 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                         onToggleDateSelection = viewModel::toggleDateSelection,
                                         onSelectUsbSource = viewModel::setUsbLibrarySourceSelection,
                                         onCloseSavedMediaPreview = viewModel::closeSavedMediaPreview,
+                                        onSelectSavedMediaPreviewPage = viewModel::selectSavedMediaPreviewPage,
                                         selectedCardSlotSource = uiState.selectedCardSlotSource,
                                         wifiSourceSelectionAvailable = supportsWifiSourceSelection,
                                         onSelectWifiSource = viewModel::selectWifiLibrarySourceSlot,

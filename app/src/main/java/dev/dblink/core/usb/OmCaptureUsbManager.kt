@@ -1212,9 +1212,15 @@ class OmCaptureUsbManager(
             PtpConstants.OlympusProp.FlashMode -> copy(flashMode = property, extraProperties = cleanedExtras)
             PtpConstants.OlympusProp.DriveMode -> copy(driveMode = property, extraProperties = cleanedExtras)
             PtpConstants.OlympusProp.ImageQuality -> copy(imageQuality = property, extraProperties = cleanedExtras)
-            PtpConstants.Prop.ExposureProgramMode,
-            PtpConstants.OlympusProp.ExposureMode,
-            -> copy(exposureMode = property, extraProperties = cleanedExtras)
+            PtpConstants.Prop.ExposureProgramMode -> copy(exposureMode = property, extraProperties = cleanedExtras)
+            PtpConstants.OlympusProp.ExposureMode -> copy(
+                exposureMode = if (exposureMode?.propCode == PtpConstants.Prop.ExposureProgramMode) {
+                    exposureMode
+                } else {
+                    property
+                },
+                extraProperties = cleanedExtras,
+            )
             else -> copy(
                 extraProperties = if (property == null) {
                     cleanedExtras

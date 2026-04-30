@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -132,6 +133,7 @@ import dev.dblink.core.usb.formatOlympusMetering
 import dev.dblink.core.usb.formatOlympusShutterSpeed
 import dev.dblink.core.usb.formatOlympusWhiteBalance
 import dev.dblink.core.usb.isLegacyOlympusDriveLayout
+import dev.dblink.core.usb.olympusExposureModeFromRaw
 import dev.dblink.core.usb.olympusUsbPropertyLabel
 import dev.dblink.core.usb.statusChipLabel
 import dev.dblink.ui.OmCaptureUsbUiState
@@ -1698,7 +1700,7 @@ private fun ScpSinglePage(
     ScpRow {
         ScpCell(
             label = labels.mode,
-            value = formatUsbScpExposureMode(props.exposureMode),
+            value = formatUsbScpExposureMode(props),
             propCode = props.exposureMode?.propCode ?: PtpConstants.OlympusProp.ExposureMode,
             modifier = Modifier.weight(1f),
             highlight = true,
@@ -2032,7 +2034,7 @@ private fun AdaptiveScpSinglePage(
         add(
         AdaptiveScpGridItem(
             label = labels.mode,
-            value = formatUsbScpExposureMode(props.exposureMode),
+            value = formatUsbScpExposureMode(props),
             propCode = props.exposureMode?.propCode ?: PtpConstants.OlympusProp.ExposureMode,
             highlight = true,
         ),
@@ -2847,8 +2849,26 @@ private fun formatUsbScpDrive(
 private fun formatUsbScpImageQuality(value: Long): String = if (value < 0) "--" else formatOlympusImageQuality(value)
 
 private fun formatUsbScpExposureMode(
-    property: OmCaptureUsbManager.CameraPropertyState?,
-): String = property?.let { formatOlympusExposureMode(it.propCode, it.currentValue) } ?: "--"
+    props: OmCaptureUsbManager.CameraPropertiesSnapshot,
+): String {
+    val modeProperty = props.exposureMode
+    val reportedMode = modeProperty?.let { olympusExposureModeFromRaw(it.propCode, it.currentValue) }
+    val shutterDisplay = formatOlympusShutterSpeed(props.shutterSpeed?.currentValue ?: -1L)
+    return when (shutterDisplay) {
+        "Bulb" -> "Bulb"
+        "Time" -> "Time"
+        "Composite" -> "Composite"
+        else -> {
+            if (modeProperty != null) {
+                return formatOlympusExposureMode(modeProperty.propCode, modeProperty.currentValue)
+            }
+            if (props.aperture != null || props.shutterSpeed != null || reportedMode != null) {
+                return "P"
+            }
+            "--"
+        }
+    }
+}
 
 private fun formatUsbScpShutterSpeed(value: Long): String = if (value < 0) "--" else formatOlympusShutterSpeed(value)
 
@@ -3801,6 +3821,8 @@ private fun SelectorButton(
     val view = LocalView.current
     val animatedRotation = rememberAnimatedReadableRotation(readableRotation, label = "selectorRotation")
     val compactLandscape = rememberLandscapeControlLayout() || rememberRemoteQuarterTurn(readableRotation)
+    val valueFontSize = if (compactLandscape) 9.sp else 14.sp
+    val valueLineHeight = if (compactLandscape) 10.sp else 18.sp
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(14.dp))
@@ -3816,17 +3838,20 @@ private fun SelectorButton(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .defaultMinSize(minWidth = if (compactLandscape) 42.dp else 48.dp)
-                .height(if (compactLandscape) 52.dp else 56.dp),
+                .defaultMinSize(minWidth = if (compactLandscape) 54.dp else 48.dp)
+                .height(if (compactLandscape) 64.dp else 56.dp),
             contentAlignment = Alignment.Center,
         ) {
             Column(
-                modifier = Modifier.graphicsLayer { rotationZ = animatedRotation },
+                modifier = Modifier
+                    .graphicsLayer { rotationZ = animatedRotation }
+                    .padding(horizontal = if (compactLandscape) 8.dp else 0.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(if (compactLandscape) 2.dp else 3.dp),
             ) {
                 Text(
                     text = value,
+                    modifier = Modifier.widthIn(min = if (compactLandscape) 54.dp else 0.dp),
                     color = when {
                         selected -> AppleRed
                         !enabled -> Chalk.copy(alpha = 0.56f)
@@ -3834,7 +3859,10 @@ private fun SelectorButton(
                         else -> Chalk
                     },
                     style = if (compactLandscape) {
-                        MaterialTheme.typography.titleSmall.copy(fontSize = 11.sp)
+                        MaterialTheme.typography.titleSmall.copy(
+                            fontSize = valueFontSize,
+                            lineHeight = valueLineHeight,
+                        )
                     } else {
                         MaterialTheme.typography.labelLarge
                     },
@@ -3842,11 +3870,12 @@ private fun SelectorButton(
                     fontFamily = FontFamily.Monospace,
                     textAlign = TextAlign.Center,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    overflow = TextOverflow.Clip,
                     softWrap = false,
                 )
                 Text(
                     text = label,
+                    modifier = Modifier.widthIn(min = if (compactLandscape) 42.dp else 0.dp),
                     color = Chalk.copy(alpha = if (enabled) 0.48f else 0.28f),
                     style = MaterialTheme.typography.labelSmall.copy(
                         fontSize = if (compactLandscape) 8.sp else 11.sp,
@@ -3934,6 +3963,7 @@ private fun ExposureScalePanel(
 ) {
     val view = LocalView.current
     val animatedRotation = rememberAnimatedReadableRotation(readableRotation, label = "evRotation")
+    val compactLandscape = rememberLandscapeControlLayout() || rememberRemoteQuarterTurn(readableRotation)
     val normalizedValues = values
         .ifEmpty { listOf("0.0") }
         .map(::normalizeExposureDialValue)
@@ -3983,7 +4013,9 @@ private fun ExposureScalePanel(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = if (compactLandscape) 14.dp else 0.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -3994,17 +4026,31 @@ private fun ExposureScalePanel(
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
             )
-            Text(
-                text = PropertyFormatter.formatForDisplay(
-                    "expcomp",
-                    normalizedValues[sliderPosition.roundToInt().coerceIn(0, normalizedValues.lastIndex)],
-                ),
-                modifier = Modifier.graphicsLayer { rotationZ = animatedRotation },
-                color = Color.White,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-            )
+            Box(
+                modifier = Modifier
+                    .widthIn(min = if (compactLandscape) 54.dp else 0.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = PropertyFormatter.formatForDisplay(
+                        "expcomp",
+                        normalizedValues[sliderPosition.roundToInt().coerceIn(0, normalizedValues.lastIndex)],
+                    ),
+                    modifier = Modifier
+                        .graphicsLayer { rotationZ = animatedRotation }
+                        .padding(horizontal = if (compactLandscape) 8.dp else 4.dp),
+                    color = Color.White,
+                    style = if (compactLandscape) {
+                        MaterialTheme.typography.titleLarge.copy(fontSize = 24.sp, lineHeight = 26.sp)
+                    } else {
+                        MaterialTheme.typography.titleLarge
+                    },
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
         }
 
         Box(
@@ -4085,31 +4131,55 @@ private fun ExposureScalePanel(
         }
 
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = if (compactLandscape) 14.dp else 0.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = PropertyFormatter.formatForDisplay("expcomp", normalizedValues.first()),
-                modifier = Modifier.graphicsLayer { rotationZ = animatedRotation },
-                color = Chalk.copy(alpha = 0.42f),
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-            )
-            Text(
-                text = "0.0",
-                modifier = Modifier.graphicsLayer { rotationZ = animatedRotation },
-                color = Chalk.copy(alpha = 0.42f),
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-            )
-            Text(
-                text = PropertyFormatter.formatForDisplay("expcomp", normalizedValues.last()),
-                modifier = Modifier.graphicsLayer { rotationZ = animatedRotation },
-                color = Chalk.copy(alpha = 0.42f),
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-            )
+            val compactLabelWidth = if (compactLandscape) 44.dp else 0.dp
+            Box(modifier = Modifier.widthIn(min = compactLabelWidth), contentAlignment = Alignment.Center) {
+                Text(
+                    text = PropertyFormatter.formatForDisplay("expcomp", normalizedValues.first()),
+                    modifier = Modifier.graphicsLayer { rotationZ = animatedRotation },
+                    color = Chalk.copy(alpha = 0.42f),
+                    style = if (compactLandscape) {
+                        MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, lineHeight = 9.sp)
+                    } else {
+                        MaterialTheme.typography.labelSmall
+                    },
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                )
+            }
+            Box(modifier = Modifier.widthIn(min = if (compactLandscape) 40.dp else 0.dp), contentAlignment = Alignment.Center) {
+                Text(
+                    text = "0.0",
+                    modifier = Modifier.graphicsLayer { rotationZ = animatedRotation },
+                    color = Chalk.copy(alpha = 0.42f),
+                    style = if (compactLandscape) {
+                        MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, lineHeight = 9.sp)
+                    } else {
+                        MaterialTheme.typography.labelSmall
+                    },
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                )
+            }
+            Box(modifier = Modifier.widthIn(min = compactLabelWidth), contentAlignment = Alignment.Center) {
+                Text(
+                    text = PropertyFormatter.formatForDisplay("expcomp", normalizedValues.last()),
+                    modifier = Modifier.graphicsLayer { rotationZ = animatedRotation },
+                    color = Chalk.copy(alpha = 0.42f),
+                    style = if (compactLandscape) {
+                        MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, lineHeight = 9.sp)
+                    } else {
+                        MaterialTheme.typography.labelSmall
+                    },
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
@@ -5368,17 +5438,17 @@ private fun PropertyDial(
         contentAlignment = Alignment.Center,
     ) {
         val itemWidth = when {
-            compactLandscape && propName == DEEP_SKY_FOCAL_LENGTH_PROP -> 108.dp
-            compactLandscape && propName == "takemode" -> 112.dp
-            compactLandscape && propName == "expcomp" -> 108.dp
-            compactLandscape && (propName == "wbvalue" || propName == "isospeedvalue") -> 124.dp
-            compactLandscape -> 104.dp
+            compactLandscape && propName == DEEP_SKY_FOCAL_LENGTH_PROP -> 126.dp
+            compactLandscape && propName == "takemode" -> 132.dp
+            compactLandscape && propName == "expcomp" -> 126.dp
+            compactLandscape && (propName == "wbvalue" || propName == "isospeedvalue") -> 144.dp
+            compactLandscape -> 128.dp
             propName == DEEP_SKY_FOCAL_LENGTH_PROP -> 94.dp
             propName == "wbvalue" || propName == "isospeedvalue" -> 96.dp
             else -> 86.dp
         }
-        val indicatorHeight = if (compactLandscape) 62.dp else 46.dp
-        val indicatorWidth = itemWidth - if (compactLandscape) 8.dp else 10.dp
+        val indicatorHeight = if (compactLandscape) 74.dp else 46.dp
+        val indicatorWidth = itemWidth - if (compactLandscape) 6.dp else 10.dp
         val padding = ((maxWidth - itemWidth) / 2).coerceAtLeast(0.dp)
         Box(
             modifier = Modifier
@@ -5477,7 +5547,10 @@ private fun PropertyDial(
                     val isSelected = value.equals(selectedValue, ignoreCase = true)
                     Text(
                         text = displayValue,
-                        modifier = Modifier.graphicsLayer { rotationZ = animatedRotation },
+                        modifier = Modifier
+                            .graphicsLayer { rotationZ = animatedRotation }
+                            .widthIn(min = if (compactLandscape) itemWidth - 8.dp else 0.dp)
+                            .padding(horizontal = if (compactLandscape) 10.dp else 0.dp),
                         color = when {
                             isSelected -> AppleRed
                             displayValue.equals("Auto", ignoreCase = true) -> AppleRed
@@ -5486,7 +5559,10 @@ private fun PropertyDial(
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace,
                         style = if (compactLandscape) {
-                            MaterialTheme.typography.titleMedium.copy(fontSize = if (propName == "takemode") 12.sp else 11.sp)
+                            MaterialTheme.typography.titleMedium.copy(
+                                fontSize = if (propName == "takemode") 10.sp else 9.sp,
+                                lineHeight = if (propName == "takemode") 11.sp else 10.sp,
+                            )
                         } else {
                             MaterialTheme.typography.titleMedium
                         },
@@ -5731,6 +5807,13 @@ private fun rangeLabel(propName: String, values: CameraPropertyValues): String {
     if (propName == "takemode") return ""
     if (propName == DEEP_SKY_FOCAL_LENGTH_PROP) return "7 mm - 600 mm"
     if (propName == "wbvalue") return "${actual.size} presets"
+    if (propName.startsWith("usb_0x")) {
+        val propCode = propName.removePrefix("usb_0x").toIntOrNull(16) ?: return ""
+        val rawValues = actual.mapNotNull(String::toLongOrNull)
+        if (rawValues.isEmpty()) return ""
+        return "${formatScpPtpValue(propCode, rawValues.first(), rawValues)} - " +
+            formatScpPtpValue(propCode, rawValues.last(), rawValues)
+    }
     return "${PropertyFormatter.formatForDisplay(propName, actual.first())} - ${PropertyFormatter.formatForDisplay(propName, actual.last())}"
 }
 
