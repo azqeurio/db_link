@@ -1,0 +1,997 @@
+{
+  "camera_alias_policy": {
+    "authorization": "explicit project owner approval",
+    "effective_model": "OM-5",
+    "matrix_source": "LibRaw 0.22.0 colordata.cpp OM-5 entry",
+    "source_model": "OM-5MarkII"
+  },
+  "contract": {
+    "condition": "min(ISO,65535)/6400",
+    "coordinate_space": "visible active area, sensor-native identity orientation",
+    "crop_sizes": [
+      256,
+      512,
+      1024
+    ],
+    "preprocessing": "per-CFA normalization; camera Bayer planes to linear Rec.2020; Malvar2004; clip [0,1]; float16 round-trip; HWC"
+  },
+  "pair_status": "ISO SERIES WITHOUT A CLEAN GROUND-TRUTH PAIR",
+  "sample_count": 12,
+  "samples": [
+    {
+      "black_levels": [
+        254,
+        254,
+        254,
+        254
+      ],
+      "camera_make": "OM Digital Solutions",
+      "camera_model": "OM-5MarkII",
+      "cfa_pattern": "RGGB",
+      "color_matrix_policy": {
+        "effective_model": "OM-5",
+        "matrix_source": "LibRaw 0.22.0 colordata.cpp OM-5 entry",
+        "reason": "rawpy/LibRaw 0.21.4 returns a rank-zero matrix for OM-5 Mark II",
+        "source_model": "OM-5MarkII",
+        "status": "EXPLICIT_CAMERA_ALIAS_FALLBACK"
+      },
+      "crops": [
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 256,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 786432,
+            "sha256": "dadbbee8723c285f564950dabe55f35f1de2bce5e376b30281f84537354c2f8b"
+          },
+          "rawforge_tensor": {
+            "byte_count": 786432,
+            "sha256": "fad4e8dd8f46afc83a98fa6873277c7394c3914ed68698378561f248a436874f"
+          },
+          "width": 256,
+          "x": 2492,
+          "y": 1828
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 512,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 3145728,
+            "sha256": "7724ffc620f659619c9614a442e70e5ad3c9ae04ee3949c11daf773e85e9349d"
+          },
+          "rawforge_tensor": {
+            "byte_count": 3145728,
+            "sha256": "395fe864b7615652e80d879560eb4560f3ceb3860ebb4d88be4685e79fe1ee1f"
+          },
+          "width": 512,
+          "x": 2364,
+          "y": 1700
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 1024,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 12582912,
+            "sha256": "a1c0383bec86d0da83454ca933d5c0b3f4ecad848bbbab6d17c7322c128553b8"
+          },
+          "rawforge_tensor": {
+            "byte_count": 12582912,
+            "sha256": "a8dc7b45aead0da395db816bd499557f5e214fa86083ed55c18139fd4d881a07"
+          },
+          "width": 1024,
+          "x": 2108,
+          "y": 1444
+        }
+      ],
+      "dimensions": [
+        5240,
+        3912
+      ],
+      "effective_camera_model": "OM-5",
+      "exposure_time": "1/4",
+      "file_name": "_7110217.ORF",
+      "iso": 200,
+      "sha256": "4efb7c1ebf8756a0e249005097a4007d8cc209f42a19607646d038899eb7c140",
+      "white_level": 4095
+    },
+    {
+      "black_levels": [
+        256,
+        256,
+        256,
+        256
+      ],
+      "camera_make": "OM Digital Solutions",
+      "camera_model": "OM-5MarkII",
+      "cfa_pattern": "RGGB",
+      "color_matrix_policy": {
+        "effective_model": "OM-5",
+        "matrix_source": "LibRaw 0.22.0 colordata.cpp OM-5 entry",
+        "reason": "rawpy/LibRaw 0.21.4 returns a rank-zero matrix for OM-5 Mark II",
+        "source_model": "OM-5MarkII",
+        "status": "EXPLICIT_CAMERA_ALIAS_FALLBACK"
+      },
+      "crops": [
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 256,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 786432,
+            "sha256": "62c9148a7c4261fee7cd605a611bde90d8e17909259b15d8d302a09d944d85fd"
+          },
+          "rawforge_tensor": {
+            "byte_count": 786432,
+            "sha256": "871eef751de213a2618562e04014cce28b1e6dffa3456309c335cdc8060f556c"
+          },
+          "width": 256,
+          "x": 2492,
+          "y": 1828
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 512,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 3145728,
+            "sha256": "93db7383fc2185eeabe5185df54149b36333e1a388f93a5d29ab7f81c19e9381"
+          },
+          "rawforge_tensor": {
+            "byte_count": 3145728,
+            "sha256": "df99faa61e58e98b02446e57ba64ee305b26f4fb0d913e706def7055c187fec3"
+          },
+          "width": 512,
+          "x": 2364,
+          "y": 1700
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 1024,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 12582912,
+            "sha256": "263027437ae79a5ff8345442c85e31d5de95a71444def7264458818f2b9c007d"
+          },
+          "rawforge_tensor": {
+            "byte_count": 12582912,
+            "sha256": "8d7ce7724556e793eb0808507be1878878799cb60b239fb16a389fe5e2dfbfc3"
+          },
+          "width": 1024,
+          "x": 2108,
+          "y": 1444
+        }
+      ],
+      "dimensions": [
+        5240,
+        3912
+      ],
+      "effective_camera_model": "OM-5",
+      "exposure_time": "1/8",
+      "file_name": "_7110218.ORF",
+      "iso": 400,
+      "sha256": "5c2f77fe8bcabaa2db99f6999105d7dce92a503f3547b04a8e92488a7002b50a",
+      "white_level": 4095
+    },
+    {
+      "black_levels": [
+        256,
+        256,
+        256,
+        256
+      ],
+      "camera_make": "OM Digital Solutions",
+      "camera_model": "OM-5MarkII",
+      "cfa_pattern": "RGGB",
+      "color_matrix_policy": {
+        "effective_model": "OM-5",
+        "matrix_source": "LibRaw 0.22.0 colordata.cpp OM-5 entry",
+        "reason": "rawpy/LibRaw 0.21.4 returns a rank-zero matrix for OM-5 Mark II",
+        "source_model": "OM-5MarkII",
+        "status": "EXPLICIT_CAMERA_ALIAS_FALLBACK"
+      },
+      "crops": [
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 256,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 786432,
+            "sha256": "00218eee813a784c126f0fb456d6fdb43629718d379636f8a8dc977c3ace549a"
+          },
+          "rawforge_tensor": {
+            "byte_count": 786432,
+            "sha256": "ac91a40bba882b50205d5f0fb73322b52d8beabecfaaf9921084146efd635e19"
+          },
+          "width": 256,
+          "x": 2492,
+          "y": 1828
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 512,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 3145728,
+            "sha256": "ab19864c46d0392657259541610d61cf062da1ae78935fd40b6ef31dcf63c7cc"
+          },
+          "rawforge_tensor": {
+            "byte_count": 3145728,
+            "sha256": "2d74091141d0044e53891b601141d1eba323c5d4721f76974f19cbc8d961a106"
+          },
+          "width": 512,
+          "x": 2364,
+          "y": 1700
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 1024,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 12582912,
+            "sha256": "3d441d6f7a9f9dbcd64d80c09364c30077f01c88dff6b41d3bb045e194e08b85"
+          },
+          "rawforge_tensor": {
+            "byte_count": 12582912,
+            "sha256": "4d5b0c1fcd65e94cb83cf7fc938d5807d62d6e51e5a1e8d10bf1d885ef0930fb"
+          },
+          "width": 1024,
+          "x": 2108,
+          "y": 1444
+        }
+      ],
+      "dimensions": [
+        5240,
+        3912
+      ],
+      "effective_camera_model": "OM-5",
+      "exposure_time": "1/8",
+      "file_name": "_7110219.ORF",
+      "iso": 400,
+      "sha256": "94a87d140f2def5017cdabaa3ca1b17e83abbaf318394b119655c3a02c085cbc",
+      "white_level": 4095
+    },
+    {
+      "black_levels": [
+        256,
+        256,
+        256,
+        256
+      ],
+      "camera_make": "OM Digital Solutions",
+      "camera_model": "OM-5MarkII",
+      "cfa_pattern": "RGGB",
+      "color_matrix_policy": {
+        "effective_model": "OM-5",
+        "matrix_source": "LibRaw 0.22.0 colordata.cpp OM-5 entry",
+        "reason": "rawpy/LibRaw 0.21.4 returns a rank-zero matrix for OM-5 Mark II",
+        "source_model": "OM-5MarkII",
+        "status": "EXPLICIT_CAMERA_ALIAS_FALLBACK"
+      },
+      "crops": [
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 256,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 786432,
+            "sha256": "10af895ecd7416c899f7af14262c537027c023f2a166f718cdb37e7000b91408"
+          },
+          "rawforge_tensor": {
+            "byte_count": 786432,
+            "sha256": "dbbd9b796f17127c405405768fa6432c490613032ccbd67140f486b29b691dac"
+          },
+          "width": 256,
+          "x": 2492,
+          "y": 1828
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 512,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 3145728,
+            "sha256": "dc38e418c489eef006c113cc20bc5157c17f74134eae86882724af426c2d6391"
+          },
+          "rawforge_tensor": {
+            "byte_count": 3145728,
+            "sha256": "be2ff42bc587f330bf65129537f23a7951fa17edc0f6279492e7099aaa85b467"
+          },
+          "width": 512,
+          "x": 2364,
+          "y": 1700
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 1024,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 12582912,
+            "sha256": "a730168484aad6d400bd90f3e948c24f318d94bb6b5eea627b140a7c0a60361f"
+          },
+          "rawforge_tensor": {
+            "byte_count": 12582912,
+            "sha256": "e89061084c3e73ac8235ee7568fe412dec1c574283f8f7243f34af15d13ae381"
+          },
+          "width": 1024,
+          "x": 2108,
+          "y": 1444
+        }
+      ],
+      "dimensions": [
+        5240,
+        3912
+      ],
+      "effective_camera_model": "OM-5",
+      "exposure_time": "1/15",
+      "file_name": "_7110220.ORF",
+      "iso": 800,
+      "sha256": "877020d9f9fc7d0f2fe751ef47b28b0cac0521da5085f9f1721305cde63b2846",
+      "white_level": 4095
+    },
+    {
+      "black_levels": [
+        256,
+        256,
+        256,
+        256
+      ],
+      "camera_make": "OM Digital Solutions",
+      "camera_model": "OM-5MarkII",
+      "cfa_pattern": "RGGB",
+      "color_matrix_policy": {
+        "effective_model": "OM-5",
+        "matrix_source": "LibRaw 0.22.0 colordata.cpp OM-5 entry",
+        "reason": "rawpy/LibRaw 0.21.4 returns a rank-zero matrix for OM-5 Mark II",
+        "source_model": "OM-5MarkII",
+        "status": "EXPLICIT_CAMERA_ALIAS_FALLBACK"
+      },
+      "crops": [
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 256,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 786432,
+            "sha256": "5ea0f85809ab13b6523582854c96001fb2b99f10bf113fce4b50b377a87849d9"
+          },
+          "rawforge_tensor": {
+            "byte_count": 786432,
+            "sha256": "2d86fbe5304322feab51e2f34042bf4d4430b9d2e4a587cfa559833e8d387e14"
+          },
+          "width": 256,
+          "x": 2492,
+          "y": 1828
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 512,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 3145728,
+            "sha256": "7729847996367bcc501115fa2b89990ad9e1ba6eb39a1b21d3865e26d26dd2b9"
+          },
+          "rawforge_tensor": {
+            "byte_count": 3145728,
+            "sha256": "78ac5b81cdeff5dc802ed0aa903ca875e77e4e426b11d6ade3998280832bbde7"
+          },
+          "width": 512,
+          "x": 2364,
+          "y": 1700
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 1024,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 12582912,
+            "sha256": "92b56b4f7cc25113a74a2209cd853e06a08944f3cff0465275f6e12ab49f9bd2"
+          },
+          "rawforge_tensor": {
+            "byte_count": 12582912,
+            "sha256": "56d1063d0f57157406d1bfdb7542aa7813ebad611d672a767317d77ef61e97b4"
+          },
+          "width": 1024,
+          "x": 2108,
+          "y": 1444
+        }
+      ],
+      "dimensions": [
+        5240,
+        3912
+      ],
+      "effective_camera_model": "OM-5",
+      "exposure_time": "1/20",
+      "file_name": "_7110221.ORF",
+      "iso": 1000,
+      "sha256": "4b88ad9315b1bb27212649261dae5e750768f4e8fa2cf9e4e95a37e917df69c1",
+      "white_level": 4095
+    },
+    {
+      "black_levels": [
+        257,
+        257,
+        257,
+        257
+      ],
+      "camera_make": "OM Digital Solutions",
+      "camera_model": "OM-5MarkII",
+      "cfa_pattern": "RGGB",
+      "color_matrix_policy": {
+        "effective_model": "OM-5",
+        "matrix_source": "LibRaw 0.22.0 colordata.cpp OM-5 entry",
+        "reason": "rawpy/LibRaw 0.21.4 returns a rank-zero matrix for OM-5 Mark II",
+        "source_model": "OM-5MarkII",
+        "status": "EXPLICIT_CAMERA_ALIAS_FALLBACK"
+      },
+      "crops": [
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 256,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 786432,
+            "sha256": "e8c62299b16662d8204002b9623206db15b33e524fc82e490ff53ca3079f8bfc"
+          },
+          "rawforge_tensor": {
+            "byte_count": 786432,
+            "sha256": "a0a671c0d9581aefb64501798bf6c1fa71abd080d83245c8d1ca8b034beeca6f"
+          },
+          "width": 256,
+          "x": 2492,
+          "y": 1828
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 512,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 3145728,
+            "sha256": "9a77e06379b95731557b7628742215fb77e8766eee61cead5935a986b5f927f8"
+          },
+          "rawforge_tensor": {
+            "byte_count": 3145728,
+            "sha256": "b162e7db1eace16902fbdae2772e4681cdba80cdea661808f7dfeb196fdd05e7"
+          },
+          "width": 512,
+          "x": 2364,
+          "y": 1700
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 1024,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 12582912,
+            "sha256": "5981672375cebf5fcbe922efb1724fee84881dcc691112283eb72b20290750a1"
+          },
+          "rawforge_tensor": {
+            "byte_count": 12582912,
+            "sha256": "e81a6d2b66227f09623735fba857cb7186a72717a39883432cceff750a4d6725"
+          },
+          "width": 1024,
+          "x": 2108,
+          "y": 1444
+        }
+      ],
+      "dimensions": [
+        5240,
+        3912
+      ],
+      "effective_camera_model": "OM-5",
+      "exposure_time": "1/40",
+      "file_name": "_7110222.ORF",
+      "iso": 2000,
+      "sha256": "43fe44d1b5fe1cff233c71b4c4bad56fd26eb2a8f0a86f3eb923692796620afb",
+      "white_level": 4095
+    },
+    {
+      "black_levels": [
+        257,
+        258,
+        257,
+        258
+      ],
+      "camera_make": "OM Digital Solutions",
+      "camera_model": "OM-5MarkII",
+      "cfa_pattern": "RGGB",
+      "color_matrix_policy": {
+        "effective_model": "OM-5",
+        "matrix_source": "LibRaw 0.22.0 colordata.cpp OM-5 entry",
+        "reason": "rawpy/LibRaw 0.21.4 returns a rank-zero matrix for OM-5 Mark II",
+        "source_model": "OM-5MarkII",
+        "status": "EXPLICIT_CAMERA_ALIAS_FALLBACK"
+      },
+      "crops": [
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 256,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 786432,
+            "sha256": "52d72500a4eed7968c5ff95fb029da265b90729921860bbb29d17a0f5ebd89fe"
+          },
+          "rawforge_tensor": {
+            "byte_count": 786432,
+            "sha256": "221dacfdc437d8e7398c8e0c9c0c53e8ed82ff4c5cae422ab63d94ff6e3484e8"
+          },
+          "width": 256,
+          "x": 2492,
+          "y": 1828
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 512,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 3145728,
+            "sha256": "a4505e8e53a6592c34c436a50282ac024212795e16e16fa0ff5a9a8f7c4abbcf"
+          },
+          "rawforge_tensor": {
+            "byte_count": 3145728,
+            "sha256": "fb44469819b961efc9b73f0de4699a08ee45236087f9940b2f8184022a3259c5"
+          },
+          "width": 512,
+          "x": 2364,
+          "y": 1700
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 1024,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 12582912,
+            "sha256": "2fcebf76c21550bc7b1d0eae25234543f524b5cd5befe2e5ba6f42c76ad9a21a"
+          },
+          "rawforge_tensor": {
+            "byte_count": 12582912,
+            "sha256": "66a5c2ccb50d2f3e391962440060b8d4777d8ae6519b8ffcc8a82198552f95b5"
+          },
+          "width": 1024,
+          "x": 2108,
+          "y": 1444
+        }
+      ],
+      "dimensions": [
+        5240,
+        3912
+      ],
+      "effective_camera_model": "OM-5",
+      "exposure_time": "1/80",
+      "file_name": "_7110223.ORF",
+      "iso": 4000,
+      "sha256": "a7ee071aa76950d168a36bc2d4ab7a0ac17b245fbed21cfbada88892e1a7852d",
+      "white_level": 4095
+    },
+    {
+      "black_levels": [
+        251,
+        252,
+        250,
+        251
+      ],
+      "camera_make": "OM Digital Solutions",
+      "camera_model": "OM-5MarkII",
+      "cfa_pattern": "RGGB",
+      "color_matrix_policy": {
+        "effective_model": "OM-5",
+        "matrix_source": "LibRaw 0.22.0 colordata.cpp OM-5 entry",
+        "reason": "rawpy/LibRaw 0.21.4 returns a rank-zero matrix for OM-5 Mark II",
+        "source_model": "OM-5MarkII",
+        "status": "EXPLICIT_CAMERA_ALIAS_FALLBACK"
+      },
+      "crops": [
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 256,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 786432,
+            "sha256": "d162840096d57d9b93285d5d12bc9c09dba65bf6a56b24d9bb55b584bedffe3d"
+          },
+          "rawforge_tensor": {
+            "byte_count": 786432,
+            "sha256": "33c0b3a460483f2c2a466e922b83a58eac8485644d30a8d842e3167c76aae63d"
+          },
+          "width": 256,
+          "x": 2492,
+          "y": 1828
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 512,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 3145728,
+            "sha256": "3dc39fd61a2729b086af89f8856abcf32f4418426c0c1551d4d721f5e96e7a2b"
+          },
+          "rawforge_tensor": {
+            "byte_count": 3145728,
+            "sha256": "de50ccf8ddd437117ad1fc89965b8f5160d2690ce1736b960c613f6cd49d364b"
+          },
+          "width": 512,
+          "x": 2364,
+          "y": 1700
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 1024,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 12582912,
+            "sha256": "a63c107a01db75337c64bd394e7eb24fce304503abb095616fe8d8f9d0857873"
+          },
+          "rawforge_tensor": {
+            "byte_count": 12582912,
+            "sha256": "d9134302c15995f077556a32eef387d61eb6f049e4e0cadefcad89a407cc44ff"
+          },
+          "width": 1024,
+          "x": 2108,
+          "y": 1444
+        }
+      ],
+      "dimensions": [
+        5240,
+        3912
+      ],
+      "effective_camera_model": "OM-5",
+      "exposure_time": "1/125",
+      "file_name": "_7110224.ORF",
+      "iso": 6400,
+      "sha256": "e57bcf05b6031628812659ce5f8698e6f4e6c9848ee8b3356e0539471168422f",
+      "white_level": 4095
+    },
+    {
+      "black_levels": [
+        254,
+        256,
+        253,
+        256
+      ],
+      "camera_make": "OM Digital Solutions",
+      "camera_model": "OM-5MarkII",
+      "cfa_pattern": "RGGB",
+      "color_matrix_policy": {
+        "effective_model": "OM-5",
+        "matrix_source": "LibRaw 0.22.0 colordata.cpp OM-5 entry",
+        "reason": "rawpy/LibRaw 0.21.4 returns a rank-zero matrix for OM-5 Mark II",
+        "source_model": "OM-5MarkII",
+        "status": "EXPLICIT_CAMERA_ALIAS_FALLBACK"
+      },
+      "crops": [
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 256,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 786432,
+            "sha256": "aa971c58d6440e6a4c301b78bcb9c5e1b2dc8682271709ad79c7ddbad51c5069"
+          },
+          "rawforge_tensor": {
+            "byte_count": 786432,
+            "sha256": "368229cce1e7068bc5c343fd757a3ed7c6222f88c6708673bda5b80d4766f618"
+          },
+          "width": 256,
+          "x": 2492,
+          "y": 1828
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 512,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 3145728,
+            "sha256": "df77870682f1a15ee5b2638070cdc532ae78fe18991307aeeac6f5c1ff8166d7"
+          },
+          "rawforge_tensor": {
+            "byte_count": 3145728,
+            "sha256": "3d91d615accfdacecc8f533f4ad4b742eb05bbfedebef31524ca144bd2132cc5"
+          },
+          "width": 512,
+          "x": 2364,
+          "y": 1700
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 1024,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 12582912,
+            "sha256": "a2409e079ef8e3acc38d600adce6dde3db1c7260db124c576c98c8a5fd7e6e4b"
+          },
+          "rawforge_tensor": {
+            "byte_count": 12582912,
+            "sha256": "55c256d39693835eb1b3dd6ec5ba394bbb411f78294e53dbc7b51aa408688cd5"
+          },
+          "width": 1024,
+          "x": 2108,
+          "y": 1444
+        }
+      ],
+      "dimensions": [
+        5240,
+        3912
+      ],
+      "effective_camera_model": "OM-5",
+      "exposure_time": "1/160",
+      "file_name": "_7110225.ORF",
+      "iso": 8000,
+      "sha256": "a7f84828c8d0dcd1fca9f59083b1c089aed21c906a2428d6c8c81428afb99b73",
+      "white_level": 4095
+    },
+    {
+      "black_levels": [
+        253,
+        255,
+        252,
+        254
+      ],
+      "camera_make": "OM Digital Solutions",
+      "camera_model": "OM-5MarkII",
+      "cfa_pattern": "RGGB",
+      "color_matrix_policy": {
+        "effective_model": "OM-5",
+        "matrix_source": "LibRaw 0.22.0 colordata.cpp OM-5 entry",
+        "reason": "rawpy/LibRaw 0.21.4 returns a rank-zero matrix for OM-5 Mark II",
+        "source_model": "OM-5MarkII",
+        "status": "EXPLICIT_CAMERA_ALIAS_FALLBACK"
+      },
+      "crops": [
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 256,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 786432,
+            "sha256": "fe1374c9d8715eedc7ff835386b2e5b81d4cc86394ead8715c084953f41bde7a"
+          },
+          "rawforge_tensor": {
+            "byte_count": 786432,
+            "sha256": "30914ac6fff83a4bd1c5870cc899af07f2ab4e7aaf5aa3e670513c88b8fe0117"
+          },
+          "width": 256,
+          "x": 2492,
+          "y": 1828
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 512,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 3145728,
+            "sha256": "2596b17a4f99bec435548cf65bd5b50f39da88e49c3254cfd02914f9d430254b"
+          },
+          "rawforge_tensor": {
+            "byte_count": 3145728,
+            "sha256": "653565da7a2a38ae0b85428c77d92a96f47dffe88010aa6aa980e1bf31c90998"
+          },
+          "width": 512,
+          "x": 2364,
+          "y": 1700
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 1024,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 12582912,
+            "sha256": "520441b01a473b4962c3367b97da1ceee80f8411d4d82a29fdc086e74b89ed69"
+          },
+          "rawforge_tensor": {
+            "byte_count": 12582912,
+            "sha256": "79e2eed1ba859284a181ed219e0a9ca8d1a7911a66bdf9af34055fe26d674562"
+          },
+          "width": 1024,
+          "x": 2108,
+          "y": 1444
+        }
+      ],
+      "dimensions": [
+        5240,
+        3912
+      ],
+      "effective_camera_model": "OM-5",
+      "exposure_time": "1/200",
+      "file_name": "_7110226.ORF",
+      "iso": 10000,
+      "sha256": "088991eb3e073aa4f700534583d8ea79cfcdb3b563a12916c20b13b1d964f50e",
+      "white_level": 4095
+    },
+    {
+      "black_levels": [
+        254,
+        255,
+        253,
+        254
+      ],
+      "camera_make": "OM Digital Solutions",
+      "camera_model": "OM-5MarkII",
+      "cfa_pattern": "RGGB",
+      "color_matrix_policy": {
+        "effective_model": "OM-5",
+        "matrix_source": "LibRaw 0.22.0 colordata.cpp OM-5 entry",
+        "reason": "rawpy/LibRaw 0.21.4 returns a rank-zero matrix for OM-5 Mark II",
+        "source_model": "OM-5MarkII",
+        "status": "EXPLICIT_CAMERA_ALIAS_FALLBACK"
+      },
+      "crops": [
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 256,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 786432,
+            "sha256": "dcf89fdb75b9e2c9bb0b2782aae551d3e9f92fa2a4db628cdad22864f17a21c3"
+          },
+          "rawforge_tensor": {
+            "byte_count": 786432,
+            "sha256": "c2c846a833665816fc3b2c3e425df9108e3046822c98afafd2520eff25ad518a"
+          },
+          "width": 256,
+          "x": 2492,
+          "y": 1828
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 512,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 3145728,
+            "sha256": "b98f30273ed4d90238e2ab8c20a1eb272b61ec42ade979a1bcfd1ed1a003119f"
+          },
+          "rawforge_tensor": {
+            "byte_count": 3145728,
+            "sha256": "e54e7c46c2372d9226a513fdfa3893331ff2f0b18c2b568dbf3b9686fa45a124"
+          },
+          "width": 512,
+          "x": 2364,
+          "y": 1700
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 1024,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 12582912,
+            "sha256": "f060f3346e255d3b778180050887f436e7c6cf16743731fafd8e684229897998"
+          },
+          "rawforge_tensor": {
+            "byte_count": 12582912,
+            "sha256": "7e4e898ae751e86174781cefb28ca542258725bc278e709dd9c168ac8a63fda3"
+          },
+          "width": 1024,
+          "x": 2108,
+          "y": 1444
+        }
+      ],
+      "dimensions": [
+        5240,
+        3912
+      ],
+      "effective_camera_model": "OM-5",
+      "exposure_time": "1/250",
+      "file_name": "_7110227.ORF",
+      "iso": 12800,
+      "sha256": "ee12648e4f36105c3dea1cceb9dc2f9a1f71d2bd4f967ecc07a8c9035892ed0b",
+      "white_level": 4095
+    },
+    {
+      "black_levels": [
+        226,
+        230,
+        224,
+        228
+      ],
+      "camera_make": "OM Digital Solutions",
+      "camera_model": "OM-5MarkII",
+      "cfa_pattern": "RGGB",
+      "color_matrix_policy": {
+        "effective_model": "OM-5",
+        "matrix_source": "LibRaw 0.22.0 colordata.cpp OM-5 entry",
+        "reason": "rawpy/LibRaw 0.21.4 returns a rank-zero matrix for OM-5 Mark II",
+        "source_model": "OM-5MarkII",
+        "status": "EXPLICIT_CAMERA_ALIAS_FALLBACK"
+      },
+      "crops": [
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 256,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 786432,
+            "sha256": "87d11c3069fb8f5a722f542a900c10d14229a576cc4f72f0ae43a22f76b35eba"
+          },
+          "rawforge_tensor": {
+            "byte_count": 786432,
+            "sha256": "d2abb0c4e40a68825f9ed4d06a042fa7ce0a10f2d848567da1095783995274a5"
+          },
+          "width": 256,
+          "x": 2492,
+          "y": 1828
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 512,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 3145728,
+            "sha256": "0f1b2040cd7888404fda7154f5c9063779ef2224c0072a67095a28554e1708af"
+          },
+          "rawforge_tensor": {
+            "byte_count": 3145728,
+            "sha256": "50c8ecf6f8a70fc7f5169a6fc7f21dbacc521ca0626aff1be82f2d43837c9662"
+          },
+          "width": 512,
+          "x": 2364,
+          "y": 1700
+        },
+        {
+          "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
+          "height": 1024,
+          "name": "center",
+          "orientation_transform": "identity",
+          "production_diagnostic_tensor": {
+            "byte_count": 12582912,
+            "sha256": "aeae1aaca1c4f05898429f3ef1a962563d547e88fece22112293d51e957bba46"
+          },
+          "rawforge_tensor": {
+            "byte_count": 12582912,
+            "sha256": "dc4855574e5cdbd5d467b045b794ef133b96a44f6fdee7840d443008f7e5903e"
+          },
+          "width": 1024,
+          "x": 2108,
+          "y": 1444
+        }
+      ],
+      "dimensions": [
+        5240,
+        3912
+      ],
+      "effective_camera_model": "OM-5",
+      "exposure_time": "1/500",
+      "file_name": "_7110228.ORF",
+      "iso": 25600,
+      "sha256": "28daf01527ddef78573b212bcfd8ddd79d18bafcb784fd36e217c9e075bc3406",
+      "white_level": 4095
+    }
+  ],
+  "schema_version": 1,
+  "source_policy": "Original RAW files remain external and are never committed",
+  "status": "FROZEN_REFERENCE_HASHES"
+}

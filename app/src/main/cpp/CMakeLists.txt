@@ -37,6 +37,10 @@ add_library(
     deepsky_raw_jni.cpp
 )
 
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_sources(deepskynative PRIVATE raw_domain_debug_jni.cpp)
+endif()
+
 target_include_directories(
     deepskynative
     PRIVATE

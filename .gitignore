@@ -32,3 +32,7 @@ release-assets/
 /index.html
 /script.js
 /styles.css
+
+# Python tooling caches
+__pycache__/
+*.py[cod]

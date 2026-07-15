@@ -1,0 +1,85 @@
+{
+  "endianness": "little",
+  "cases": [
+    {
+      "id": "tile_01",
+      "input": {
+        "name": "input_tile_01.bin",
+        "path": "input_tile_01.bin",
+        "dtype": "float32",
+        "shape": [
+          1,
+          256,
+          256,
+          3
+        ],
+        "sha256": "24f4e8429bfe3528558cc91468222df5b89890771587b20ca2f90ae05a39c585",
+        "size_bytes": 786432
+      },
+      "condition": {
+        "name": "condition_01.bin",
+        "path": "condition_01.bin",
+        "dtype": "float32",
+        "shape": [
+          1,
+          1
+        ],
+        "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "size_bytes": 4
+      },
+      "output": {
+        "name": "output_fp32_01.bin",
+        "path": "output_fp32_01.bin",
+        "dtype": "float32",
+        "shape": [
+          1,
+          3,
+          256,
+          256
+        ],
+        "sha256": "418e515291ea8d11a1f131fa1e43a20de7dfa30e92f247bdea435a39974e13d2",
+        "size_bytes": 786432
+      }
+    },
+    {
+      "id": "tile_edge",
+      "input": {
+        "name": "input_tile_edge.bin",
+        "path": "input_tile_edge.bin",
+        "dtype": "float32",
+        "shape": [
+          1,
+          256,
+          256,
+          3
+        ],
+        "sha256": "e04672bc876c922e40e40d36ca89a61a8de6f58ceb47d9339ca61ab441c1e231",
+        "size_bytes": 786432
+      },
+      "condition": {
+        "name": "condition_01.bin",
+        "path": "condition_01.bin",
+        "dtype": "float32",
+        "shape": [
+          1,
+          1
+        ],
+        "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "size_bytes": 4
+      },
+      "output": {
+        "name": "output_tile_edge.bin",
+        "path": "output_tile_edge.bin",
+        "dtype": "float32",
+        "shape": [
+          1,
+          3,
+          256,
+          256
+        ],
+        "sha256": "3fb112d61e8e4d85c8f0147579441f01023008aaa2aaefd6ed662ad071ec013f",
+        "size_bytes": 786432
+      }
+    }
+  ]
+}

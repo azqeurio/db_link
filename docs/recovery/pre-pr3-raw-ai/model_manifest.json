@@ -1,0 +1,64 @@
+{
+  "contract_version": 1,
+  "model_name": "raw_denoise",
+  "runtime_api": "litert_compiled_model",
+  "model_domain": "linear_sensor_rgb",
+  "model_files": {
+    "cpu_reference": {
+      "path": "model_fp32.tflite",
+      "sha256": "0efe3fd811cb8691e6347021fbb147fd81282952145274460d1238da58715806"
+    },
+    "accelerated": {
+      "path": "model_fp16.tflite",
+      "sha256": "03842593e1295f94e44d3cab6bc3f7fae2022941f0659d54233114398d1376b3"
+    }
+  },
+  "image_input": {
+    "tensor_name": "input",
+    "tensor_index": 0,
+    "shape": [1, 256, 256, 3],
+    "layout": "NHWC",
+    "dtype": "float32",
+    "range": [0.0, 1.0]
+  },
+  "condition_input": {
+    "tensor_name": "cond",
+    "tensor_index": 3,
+    "shape": [1, 1],
+    "dtype": "float32",
+    "formula": "constant_zero",
+    "clamp": true,
+    "range": [0.0, 1.0]
+  },
+  "image_output": {
+    "tensor_name": "output",
+    "tensor_index": 902,
+    "shape": [1, 3, 256, 256],
+    "layout": "NCHW",
+    "dtype": "float32",
+    "range": [0.0, 1.0]
+  },
+  "preprocessing": {
+    "profile": "RAWPY_AHD",
+    "black_level_subtraction": true,
+    "demosaic": "AHD",
+    "color_space": "RAW_SENSOR",
+    "white_balance": "UNITY",
+    "clamp_input": true
+  },
+  "tiling": {
+    "tile_width": 256,
+    "tile_height": 256,
+    "overlap_x": 64,
+    "overlap_y": 64,
+    "stride_x": 192,
+    "stride_y": 192,
+    "padding": "REFLECT",
+    "weight_window": "RAISED_COSINE_WITH_POSITIVE_EDGE"
+  },
+  "backend_order": [
+    "QUALCOMM_NPU",
+    "GPU",
+    "CPU"
+  ]
+}
