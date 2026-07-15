@@ -56,7 +56,7 @@ This proves the isolated TFLite interpreter path, not production editor integrat
 
 ## Review artifacts
 
-The external result workspace contains 12 five-way blind contact sheets, named outputs, full float32 tensors, hashes, timings, pairwise differences, projections, and the phone outputs. The randomization manifest should remain closed until visual scores are entered in `blind-score-sheet.csv`.
+The external result workspace contains 12 five-way blind contact sheets, named outputs, full float32 tensors, hashes, timings, pairwise differences, projections, and the phone outputs. The randomization manifest should remain closed until visual scores are entered in `blind-scoring-sheet.csv`.
 
 Suggested review order:
 
