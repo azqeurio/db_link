@@ -8,11 +8,14 @@
   "model_files": {
     "cpu_reference": {
       "path": "model_fp32.tflite",
-      "sha256": "0efe3fd811cb8691e6347021fbb147fd81282952145274460d1238da58715806"
+      "sha256": "0efe3fd811cb8691e6347021fbb147fd81282952145274460d1238da58715806",
+      "runtime_status": "VALIDATED_ANDROID_CPU_FP32"
     },
     "accelerated": {
       "path": "model_fp16.tflite",
-      "sha256": "03842593e1295f94e44d3cab6bc3f7fae2022941f0659d54233114398d1376b3"
+      "sha256": "03842593e1295f94e44d3cab6bc3f7fae2022941f0659d54233114398d1376b3",
+      "runtime_status": "UNSUPPORTED_CURRENT_CPU_RUNTIME",
+      "production_eligible": false
     }
   },
   "image_input": {
@@ -30,8 +33,8 @@
     "dtype": "float32",
     "formula": "min(iso,65535)/6400",
     "oracle_value": 0.0,
-    "clamp": true,
-    "range": [0.0, 1.0]
+    "clamp": false,
+    "range": [0.0, 10.23984375]
   },
   "image_output": {
     "tensor_name": "output",

@@ -40,4 +40,4 @@ The Android implementation is `RawModelDomainPreprocessor`; camera aliasing is i
 
 This proves Android preprocessing parity for one RGGB, identity-orientation camera family and the approved OM-5 alias. Non-RGGB CFA layouts, rotated active areas, unsupported-camera behavior on device, bounded full-resolution source/sink memory, accelerated FP16 execution, and production editor/export integration remain separate work.
 
-The SuperLight/Light/Standard comparison tool and dataset contract are ready, but the three upstream TorchScript weights and a clean target are not locally available. Model ranking is therefore still pending.
+PR 6 subsequently located and executed Heavy, Standard, Light, and SuperLight checkpoints plus the mobile TFLite port across the full supplied ISO series. See `pr6-model-variant-comparison.md`. A clean target is still unavailable, so the comparison remains input-relative and visually reviewable rather than an absolute quality ranking.

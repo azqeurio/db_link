@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "freeze_status": "EXTENDED WITH OM-5 MARK II ISO SERIES; MODEL REVIEW PENDING",
+  "freeze_status": "EXTENDED WITH OM-5 MARK II ISO SERIES; FOUR DESKTOP MODELS AND MOBILE FP32 EXECUTED; BLIND REVIEW PENDING",
   "coordinate_space": "visible active area, sensor-native identity orientation",
   "pair_status": "UNPAIRED; no file is a noisy/clean reference pair",
   "common_contract": {
@@ -16,6 +16,9 @@
     "authoritative_pr4_cached_tensors": "AVAILABLE AND SHA-256 VERIFIED",
     "new_512_1024_physical_crops": "AVAILABLE FOR OM-5 MARK II SERIES; 36 total 256/512/1024 reference crops generated",
     "om5_mark_ii_dataset_manifest": "docs/raw-ai/pr5-om5-markii-dataset.json",
+    "model_comparison_report": "docs/raw-ai/pr6-model-variant-comparison.md",
+    "external_comparison_workspace": "validation/pr6_model_comparison_v2; contains model outputs, hashes, timings, projections, blind sheets, and physical-device outputs",
+    "model_execution_status": "Heavy, Standard, Light, SuperLight, and mobile TFLite FP32 completed all 12 OM-5 Mark II inputs; mobile TFLite FP16 is unsupported by the current CPU runtime",
     "limitations": "No clean target is available. The OM-5 Mark II series uses an explicitly approved OM-5 LibRaw 0.22 color-matrix fallback and remains unsuitable for absolute denoising-quality claims."
   },
   "samples": [

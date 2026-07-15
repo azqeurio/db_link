@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Isolated RawForge SuperLight/Light/Standard evaluation utility.
+"""Isolated RawForge Heavy/Standard/Light/SuperLight evaluation utility.
 
 This tool never reads or writes the application's active model manifest or model assets.  Its
 inputs are signed upstream TorchScript checkpoints plus immutable float32 HWC tensors, and all
@@ -30,9 +30,10 @@ import torch
 
 TOOL_VERSION = "1.0.0"
 VARIANTS = {
-    "superlight": ("TreeNetDenoiseSuperLight", "ShadowWeightedL1_super_light.pt"),
-    "light": ("TreeNetDenoiseLight", "ShadowWeightedL1_light.pt"),
+    "heavy": ("TreeNetDenoiseDeep24", "ShadowWeightedL1_24_deep_500.pt"),
     "standard": ("TreeNetDenoise", "ShadowWeightedL1.pt"),
+    "light": ("TreeNetDenoiseLight", "ShadowWeightedL1_light.pt"),
+    "superlight": ("TreeNetDenoiseSuperLight", "ShadowWeightedL1_super_light.pt"),
 }
 TILE = 256
 OVERLAP = 16
@@ -230,7 +231,7 @@ def command_inventory(args: argparse.Namespace) -> int:
             "output_layout": "NCHW",
             "output_dtype": "float32 outside autocast",
             "forward_schema": str(model.forward.schema),
-            "status": "AVAILABLE; SIGNATURE VERIFIED EXTERNALLY",
+            "status": "AVAILABLE; TORCHSCRIPT LOAD AND FORWARD VERIFIED",
         })
     json_write(args.output, {"schema_version": 1, "tool_version": TOOL_VERSION, "models": rows})
     return 0
@@ -247,14 +248,19 @@ class InputCase:
 
 def discover_inputs(root: Path) -> list[InputCase]:
     cases = []
-    for manifest in sorted(root.glob("*/_*.manifest.json")):
+    manifests = sorted({*root.glob("_*.manifest.json"), *root.glob("*/_*.manifest.json")})
+    for manifest in manifests:
         data = json.loads(manifest.read_text(encoding="utf-8"))
+        crop = data.get("crop", {})
+        if int(crop.get("width", TILE)) != TILE or int(crop.get("height", TILE)) != TILE:
+            continue
         record = next(t for t in data["tensors"] if t["stage"] == "rawforge_malvar_linrec2020")
         path = manifest.parent / record["file"]
         actual_hash = sha256(path)
         if actual_hash != record["sha256"]:
             raise ValueError(f"Input hash mismatch: {path}")
-        cases.append(InputCase(manifest.parent.name, float(data["source"]["iso"]), path,
+        sample = manifest.parent.name if manifest.parent.name.startswith("_") else manifest.name.removesuffix(".manifest.json")
+        cases.append(InputCase(sample, float(data["source"]["iso"]), path,
                                load_hwc(path), actual_hash))
     if not cases:
         raise ValueError(f"No PR4 authoritative input manifests found under {root}")
@@ -343,7 +349,7 @@ def command_run(args: argparse.Namespace) -> int:
     pairwise = []
     for case in cases:
         for backend in sorted({key[2] for key in outputs if key[0] == case.sample}):
-            for a, b in (("superlight", "light"), ("light", "standard")):
+            for a, b in (("heavy", "standard"), ("standard", "light"), ("light", "superlight")):
                 ka, kb = (case.sample, a, backend), (case.sample, b, backend)
                 if ka in outputs and kb in outputs:
                     pairwise.append({"sample": case.sample, "backend_precision": backend,
@@ -377,7 +383,7 @@ def command_projections(args: argparse.Namespace) -> int:
         if not matching:
             continue
         tile_ms = statistics.median(matching)
-        for width, height in ((5220, 3912), (4032, 3024), (5184, 3888), (1920, 1080),
+        for width, height in ((5240, 3912), (4032, 3024), (5184, 3888), (1920, 1080),
                               (512, 512), (1024, 1024)):
             nx, ny, count = tile_count(width, height)
             projections.append({
@@ -402,7 +408,8 @@ def command_blind(args: argparse.Namespace) -> int:
     destination.mkdir(parents=True, exist_ok=True)
     manifest = {"seed": args.seed, "status": "DO NOT OPEN UNTIL REVIEW IS COMPLETE", "sets": []}
     for sample_dir in sorted(p for p in technical.iterdir() if p.is_dir()):
-        named = [(v, sample_dir / f"{v}.png") for v in VARIANTS]
+        names = [*VARIANTS, "mobile_tflite"]
+        named = [(v, sample_dir / f"{v}.png") for v in names]
         named = [(v, p) for v, p in named if p.is_file()]
         rng.shuffle(named)
         codes = [f"{sample_dir.name}-{chr(65+i)}" for i in range(len(named))]
