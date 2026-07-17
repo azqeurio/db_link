@@ -1312,7 +1312,9 @@ private fun TetherActionButton(
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
-            maxLines = 1,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            lineHeight = 16.sp,
         )
     }
 }
@@ -2334,6 +2336,9 @@ private fun AdaptiveScpCell(
         ) {
             Text(
                 text = label,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = if (visual.badge != null) 4.dp else 0.dp),
                 color = Chalk.copy(alpha = 0.68f),
                 style = MaterialTheme.typography.labelSmall,
                 fontSize = labelFontSize,
@@ -2503,6 +2508,9 @@ private fun ScpCell(
         ) {
             Text(
                 text = label,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = if (visual.badge != null) 4.dp else 0.dp),
                 color = Chalk.copy(alpha = 0.68f),
                 style = MaterialTheme.typography.labelSmall,
                 fontSize = 9.sp,
@@ -3821,8 +3829,8 @@ private fun SelectorButton(
     val view = LocalView.current
     val animatedRotation = rememberAnimatedReadableRotation(readableRotation, label = "selectorRotation")
     val compactLandscape = rememberLandscapeControlLayout() || rememberRemoteQuarterTurn(readableRotation)
-    val valueFontSize = if (compactLandscape) 9.sp else 14.sp
-    val valueLineHeight = if (compactLandscape) 10.sp else 18.sp
+    val valueFontSize = if (compactLandscape) 10.sp else 14.sp
+    val valueLineHeight = if (compactLandscape) 11.sp else 18.sp
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(14.dp))
@@ -3839,19 +3847,22 @@ private fun SelectorButton(
             modifier = Modifier
                 .fillMaxWidth()
                 .defaultMinSize(minWidth = if (compactLandscape) 54.dp else 48.dp)
-                .height(if (compactLandscape) 64.dp else 56.dp),
+                .height(if (compactLandscape) 68.dp else 60.dp),
             contentAlignment = Alignment.Center,
         ) {
             Column(
                 modifier = Modifier
                     .graphicsLayer { rotationZ = animatedRotation }
-                    .padding(horizontal = if (compactLandscape) 8.dp else 0.dp),
+                    .fillMaxWidth()
+                    .padding(horizontal = if (compactLandscape) 6.dp else 2.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(if (compactLandscape) 2.dp else 3.dp),
             ) {
                 Text(
                     text = value,
-                    modifier = Modifier.widthIn(min = if (compactLandscape) 54.dp else 0.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(min = if (compactLandscape) 54.dp else 0.dp),
                     color = when {
                         selected -> AppleRed
                         !enabled -> Chalk.copy(alpha = 0.56f)
@@ -3869,19 +3880,23 @@ private fun SelectorButton(
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace,
                     textAlign = TextAlign.Center,
-                    maxLines = 1,
-                    overflow = TextOverflow.Clip,
-                    softWrap = false,
+                    maxLines = if (compactLandscape) 2 else 1,
+                    overflow = TextOverflow.Ellipsis,
+                    softWrap = compactLandscape,
                 )
                 Text(
                     text = label,
-                    modifier = Modifier.widthIn(min = if (compactLandscape) 42.dp else 0.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(min = if (compactLandscape) 42.dp else 0.dp),
                     color = Chalk.copy(alpha = if (enabled) 0.48f else 0.28f),
                     style = MaterialTheme.typography.labelSmall.copy(
                         fontSize = if (compactLandscape) 8.sp else 11.sp,
+                        lineHeight = if (compactLandscape) 9.sp else 12.sp,
                     ),
                     textAlign = TextAlign.Center,
-                    maxLines = 1,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -3921,13 +3936,16 @@ private fun DriveSelectorButton(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(if (compactLandscape) 52.dp else 56.dp),
+                .height(if (compactLandscape) 60.dp else 58.dp),
             contentAlignment = Alignment.Center,
         ) {
             Column(
-                modifier = Modifier.graphicsLayer { rotationZ = animatedRotation },
+                modifier = Modifier
+                    .graphicsLayer { rotationZ = animatedRotation }
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(if (compactLandscape) 4.dp else 5.dp),
+                verticalArrangement = Arrangement.spacedBy(if (compactLandscape) 3.dp else 5.dp),
             ) {
                 DriveGlyph(
                     shootingMode = shootingMode,
@@ -3936,12 +3954,15 @@ private fun DriveSelectorButton(
                 )
                 Text(
                     text = summary,
+                    modifier = Modifier.fillMaxWidth(),
                     color = if (selected) AppleRed else Chalk,
                     style = MaterialTheme.typography.labelSmall.copy(
                         fontSize = if (compactLandscape) 8.sp else 11.sp,
+                        lineHeight = if (compactLandscape) 9.sp else 12.sp,
                     ),
                     textAlign = TextAlign.Center,
-                    maxLines = 1,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -5234,7 +5255,9 @@ private fun DriveChip(
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
-            maxLines = 1,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            lineHeight = 13.sp,
         )
     }
 }
@@ -5567,7 +5590,7 @@ private fun PropertyDial(
                             MaterialTheme.typography.titleMedium
                         },
                         textAlign = TextAlign.Center,
-                        maxLines = 1,
+                        maxLines = if (compactLandscape) 2 else 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }

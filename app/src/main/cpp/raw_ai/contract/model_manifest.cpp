@@ -74,18 +74,6 @@ bool parseModelManifest(const std::string& manifestJson, ModelConfig& outConfig,
 
         outConfig.cpuModelPath = extractJsonString(manifestJson, "path"); // Will match the first path
 
-        // Find CPU reference path section
-        size_t cpuRefPos = manifestJson.find("\"cpu_reference\"");
-        if (cpuRefPos != std::string::npos) {
-            outConfig.cpuModelPath = extractJsonString(manifestJson.substr(cpuRefPos), "path");
-        }
-
-        // Find Accelerated path section
-        size_t accPos = manifestJson.find("\"accelerated\"");
-        if (accPos != std::string::npos) {
-            outConfig.fp16ModelPath = extractJsonString(manifestJson.substr(accPos), "path");
-        }
-
         // 1. Parse Image Input Tensors
         size_t imgInpPos = manifestJson.find("\"image_input\"");
         if (imgInpPos != std::string::npos) {

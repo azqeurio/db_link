@@ -56,7 +56,11 @@ interface CameraRepository {
     suspend fun getResizedImageWithErr(image: CameraImage, width: Int = 1024): Result<ByteArray>
     suspend fun getResizedImage(image: CameraImage, width: Int = 1024): Result<ByteArray>
     suspend fun getFullImage(image: CameraImage): Result<ByteArray>
-    suspend fun downloadFullImageTo(image: CameraImage, output: OutputStream): Result<Long>
+    suspend fun downloadFullImageTo(
+        image: CameraImage,
+        output: OutputStream,
+        onProgress: ((bytesCopied: Long, totalBytes: Long) -> Unit)? = null,
+    ): Result<Long>
     suspend fun getPlayTargetSlot(): Result<Int>
     suspend fun setPlayTargetSlot(slot: Int): Result<Int>
     suspend fun deleteImage(image: CameraImage): Result<String>

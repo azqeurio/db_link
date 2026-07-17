@@ -25,17 +25,18 @@ class RawModelVariantDeviceBenchmarkTest {
         val iso = requireNotNull(arguments.getString("iso")).toFloat()
         val repeats = arguments.getString("repeats")?.toInt() ?: 5
         val threads = arguments.getString("threads")?.toInt() ?: 4
-        val precisionName = arguments.getString("precision") ?: "fp32"
-        val precision = when (precisionName) {
-            "fp32" -> ModelPrecision.FP32
-            "fp16" -> ModelPrecision.FP16
-            else -> error("Unsupported precision: $precisionName")
-        }
-        val modelName = if (precision == ModelPrecision.FP32) "model_fp32.tflite" else "model_fp16.tflite"
-        val modelSha = if (precision == ModelPrecision.FP32) FP32_SHA else FP16_SHA
+        val modelKey = requireNotNull(arguments.getString("model")) { "Explicit model argument is required" }
+        require(modelKey == "standard" || modelKey == "superlight") { "Unsupported Phase 5 model: $modelKey" }
+        val manifest = JSONObject(context.assets.open("raw_ai/model_manifest.json").bufferedReader().use { it.readText() })
+        val modelInfo = manifest.getJSONObject("model_files").getJSONObject(modelKey)
+        val modelName = modelInfo.getString("path")
+        val modelSha = modelInfo.getString("sha256")
+        val modelId = modelInfo.getString("id")
+        val precisionName = "fp32"
+        val precision = ModelPrecision.FP32
         val tensor = readFloat32(input, ELEMENTS)
         val output = FloatArray(ELEMENTS)
-        val condition = minOf(iso, 65535f) / 6400f
+        val condition = RawAiCondition.fromIso(iso)
         val timings = ArrayList<Double>(repeats)
 
         RawAiTestSession(context, modelName, modelSha, precision, threads).use { session ->
@@ -47,7 +48,7 @@ class RawModelVariantDeviceBenchmarkTest {
             }
         }
         assertTrue(output.all(Float::isFinite))
-        val outputFile = File(outputDir, "$sample.mobile_$precisionName.nchw.f32le.bin")
+        val outputFile = File(outputDir, "$sample.mobile_${modelKey}_$precisionName.nchw.f32le.bin")
         writeFloat32(outputFile, output)
         val sorted = timings.sorted()
         val report = JSONObject()
@@ -55,6 +56,7 @@ class RawModelVariantDeviceBenchmarkTest {
             .put("iso", iso.toDouble())
             .put("condition", condition.toDouble())
             .put("precision", precisionName)
+            .put("model_id", modelId)
             .put("threads", threads)
             .put("repeats", repeats)
             .put("median_ms", sorted[sorted.size / 2])
@@ -67,7 +69,7 @@ class RawModelVariantDeviceBenchmarkTest {
             .put("model_sha256", modelSha)
             .put("output", outputFile.name)
             .put("output_sha256", ModelAssetStore.sha256(outputFile))
-        File(outputDir, "$sample.mobile_$precisionName.json").writeText(report.toString(2))
+        File(outputDir, "$sample.mobile_${modelKey}_$precisionName.json").writeText(report.toString(2))
         println("RAW_AI_MOBILE_BENCHMARK $report")
     }
 
@@ -88,7 +90,5 @@ class RawModelVariantDeviceBenchmarkTest {
 
     companion object {
         private const val ELEMENTS = 256 * 256 * 3
-        private const val FP32_SHA = "0efe3fd811cb8691e6347021fbb147fd81282952145274460d1238da58715806"
-        private const val FP16_SHA = "03842593e1295f94e44d3cab6bc3f7fae2022941f0659d54233114398d1376b3"
     }
 }

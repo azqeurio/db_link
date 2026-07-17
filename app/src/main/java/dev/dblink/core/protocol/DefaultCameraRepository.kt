@@ -20,11 +20,145 @@ import java.util.TimeZone
 import org.w3c.dom.Element
 import org.w3c.dom.Node
 
+private fun normalizeCameraBaseUrl(baseUrl: String): String {
+    return baseUrl.trim().ifBlank { CameraProtocolCatalog.BaseUrl }.removeSuffix("/")
+}
+
+internal fun buildOiShareDirCandidates(directory: String): List<String> {
+    val normalized = directory.trim().ifBlank { "/DCIM" }
+    return buildList {
+        add(normalized)
+        val withoutLeadingSlash = normalized.trimStart('/')
+        if (withoutLeadingSlash.isNotBlank() && withoutLeadingSlash != normalized) {
+            add(withoutLeadingSlash)
+        }
+    }.filter { it.isNotBlank() }.distinct()
+}
+
+private data class OiShareDirQueryCandidate(
+    val value: String,
+    val useEncodedQuery: Boolean,
+) {
+    val logLabel: String
+        get() = if (useEncodedQuery) "raw-slash:$value" else "url-encoded:$value"
+}
+
+private fun buildOiShareDirQueryCandidates(directory: String): List<OiShareDirQueryCandidate> {
+    return buildOiShareDirCandidates(directory)
+        .flatMap { value ->
+            listOf(
+                OiShareDirQueryCandidate(value = value, useEncodedQuery = true),
+                OiShareDirQueryCandidate(value = value, useEncodedQuery = false),
+            )
+        }
+        .distinct()
+}
+
+internal object OiShareImageListContinuationPolicy {
+    const val MIN_PAGE_SIZE = 240
+    const val MAX_PAGES = 32
+    const val PAGE_DELAY_MS = 650L
+    const val DUPLICATE_RETRY_DELAY_MS = 1_200L
+    const val DUPLICATE_RETRY_LIMIT = 1
+    private const val PAGED_RESPONSE_MAX_HINT = 320
+
+    fun shouldRequestAnotherPage(receivedCount: Int, newEntryCount: Int): Boolean {
+        return receivedCount in MIN_PAGE_SIZE..PAGED_RESPONSE_MAX_HINT && newEntryCount > 0
+    }
+
+    fun shouldRetryDuplicatePage(
+        receivedCount: Int,
+        newEntryCount: Int,
+        duplicateRetriesUsed: Int,
+    ): Boolean {
+        return newEntryCount == 0 &&
+            receivedCount in MIN_PAGE_SIZE..PAGED_RESPONSE_MAX_HINT &&
+            duplicateRetriesUsed < DUPLICATE_RETRY_LIMIT
+    }
+}
+
+internal object OiShareImageListReadinessPolicy {
+    const val MAX_ATTEMPTS = 3
+
+    fun settleDelayMillis(attemptIndex: Int): Long {
+        return when (attemptIndex) {
+            0 -> 250L
+            1 -> 1_200L
+            else -> 2_200L
+        }
+    }
+
+    fun shouldRetryAfterFailure(error: Throwable?, attemptIndex: Int): Boolean {
+        if (attemptIndex >= MAX_ATTEMPTS - 1) {
+            return false
+        }
+        val message = error?.message.orEmpty()
+        return "HTTP 404" in message ||
+            "HTTP 503" in message ||
+            "HTTP 520" in message ||
+            "timeout" in message.lowercase(Locale.US) ||
+            "timed out" in message.lowercase(Locale.US)
+    }
+}
+
 class DefaultCameraRepository(
     private val config: AppConfig = AppEnvironment.current(),
     private val fallback: FakeCameraRepository = FakeCameraRepository(config),
 ) : CameraRepository {
-    private val gateway = CameraHttpGateway(baseUrl = config.cameraBaseUrl)
+    @Volatile private var activeBaseUrl: String = normalizeCameraBaseUrl(config.cameraBaseUrl)
+    @Volatile private var gateway = CameraHttpGateway(baseUrl = activeBaseUrl)
+
+    val currentCameraBaseUrl: String
+        get() = activeBaseUrl
+
+    fun useCameraBaseUrl(baseUrl: String) {
+        val normalized = normalizeCameraBaseUrl(baseUrl)
+        if (normalized == activeBaseUrl) {
+            return
+        }
+        D.proto("Switching camera HTTP base URL: $activeBaseUrl -> $normalized")
+        gateway.cancelPendingPropertyCalls()
+        gateway.cancelPendingTransferCalls()
+        activeBaseUrl = normalized
+        gateway = CameraHttpGateway(baseUrl = normalized)
+    }
+
+    fun resetCameraBaseUrl() {
+        useCameraBaseUrl(config.cameraBaseUrl)
+    }
+
+    suspend fun probeCameraBaseUrl(
+        baseUrl: String,
+        timeoutMillis: Int = 1_000,
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val normalized = normalizeCameraBaseUrl(baseUrl)
+        val probeGateway = CameraHttpGateway(baseUrl = normalized)
+        val connectMode = probeGateway.getText(
+            path = "/get_connectmode.cgi",
+            timeoutMillis = timeoutMillis,
+        )
+        if (connectMode.getOrNull()?.let(CameraHttpProbeValidator::isCameraConnectModeResponse) == true) {
+            return@withContext Result.success(normalized)
+        }
+        val camInfo = probeGateway.getText(
+            path = "/get_caminfo.cgi",
+            timeoutMillis = timeoutMillis,
+        )
+        if (camInfo.getOrNull()?.let(CameraHttpProbeValidator::isCameraInfoResponse) == true) {
+            Result.success(normalized)
+        } else {
+            D.proto(
+                "Rejected HTTP probe candidate $normalized " +
+                    "connectmode=${connectMode.getOrNull()?.take(80) ?: connectMode.exceptionOrNull()?.message} " +
+                    "caminfo=${camInfo.getOrNull()?.take(80) ?: camInfo.exceptionOrNull()?.message}",
+            )
+            Result.failure(
+                connectMode.exceptionOrNull()
+                    ?: camInfo.exceptionOrNull()
+                    ?: IllegalStateException("No OM camera HTTP endpoint at $normalized"),
+            )
+        }
+    }
 
     fun cancelPendingTransfers() {
         gateway.cancelPendingTransferCalls()
@@ -61,7 +195,8 @@ class DefaultCameraRepository(
     }
 
     override suspend fun loadWorkspace(): CameraWorkspace = withContext(Dispatchers.IO) {
-        D.proto("Loading workspace from ${config.cameraBaseUrl}")
+        val workspaceBaseUrl = activeBaseUrl
+        D.proto("Loading workspace from $workspaceBaseUrl")
         D.marker("Connection Handshake")
 
         // Stable connection sequence observed during device testing:
@@ -73,7 +208,7 @@ class DefaultCameraRepository(
             timeoutMillis = 3000,
         ).getOrElse { error ->
             D.err("PROTO", "Step 1: get_connectmode failed", error)
-            throw IllegalStateException("Camera unreachable at ${config.cameraBaseUrl}: ${error.message}")
+            throw IllegalStateException("Camera unreachable at $workspaceBaseUrl: ${error.message}")
         }
         val connectMode = ConnectModeParser.parse(connectModeResponse)
         D.proto("Step 1: connectmode=$connectMode")
@@ -134,8 +269,8 @@ class DefaultCameraRepository(
         // Assemble workspace from parsed data
         WorkspaceAssembler.build(
             commandListXml = commandListXml,
-            baseUrl = config.cameraBaseUrl,
-            sourceLabel = "Synced from ${config.cameraBaseUrl}",
+            baseUrl = workspaceBaseUrl,
+            sourceLabel = "Synced from $workspaceBaseUrl",
             connectMode = connectMode,
             connectionMethod = ConnectionMethod.Wifi,
             showProtocolWorkbench = config.showProtocolWorkbench,
@@ -153,7 +288,7 @@ class DefaultCameraRepository(
         runCatching {
             WorkspaceAssembler.build(
                 commandListXml = rawCommandList,
-                baseUrl = config.cameraBaseUrl,
+                baseUrl = activeBaseUrl,
                 sourceLabel = "Custom preview",
                 connectMode = ConnectMode.Record,
                 connectionMethod = ConnectionMethod.WifiBleAssist,
@@ -522,24 +657,7 @@ class DefaultCameraRepository(
     override suspend fun getImageList(directory: String): Result<List<CameraImage>> = withContext(Dispatchers.IO) {
         D.transfer("Getting image list for $directory")
 
-        // Image browsing requires play mode — switch first
-        val modeResult = gateway.getText(
-            path = "/switch_cammode.cgi",
-            query = mapOf("mode" to "play"),
-            timeoutMillis = 10000,
-        )
-        if (modeResult.isFailure) {
-            D.err("TRANSFER", "Failed to switch to play mode for image list", modeResult.exceptionOrNull())
-        }
-
-        val topResult = gateway.getText(
-            path = "/get_imglist.cgi",
-            query = mapOf("DIR" to directory),
-            timeoutMillis = 10000,
-        ).map { response ->
-            ImageListParser.parse(response)
-        }
-
+        val topResult = fetchImageListEntriesAfterPlayReady(directory)
         if (topResult.isFailure) {
             D.err("TRANSFER", "Failed to get image list for $directory", topResult.exceptionOrNull())
             return@withContext topResult
@@ -555,13 +673,7 @@ class DefaultCameraRepository(
         for (dir in directories) {
             val subDir = "${dir.directory}/${dir.fileName}"
             D.transfer("Fetching subdirectory: $subDir")
-            gateway.getText(
-                path = "/get_imglist.cgi",
-                query = mapOf("DIR" to subDir),
-                timeoutMillis = 10000,
-            ).map { response ->
-                ImageListParser.parse(response)
-            }.onSuccess { subFiles ->
+            fetchImageListEntries(subDir).onSuccess { subFiles ->
                 val actualFiles = subFiles.filter { !it.isDirectory }
                 D.transfer("Got ${actualFiles.size} files from $subDir")
                 files.addAll(actualFiles)
@@ -574,11 +686,212 @@ class DefaultCameraRepository(
         Result.success(files)
     }
 
+    private suspend fun fetchImageListEntriesAfterPlayReady(directory: String): Result<List<CameraImage>> {
+        var lastResult: Result<List<CameraImage>> =
+            Result.failure(IllegalStateException("Image list was not requested"))
+        repeat(OiShareImageListReadinessPolicy.MAX_ATTEMPTS) { attemptIndex ->
+            val attempt = attemptIndex + 1
+            val modeResult = gateway.getText(
+                path = "/switch_cammode.cgi",
+                query = mapOf("mode" to "play"),
+                timeoutMillis = 10000,
+            )
+            if (modeResult.isFailure) {
+                D.err(
+                    "TRANSFER",
+                    "Failed to switch to play mode for image list (attempt $attempt)",
+                    modeResult.exceptionOrNull(),
+                )
+            } else {
+                D.transfer("Image list play-mode preparation complete (attempt $attempt)")
+            }
+
+            delay(OiShareImageListReadinessPolicy.settleDelayMillis(attemptIndex))
+            val listResult = fetchImageListEntries(directory)
+            if (listResult.isSuccess) {
+                return listResult
+            }
+            lastResult = listResult
+            val throwable = listResult.exceptionOrNull()
+            if (!OiShareImageListReadinessPolicy.shouldRetryAfterFailure(throwable, attemptIndex)) {
+                return listResult
+            }
+            D.transfer(
+                "Image list for $directory failed after play preparation attempt $attempt; " +
+                    "retrying after camera settle (${throwable?.message})",
+            )
+        }
+        return lastResult
+    }
+
+    private suspend fun fetchImageListEntries(directory: String): Result<List<CameraImage>> {
+        val mergedEntries = linkedMapOf<String, CameraImage>()
+        var pageIndex = 0
+        var nextDelayMs = 0L
+        var duplicateRetriesUsed = 0
+        while (pageIndex < OiShareImageListContinuationPolicy.MAX_PAGES) {
+            if (nextDelayMs > 0L) {
+                delay(nextDelayMs)
+                D.transfer("Continuing image list for $directory (page ${pageIndex + 1})")
+            }
+            val pageResult = getTextWithOiShareDirFallback(
+                path = "/get_imglist.cgi",
+                directory = directory,
+                timeoutMillis = 10000,
+            ).map { response ->
+                ImageListParser.parse(response)
+            }
+            if (pageResult.isFailure) {
+                return if (mergedEntries.isNotEmpty()) {
+                    D.err(
+                        "TRANSFER",
+                        "Continuing image list for $directory failed after ${mergedEntries.size} merged entries",
+                        pageResult.exceptionOrNull(),
+                    )
+                    Result.success(mergedEntries.values.toList())
+                } else {
+                    pageResult
+                }
+            }
+
+            val pageEntries = pageResult.getOrThrow()
+            var newEntries = 0
+            pageEntries.forEach { entry ->
+                if (mergedEntries.putIfAbsent(entry.fullPath, entry) == null) {
+                    newEntries += 1
+                }
+            }
+            D.transfer(
+                "Image list page ${pageIndex + 1} for $directory: " +
+                    "received=${pageEntries.size}, new=$newEntries, merged=${mergedEntries.size}",
+            )
+            if (!OiShareImageListContinuationPolicy.shouldRequestAnotherPage(pageEntries.size, newEntries)) {
+                if (
+                    OiShareImageListContinuationPolicy.shouldRetryDuplicatePage(
+                        receivedCount = pageEntries.size,
+                        newEntryCount = newEntries,
+                        duplicateRetriesUsed = duplicateRetriesUsed,
+                    )
+                ) {
+                    duplicateRetriesUsed += 1
+                    pageIndex += 1
+                    nextDelayMs = OiShareImageListContinuationPolicy.DUPLICATE_RETRY_DELAY_MS
+                    D.transfer(
+                        "Image list for $directory returned a duplicate ${pageEntries.size}-entry " +
+                            "page; retrying after settle delay",
+                    )
+                    continue
+                }
+                return Result.success(mergedEntries.values.toList())
+            }
+            duplicateRetriesUsed = 0
+            pageIndex += 1
+            nextDelayMs = OiShareImageListContinuationPolicy.PAGE_DELAY_MS
+        }
+        D.transfer(
+            "Image list continuation limit reached for $directory " +
+                "(${mergedEntries.size} merged entries)",
+        )
+        return Result.success(mergedEntries.values.toList())
+    }
+
+    private fun isHttpNotFound(error: Throwable?): Boolean {
+        return "HTTP 404" in error?.message.orEmpty()
+    }
+
+    private fun isHttpBadRequest(error: Throwable?): Boolean {
+        return "HTTP 400" in error?.message.orEmpty()
+    }
+
+    private fun shouldTryAlternateOiShareDir(error: Throwable?): Boolean {
+        return isHttpNotFound(error) || isHttpBadRequest(error)
+    }
+
+    private fun getBytesWithOiShareDirFallback(
+        path: String,
+        directory: String,
+        timeoutMillis: Int,
+        extraQuery: Map<String, String> = emptyMap(),
+    ): Result<ByteArray> {
+        var lastResult: Result<ByteArray> =
+            Result.failure(IllegalStateException("Transfer bytes were not requested"))
+        buildOiShareDirQueryCandidates(directory).forEachIndexed { index, candidate ->
+            if (index > 0) {
+                D.transfer("Trying alternate OI.Share DIR format for $path: ${candidate.logLabel}")
+            }
+            val query = buildMap {
+                put("DIR", candidate.value)
+                putAll(extraQuery)
+            }
+            val result = if (candidate.useEncodedQuery) {
+                gateway.getBytesWithEncodedQuery(
+                    path = path,
+                    query = query,
+                    timeoutMillis = timeoutMillis,
+                )
+            } else {
+                gateway.getBytes(
+                    path = path,
+                    query = query,
+                    timeoutMillis = timeoutMillis,
+                )
+            }
+            if (result.isSuccess) {
+                return result
+            }
+            lastResult = result
+            if (!shouldTryAlternateOiShareDir(result.exceptionOrNull())) {
+                return result
+            }
+        }
+        return lastResult
+    }
+
+    private fun getTextWithOiShareDirFallback(
+        path: String,
+        directory: String,
+        timeoutMillis: Int,
+        extraQuery: Map<String, String> = emptyMap(),
+    ): Result<String> {
+        var lastResult: Result<String> =
+            Result.failure(IllegalStateException("Transfer text was not requested"))
+        buildOiShareDirQueryCandidates(directory).forEachIndexed { index, candidate ->
+            if (index > 0) {
+                D.transfer("Trying alternate OI.Share DIR format for $path: ${candidate.logLabel}")
+            }
+            val query = buildMap {
+                put("DIR", candidate.value)
+                putAll(extraQuery)
+            }
+            val result = if (candidate.useEncodedQuery) {
+                gateway.getTextWithEncodedQuery(
+                    path = path,
+                    query = query,
+                    timeoutMillis = timeoutMillis,
+                )
+            } else {
+                gateway.getText(
+                    path = path,
+                    query = query,
+                    timeoutMillis = timeoutMillis,
+                )
+            }
+            if (result.isSuccess) {
+                return result
+            }
+            lastResult = result
+            if (!shouldTryAlternateOiShareDir(result.exceptionOrNull())) {
+                return result
+            }
+        }
+        return lastResult
+    }
+
     override suspend fun getThumbnail(image: CameraImage): Result<ByteArray> = withContext(Dispatchers.IO) {
         D.transfer("Getting thumbnail for ${image.fileName}")
-        gateway.getBytes(
+        getBytesWithOiShareDirFallback(
             path = "/get_thumbnail.cgi",
-            query = mapOf("DIR" to image.fullPath),
+            directory = image.fullPath,
             timeoutMillis = 8000,
         ).onFailure {
             D.err("TRANSFER", "Failed to get thumbnail for ${image.fileName}", it)
@@ -587,9 +900,9 @@ class DefaultCameraRepository(
 
     override suspend fun getPreviewThumbnail(image: CameraImage): Result<ByteArray> = withContext(Dispatchers.IO) {
         D.transfer("Getting preview thumbnail for ${image.fileName}")
-        gateway.getBytes(
+        getBytesWithOiShareDirFallback(
             path = "/get_screennail.cgi",
-            query = mapOf("DIR" to image.fullPath),
+            directory = image.fullPath,
             timeoutMillis = 12000,
         ).onFailure {
             D.err("TRANSFER", "Failed to get preview thumbnail for ${image.fileName}", it)
@@ -598,9 +911,10 @@ class DefaultCameraRepository(
 
     override suspend fun getResizedImageWithErr(image: CameraImage, width: Int): Result<ByteArray> = withContext(Dispatchers.IO) {
         D.transfer("Getting resized image witherr for ${image.fileName} (width=$width)")
-        gateway.getBytes(
+        getBytesWithOiShareDirFallback(
             path = "/get_resizeimg_witherr.cgi",
-            query = mapOf("DIR" to image.fullPath, "size" to width.toString()),
+            directory = image.fullPath,
+            extraQuery = mapOf("size" to width.toString()),
             timeoutMillis = 15000,
         ).onFailure {
             D.err("TRANSFER", "Failed to get resized image witherr for ${image.fileName}", it)
@@ -609,9 +923,10 @@ class DefaultCameraRepository(
 
     override suspend fun getResizedImage(image: CameraImage, width: Int): Result<ByteArray> = withContext(Dispatchers.IO) {
         D.transfer("Getting resized image for ${image.fileName} (width=$width)")
-        gateway.getBytes(
+        getBytesWithOiShareDirFallback(
             path = "/get_resizeimg.cgi",
-            query = mapOf("DIR" to image.fullPath, "size" to width.toString()),
+            directory = image.fullPath,
+            extraQuery = mapOf("size" to width.toString()),
             timeoutMillis = 15000,
         ).onFailure {
             D.err("TRANSFER", "Failed to get resized image for ${image.fileName}", it)
@@ -630,12 +945,18 @@ class DefaultCameraRepository(
         }
     }
 
-    override suspend fun downloadFullImageTo(image: CameraImage, output: OutputStream): Result<Long> = withContext(Dispatchers.IO) {
+    override suspend fun downloadFullImageTo(
+        image: CameraImage,
+        output: OutputStream,
+        onProgress: ((bytesCopied: Long, totalBytes: Long) -> Unit)?,
+    ): Result<Long> = withContext(Dispatchers.IO) {
         D.transfer("Streaming full image ${image.fileName} (${image.fileSize} bytes)")
         gateway.copyBytesTo(
             path = image.fullPath,
             output = output,
             timeoutMillis = fullImageTimeoutMillis(image.fileSize),
+            expectedBytes = image.fileSize,
+            onProgress = onProgress,
         ).onSuccess { bytesCopied ->
             val sizeLabel = if (bytesCopied >= 0L) bytesCopied.toString() else "unknown"
             D.transfer("Streamed ${image.fileName}: $sizeLabel bytes")
@@ -689,9 +1010,9 @@ class DefaultCameraRepository(
         ).onFailure {
             D.err("TRANSFER", "Failed to switch to play mode before delete", it)
         }
-        gateway.getText(
+        getTextWithOiShareDirFallback(
             path = "/exec_erase.cgi",
-            query = mapOf("DIR" to image.fullPath),
+            directory = image.fullPath,
             timeoutMillis = 15000,
         ).onSuccess {
             D.transfer("Deleted image on camera: ${image.fullPath}")

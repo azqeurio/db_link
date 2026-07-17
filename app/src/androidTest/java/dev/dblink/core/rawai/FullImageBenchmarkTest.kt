@@ -16,7 +16,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class FullImageBenchmarkTest {
     @Test
-    fun benchmarkFp32AndFp16Matrix() {
+    fun benchmarkStandardAndSuperLightFp32Matrix() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
@@ -26,7 +26,7 @@ class FullImageBenchmarkTest {
             "memoryClassMb=${activityManager.memoryClass} charging=${battery.isCharging}")
         val manifest = JSONObject(context.assets.open("raw_ai/model_manifest.json").bufferedReader().use { it.readText() })
         val sizes = listOf(256 to 256, 512 to 512, 1024 to 1024, 1920 to 1080, 2048 to 1536)
-        for ((key, precision) in listOf("cpu_reference" to ModelPrecision.FP32, "accelerated" to ModelPrecision.FP16)) {
+        for ((key, precision) in listOf("standard" to ModelPrecision.FP32, "superlight" to ModelPrecision.FP32)) {
             val info = manifest.getJSONObject("model_files").getJSONObject(key)
             val opened = try {
                 RawAiTestSession(context, info.getString("path"), info.getString("sha256"), precision)
@@ -57,7 +57,7 @@ class FullImageBenchmarkTest {
                     val megapixels = width.toDouble() * height / 1_000_000.0
                     val summary = Pr3Metrics.summarize(result.image.data)
                     assertEquals(summary.elements, summary.finite)
-                    println("PR3_BENCH precision=$precision size=${width}x$height overlap=32 padding=REFLECT tiles=${result.plan.totalTiles} " +
+                    println("PHASE5_BENCH model=$key precision=$precision size=${width}x$height overlap=32 padding=REFLECT tiles=${result.plan.totalTiles} " +
                         "threads=1 warmups=1 measuredRuns=$runs loadMs=${session.modelLoadMillis} warmupMs=$warmupMs totalMs=${result.timings.totalMillis} " +
                         "extractMs=${result.timings.extractionMillis} inferenceMs=${result.timings.inferenceMillis} blendMs=${result.timings.blendingMillis} " +
                         "finalizeMs=${result.timings.finalizationMillis} meanTileMs=${sorted.average()} medianTileMs=$median p95TileMs=$p95 " +

@@ -139,6 +139,14 @@
     <string name="settings_import_skip_duplicates_summary">기기에 이미 있는 파일은 덮어쓰지 않습니다</string>
     <string name="settings_auto_import_dest_label">저장 위치</string>
     <string name="settings_auto_import_dest_default">Pictures/db link</string>
+    <string name="settings_folder_structure_label">폴더 구조</string>
+    <string name="settings_folder_structure_date_day">날짜별</string>
+    <string name="settings_folder_structure_date_month">연/월</string>
+    <string name="settings_folder_structure_date_year">연도별</string>
+    <string name="settings_folder_structure_flat">하위 폴더 없음</string>
+    <string name="settings_folder_structure_preview">예: %1$s</string>
+    <string name="settings_wireless_tether_ip_label">고속전달 카메라 IP (선택)</string>
+    <string name="settings_wireless_tether_ip_hint">같은 Wi-Fi에서 \"고속전달\"을 쓸 때: 카메라 IP(예: 192.168.100.50)를 입력하면 전체 네트워크를 스캔하지 않고 그 주소로 바로 연결합니다. 비워두면 자동 탐색합니다. IP는 카메라의 Wi-Fi/테더링 화면이나 공유기 기기 목록에서 확인하세요.</string>
     <string name="settings_auto_import_format_label">파일 형식</string>
     <string name="settings_auto_import_format_jpeg">JPEG만</string>
     <string name="settings_auto_import_format_jpeg_raw">JPEG + RAW</string>

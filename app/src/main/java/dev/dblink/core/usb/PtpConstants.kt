@@ -56,6 +56,24 @@ object PtpConstants {
         const val TerminateOpenCapture = 0x1018
         const val GetPartialObject = 0x101B
         const val InitiateOpenCapture = 0x101C
+        const val GetObjectPropsSupported = 0x9801
+        const val GetObjectPropDesc = 0x9802
+        const val GetObjectPropValue = 0x9803
+        const val SetObjectPropValue = 0x9804
+        const val GetObjectPropList = 0x9805
+        const val SetObjectPropList = 0x9806
+    }
+
+    // MTP Object Property Codes (0xDCxx)
+    object ObjectProp {
+        const val StorageID = 0xDC01
+        const val ObjectFormat = 0xDC02
+        const val ProtectionStatus = 0xDC03
+        const val ObjectFileName = 0xDC07
+        const val DateCreated = 0xDC08
+        const val DateModified = 0xDC09
+        const val Keywords = 0xDC0A
+        const val Rating = 0xDC8A
     }
 
     // Standard Response Codes (0x2xxx)
@@ -307,6 +325,12 @@ object PtpConstants {
         Op.GetPartialObject -> "GetPartialObject"
         Op.InitiateOpenCapture -> "InitiateOpenCapture"
         Op.TerminateOpenCapture -> "TerminateOpenCapture"
+        Op.GetObjectPropsSupported -> "MTP.GetObjectPropsSupported"
+        Op.GetObjectPropDesc -> "MTP.GetObjectPropDesc"
+        Op.GetObjectPropValue -> "MTP.GetObjectPropValue"
+        Op.SetObjectPropValue -> "MTP.SetObjectPropValue"
+        Op.GetObjectPropList -> "MTP.GetObjectPropList"
+        Op.SetObjectPropList -> "MTP.SetObjectPropList"
         OlympusOp.OpenSession -> "Olympus.OpenSession"
         OlympusOp.GetDeviceInfo -> "Olympus.GetDeviceInfo"
         OlympusOp.GetCameraControlMode -> "Oly.GetRunMode"

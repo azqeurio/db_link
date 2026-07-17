@@ -59,6 +59,8 @@ data class OmCaptureUsbLibraryItem(
     val isJpeg: Boolean,
     val isRaw: Boolean,
     val hasThumbnail: Boolean,
+    val rating: Int? = null,
+    val isCameraSelected: Boolean = false,
 )
 
 enum class UsbTetheringProfile(val preferenceValue: String) {
@@ -147,6 +149,11 @@ class OmCaptureUsbManager(
         const val USB_DISCOVERY_POLL_INTERVAL_MS = 250L
         const val RAW_PAIR_WINDOW_MS = 1_500L
         const val USB_LIBRARY_THUMBNAIL_TIMEOUT_MS = 2_500
+        const val USB_OBJECT_PROPERTY_LIST_TIMEOUT_MS = 30_000
+        const val USB_LIBRARY_HANDLE_ENUM_ATTEMPTS = 3
+        const val USB_LIBRARY_HANDLE_ENUM_RETRY_DELAY_MS = 180L
+        const val USB_LIBRARY_OBJECT_INFO_ATTEMPTS = 2
+        const val USB_LIBRARY_OBJECT_INFO_RETRY_DELAY_MS = 120L
     }
 
     private val appContext = context.applicationContext
@@ -486,7 +493,7 @@ class OmCaptureUsbManager(
         }
     }
 
-    suspend fun loadLibraryItems(): Result<List<OmCaptureUsbLibraryItem>> = withContext(Dispatchers.IO) {
+    suspend fun loadLibraryItems(maxItems: Int? = null): Result<List<OmCaptureUsbLibraryItem>> = withContext(Dispatchers.IO) {
         runCatching {
             requestSessionDomain(UsbSessionDomain.Transfer, "library-list")
             withOptionalLiveViewTransportPause("usb library load") {
@@ -499,8 +506,18 @@ class OmCaptureUsbManager(
                     transferCandidateCache.keys
                         .filterNot { it in activeHandleSet }
                         .forEach(transferCandidateCache::remove)
-                    handles
-                        .mapNotNull { handle -> loadTransferCandidate(active, handle) }
+                    val orderedHandles = handles
+                        .asReversed()
+                        .let { orderedHandles ->
+                            maxItems?.let { limit -> orderedHandles.take(limit) } ?: orderedHandles
+                        }
+                    val objectMetadataByHandle = if (maxItems == null) {
+                        loadObjectMetadata(active, activeHandleSet)
+                    } else {
+                        emptyMap()
+                    }
+                    orderedHandles
+                        .mapNotNull { handle -> loadTransferCandidate(active, handle, objectMetadataByHandle[handle]) }
                         .sortedWith(transferCandidateComparator)
                         .map { candidate -> candidate.toLibraryItem() }
                 }
@@ -585,25 +602,30 @@ class OmCaptureUsbManager(
                         state.copy(summary = active.summary, canRetry = false)
                     }
                     try {
-                        val selection = specificHandleSelection(active, handle, importFormat)
+                        val requested = loadTransferCandidate(active, handle)
+                            ?: throw IllegalStateException(
+                                "The selected OM camera object ${handle.toUsbHex()} is no longer available.",
+                            )
+                        ensureSelectionMatchesImportFormat(
+                            selection = TransferSelection(
+                                primary = requested,
+                                companionRaw = null,
+                                relatedHandles = setOf(requested.handle),
+                            ),
+                            importFormat = importFormat,
+                            imageFormatExpectation = null,
+                        )
                         val primaryDownload = downloadCandidate(
                             active = active,
-                            candidate = selection.primary,
+                            candidate = requested,
                             fetchThumbnail = false,
                         )
-                        val companionDownload = selection.companionRaw?.let { raw ->
-                            runCatching { downloadCandidate(active, raw, fetchThumbnail = false) }
-                                .onFailure { throwable ->
-                                    D.err("USB", "Companion RAW download failed for ${raw.fileName}", throwable)
-                                }
-                                .getOrNull()
-                        }
                         saveImportResult(
                             active = active,
                             operationKind = OperationKind.ImportHandle,
                             primaryDownload = primaryDownload,
-                            companionDownload = companionDownload,
-                            relatedHandles = selection.relatedHandles,
+                            companionDownload = null,
+                            relatedHandles = setOf(requested.handle),
                             saveMedia = saveMedia,
                         )
                     } catch (throwable: Throwable) {
@@ -2901,26 +2923,64 @@ class OmCaptureUsbManager(
         return selection
     }
 
+    private fun <T> retryUsbLibraryOperation(
+        label: String,
+        attempts: Int,
+        retryDelayMs: Long,
+        block: () -> Result<T>,
+    ): Result<T> {
+        var lastResult: Result<T>? = null
+        repeat(attempts) { attempt ->
+            val result = block()
+            if (result.isSuccess) {
+                return result
+            }
+            lastResult = result
+            if (attempt < attempts - 1) {
+                val delayMs = retryDelayMs * (attempt + 1)
+                usbLog(
+                    "$label failed (${result.exceptionOrNull()?.message ?: "PTP request failed"}); " +
+                        "retrying in ${delayMs}ms (${attempt + 2}/$attempts)",
+                )
+                SystemClock.sleep(delayMs)
+            }
+        }
+        return lastResult ?: Result.failure(IllegalStateException("$label failed"))
+    }
+
     private fun enumerateObjectHandles(active: ActiveSession): List<Int> {
         // OM-1 quirk: GetObjectHandles with a specific storageId returns
         // InvalidStorageId (0x2008) even though GetStorageIDs lists it.
         // Use storageId=0xFFFFFFFF (all storages) as primary approach,
         // fall back to per-storage enumeration only if needed.
-        val allHandles = active.session.getObjectHandles(
-            storageId = -1, // 0xFFFFFFFF = all storages
-        )
-        if (allHandles.isSuccess) {
-            return allHandles.getOrThrow()
+        val allHandles = retryUsbLibraryOperation(
+            label = "GetObjectHandles(all)",
+            attempts = USB_LIBRARY_HANDLE_ENUM_ATTEMPTS,
+            retryDelayMs = USB_LIBRARY_HANDLE_ENUM_RETRY_DELAY_MS,
+        ) {
+            active.session.getObjectHandles(
+                storageId = -1, // 0xFFFFFFFF = all storages
+            )
+        }
+        if (allHandles.isSuccess && allHandles.getOrThrow().isNotEmpty()) {
+            return allHandles.getOrThrow().distinct()
         }
 
         // Fallback: try per-storage enumeration
-        usbLog("GetObjectHandles(all) failed, trying per-storage fallback")
+        usbLog("GetObjectHandles(all) returned no usable handles, trying per-storage fallback")
         val storageIds = active.summary.storageIds.ifEmpty {
             active.session.getStorageIDs().getOrDefault(emptyList())
         }
         val handles = linkedSetOf<Int>()
+        val failures = mutableListOf<Throwable>()
         if (storageIds.isEmpty()) {
-            handles += active.session.getObjectHandles().getOrElse { throwable ->
+            handles += retryUsbLibraryOperation(
+                label = "GetObjectHandles(default)",
+                attempts = USB_LIBRARY_HANDLE_ENUM_ATTEMPTS,
+                retryDelayMs = USB_LIBRARY_HANDLE_ENUM_RETRY_DELAY_MS,
+            ) {
+                active.session.getObjectHandles()
+            }.getOrElse { throwable ->
                 throw IllegalStateException(
                     "Failed to read OM camera object handles: ${throwable.message ?: "PTP GetObjectHandles failed"}",
                     throwable,
@@ -2928,14 +2988,46 @@ class OmCaptureUsbManager(
             }
         } else {
             storageIds.forEach { storageId ->
-                handles += active.session.getObjectHandles(storageId = storageId).getOrElse { throwable ->
-                    throw IllegalStateException(
-                        "Failed to read OM camera objects for storage ${storageId.toUsbHex()}: " +
-                            "${throwable.message ?: "PTP GetObjectHandles failed"}",
-                        throwable,
-                    )
+                val storageHandles = retryUsbLibraryOperation(
+                    label = "GetObjectHandles(${storageId.toUsbHex()})",
+                    attempts = USB_LIBRARY_HANDLE_ENUM_ATTEMPTS,
+                    retryDelayMs = USB_LIBRARY_HANDLE_ENUM_RETRY_DELAY_MS,
+                ) {
+                    active.session.getObjectHandles(storageId = storageId)
                 }
+                storageHandles.onSuccess { handles += it }
+                    .onFailure { throwable ->
+                        failures += throwable
+                        usbLog(
+                            "Skipping storage ${storageId.toUsbHex()} after handle enumeration failure: " +
+                                (throwable.message ?: "PTP GetObjectHandles failed"),
+                        )
+                    }
             }
+            if (handles.isEmpty() && failures.isNotEmpty()) {
+                val firstFailure = failures.first()
+                throw IllegalStateException(
+                    "Failed to read OM camera objects from ${storageIds.size} storage volume(s): " +
+                        (firstFailure.message ?: "PTP GetObjectHandles failed"),
+                    firstFailure,
+                )
+            }
+            if (handles.isNotEmpty() && failures.isNotEmpty()) {
+                usbLog(
+                    "USB library continuing with ${handles.size} handles from readable storage(s); " +
+                        "${failures.size} storage volume(s) failed",
+                )
+            }
+        }
+        if (handles.isEmpty() && allHandles.isSuccess) {
+            return emptyList()
+        }
+        if (handles.isEmpty() && allHandles.isFailure) {
+            val failure = allHandles.exceptionOrNull()
+            throw IllegalStateException(
+                "Failed to read OM camera object handles: ${failure?.message ?: "PTP GetObjectHandles failed"}",
+                failure,
+            )
         }
         return handles.toList()
     }
@@ -3214,12 +3306,93 @@ class OmCaptureUsbManager(
             (withinPairWindow && sameStorage && (sameSequence || sameCaptureIndex))
     }
 
-    private fun loadTransferCandidate(active: ActiveSession, handle: Int): TransferCandidate? {
+    private fun loadObjectMetadata(
+        active: ActiveSession,
+        activeHandleSet: Set<Int>,
+    ): Map<Int, UsbObjectMetadata> {
+        if (PtpConstants.Op.GetObjectPropList !in active.info.operationsSupported) {
+            usbLog("USB library metadata skipped because MTP.GetObjectPropList is not advertised")
+            return emptyMap()
+        }
+
+        val metadataByHandle = mutableMapOf<Int, UsbObjectMetadata>()
+        val ratings = active.session.getObjectPropertyList(
+            propertyCode = PtpConstants.ObjectProp.Rating,
+            timeoutMs = USB_OBJECT_PROPERTY_LIST_TIMEOUT_MS,
+        ).getOrElse { throwable ->
+            usbLog("USB library rating metadata unavailable: ${throwable.message ?: "GetObjectPropList failed"}")
+            emptyList()
+        }
+        ratings.forEach { property ->
+            val handle = property.handle
+            if (handle !in activeHandleSet) return@forEach
+            val rating = property.numericValue
+                ?.toInt()
+                ?.coerceIn(0, 5)
+                ?: return@forEach
+            metadataByHandle.mergeObjectMetadata(handle, rating = rating)
+        }
+
+        val keywords = active.session.getObjectPropertyList(
+            propertyCode = PtpConstants.ObjectProp.Keywords,
+            timeoutMs = USB_OBJECT_PROPERTY_LIST_TIMEOUT_MS,
+        ).getOrElse { throwable ->
+            usbLog("USB library keyword metadata unavailable: ${throwable.message ?: "GetObjectPropList failed"}")
+            emptyList()
+        }
+        keywords.forEach { property ->
+            val handle = property.handle
+            if (handle !in activeHandleSet) return@forEach
+            val text = property.textValue ?: return@forEach
+            metadataByHandle.mergeObjectMetadata(
+                handle = handle,
+                rating = PtpObjectInfo.parseRatingMetadata(text),
+                isCameraSelected = PtpObjectInfo.parseCameraSelectionMetadata(text),
+            )
+        }
+
+        if (metadataByHandle.isNotEmpty()) {
+            usbLog(
+                "USB library metadata loaded " +
+                    "ratings=${metadataByHandle.count { it.value.rating != null }} " +
+                    "shareOrders=${metadataByHandle.count { it.value.isCameraSelected == true }}",
+            )
+        }
+        return metadataByHandle
+    }
+
+    private fun MutableMap<Int, UsbObjectMetadata>.mergeObjectMetadata(
+        handle: Int,
+        rating: Int? = null,
+        isCameraSelected: Boolean? = null,
+    ) {
+        val current = this[handle] ?: UsbObjectMetadata()
+        this[handle] = current.copy(
+            rating = rating ?: current.rating,
+            isCameraSelected = isCameraSelected ?: current.isCameraSelected,
+        )
+    }
+
+    private fun loadTransferCandidate(
+        active: ActiveSession,
+        handle: Int,
+        metadata: UsbObjectMetadata? = null,
+    ): TransferCandidate? {
         transferCandidateCache[handle]?.let { cached ->
-            return cached
+            val merged = cached.withMetadata(metadata)
+            if (merged !== cached) {
+                transferCandidateCache[handle] = merged
+            }
+            return merged
         }
         ensureSessionAlive(active)
-        val info = active.session.getObjectInfo(handle).getOrElse { throwable ->
+        val info = retryUsbLibraryOperation(
+            label = "GetObjectInfo(${handle.toUsbHex()})",
+            attempts = USB_LIBRARY_OBJECT_INFO_ATTEMPTS,
+            retryDelayMs = USB_LIBRARY_OBJECT_INFO_RETRY_DELAY_MS,
+        ) {
+            active.session.getObjectInfo(handle)
+        }.getOrElse { throwable ->
             D.err("USB", "GetObjectInfo failed for handle=${handle.toUsbHex()}", throwable)
             return null
         }
@@ -3240,6 +3413,8 @@ class OmCaptureUsbManager(
             handle = handle,
             info = info,
             fileName = info.filename.ifBlank { buildFallbackFileName(info, handle) },
+            rating = metadata?.rating ?: info.rating,
+            isCameraSelected = metadata?.isCameraSelected ?: info.isCameraSelected,
         ).also { candidate ->
             transferCandidateCache[handle] = candidate
         }
@@ -3259,6 +3434,19 @@ class OmCaptureUsbManager(
             isJpeg = info.isJpeg,
             isRaw = info.isRaw,
             hasThumbnail = info.hasThumbnail,
+            rating = rating,
+            isCameraSelected = isCameraSelected,
+        )
+    }
+
+    private fun TransferCandidate.withMetadata(metadata: UsbObjectMetadata?): TransferCandidate {
+        if (metadata == null) return this
+        val mergedRating = metadata.rating ?: rating
+        val mergedSelection = metadata.isCameraSelected ?: isCameraSelected
+        if (mergedRating == rating && mergedSelection == isCameraSelected) return this
+        return copy(
+            rating = mergedRating,
+            isCameraSelected = mergedSelection,
         )
     }
 
@@ -5082,6 +5270,13 @@ class OmCaptureUsbManager(
         val handle: Int,
         val info: PtpObjectInfo,
         val fileName: String,
+        val rating: Int? = null,
+        val isCameraSelected: Boolean = false,
+    )
+
+    private data class UsbObjectMetadata(
+        val rating: Int? = null,
+        val isCameraSelected: Boolean? = null,
     )
 
     private data class TransferSelection(

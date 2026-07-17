@@ -75,6 +75,8 @@ import dev.dblink.core.stream.StreamHealth
 import dev.dblink.core.update.AppReleaseInfo
 import dev.dblink.core.update.GitHubAppUpdateManager
 import dev.dblink.core.usb.OmCaptureUsbCameraEvent
+import dev.dblink.core.usb.MtpIpCameraClient
+import dev.dblink.core.usb.MtpIpCameraEndpoint
 import dev.dblink.core.usb.OmCaptureUsbImportResult
 import dev.dblink.core.usb.OmCaptureUsbLibraryItem
 import dev.dblink.core.usb.OmCaptureUsbManager
@@ -112,13 +114,11 @@ import dev.dblink.feature.remote.isSyntheticDialAutoValue
 import dev.dblink.feature.transfer.ImageGeoTagInfo
 import dev.dblink.feature.transfer.TransferSourceKind
 import dev.dblink.feature.transfer.TransferUiState
+import java.io.ByteArrayOutputStream
 import java.io.ByteArrayInputStream
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-import java.text.SimpleDateFormat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -138,12 +138,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import java.util.Locale
-import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private const val MEDIA_STORE_PRIMARY_VOLUME = "external_primary"
+internal const val MEDIA_STORE_PRIMARY_VOLUME = "external_primary"
 private const val DEFAULT_CAPTURE_REVIEW_DURATION_SECONDS = 2
 private const val MIN_CAPTURE_REVIEW_DURATION_SECONDS = 1
 private const val MAX_CAPTURE_REVIEW_DURATION_SECONDS = 5
@@ -153,6 +152,10 @@ data class AutoImportConfig(
     val saveLocation: String = "Pictures/db link",
     val fileFormat: String = "jpeg",       // "jpeg", "jpeg_raw", "raw"
     val importTiming: String = "manual", // "on_connect", "since_launch", "manual"
+    val folderStructure: String = "date_day", // see DownloadFolderStructure
+    /** Optional fixed camera IP for 고속전달 (same-Wi-Fi). When set, the app connects
+     *  directly instead of scanning the whole subnet. Matches libgphoto2's ptpip model. */
+    val wirelessTetherCameraIp: String = "",
 )
 
 data class GeotagConfig(
@@ -240,16 +243,18 @@ class MainViewModel(
     application: Application,
 ) : AndroidViewModel(application) {
     private val appConfig: AppConfig = AppEnvironment.current()
-    private val repository: CameraRepository = DefaultCameraRepository(appConfig)
-    private val preferencesRepository = AppPreferencesRepository(application)
+    private val defaultRepository = DefaultCameraRepository(appConfig)
+    private val repository: CameraRepository = defaultRepository
+    internal val preferencesRepository = AppPreferencesRepository(application)
     private val geoTagLocationManager = GeoTagLocationManager(application)
-    private val geoTagStatusNotifier = GeoTagStatusNotifier(application)
+    internal val geoTagStatusNotifier = GeoTagStatusNotifier(application)
     private val sessionStateMachine = CameraSessionStateMachine()
     private val cameraWifiManager = CameraWifiManager(application)
     private val cameraBleManager = dev.dblink.core.bluetooth.CameraBleManager(application)
     private val appContainer = (application as DbLinkApplication).appContainer
     private val omCaptureUsbManager = appContainer.omCaptureUsbManager
-    private val deepSkyLiveStackCoordinator = appContainer.deepSkyLiveStackCoordinator
+    private val mtpIpCameraClient = MtpIpCameraClient()
+    internal val deepSkyLiveStackCoordinator = appContainer.deepSkyLiveStackCoordinator
     private val liveViewReceiver = LiveViewReceiver(appConfig.liveViewPort)
     private val appUpdateManager = GitHubAppUpdateManager(application)
     private val initialWorkspace = repository.initialWorkspace()
@@ -263,9 +268,11 @@ class MainViewModel(
     private var usbLiveViewRecoveryJob: Job? = null
     private var imageListJob: Job? = null
     private var thumbnailJob: Job? = null
+    private var thumbnailContinuationJob: Job? = null
     private var detailPreviewJob: Job? = null
     private var wifiMediaRequestCooldownUntilMs: Long = 0L
     private var downloadProgressJob: Job? = null
+    private var wirelessTetherAutoImportJob: Job? = null
     private var propertyApplyJob: Job? = null
     private var propertyLoadJob: Job? = null
     private var propertyRefreshJob: Job? = null
@@ -296,24 +303,37 @@ class MainViewModel(
         const val RECONNECT_WIFI_STATUS = "Connecting Wi-Fi..."
         const val AUTO_IMPORT_MARKER_PREFIX = "auto_import_last_"
         const val TRANSFER_PREVIEW_PREFETCH_LIMIT = 12
+        const val TRANSFER_PREVIEW_BITMAP_MAX_DIMENSION = 2048
+        const val TRANSFER_THUMBNAIL_BITMAP_MAX_DIMENSION = 512
+        const val TRANSFER_THUMBNAIL_BATCH_PAUSE_MS = 180L
+        const val TRANSFER_THUMBNAIL_CONTINUATION_DELAY_MS = 900L
         const val WIFI_THUMBNAIL_PREFETCH_LIMIT = 96
         const val WIFI_THUMBNAIL_REQUEST_DELAY_MS = 140L
         const val WIFI_THUMBNAIL_FAILURE_BACKOFF_MS = 650L
         const val WIFI_THUMBNAIL_FAILURE_LIMIT = 5
         const val WIFI_MEDIA_REQUEST_COOLDOWN_MS = 3_000L
         const val WIFI_RESIZED_THUMBNAIL_COOLDOWN_MS = 12_000L
+        const val LAN_CAMERA_PROBE_TIMEOUT_MS = 1_200
+        // A present camera answers in the first prioritized batches well under this;
+        // the cap only bounds the all-miss case so a failed 고속전달 doesn't hang ~40s.
+        // The fast, reliable path is the user-supplied camera IP (wirelessTetherCameraIp).
+        const val LAN_CAMERA_DISCOVERY_TIMEOUT_MS = 18_000L
+        const val LAN_CAMERA_PROBE_BATCH_SIZE = 48
+        const val WIRELESS_TETHER_AUTO_IMPORT_POLL_MS = 5_000L
         const val CAPTURE_FOLLOWUP_MAX_ATTEMPTS = 6
         const val CAPTURE_FOLLOWUP_POLL_DELAY_MS = 700L
         const val USB_AUTO_IMPORT_RETRY_MS = 250L
         const val USB_AUTO_IMPORT_COMPLETED_HANDLE_LIMIT = 24
         const val USB_LIBRARY_CACHE_TTL_MS = 15_000L
+        const val USB_LIBRARY_INITIAL_LOAD_LIMIT = 128
         const val DEEP_SKY_PROTECTION_PROBE_BACKOFF_MS = 15_000L
         const val USB_AF_TARGET_EVENT_PROP = PtpConstants.OlympusProp.AFTargetArea
         const val USB_MODE_DIAL_EVENT_PROP = 0xD062
         const val USB_MODE_DIAL_REFRESH_SUPPRESS_MS = 800L
         const val USB_CAPTURE_PROPERTY_SETTLE_MS = 6_000L
         const val USB_AUTO_IMPORT_BATCH_WINDOW_MS = 450L
-        const val USB_TRANSFER_THUMBNAIL_PREFETCH_LIMIT = 4
+        const val USB_TRANSFER_THUMBNAIL_PREFETCH_LIMIT = 72
+        const val USB_TRANSFER_THUMBNAIL_BATCH_SIZE = 8
         const val USB_TRANSFER_THUMBNAIL_PREFETCH_DELAY_MS = 60L
         const val EMPTY_PROPERTY_LOAD_RETRY_LIMIT = 5
         const val USB_OM1_ISO_PROP = 0xD005
@@ -333,6 +353,9 @@ class MainViewModel(
     private var pendingLastCapturePreviewFileName: String? = null
     private var pendingAutoImportMarker: String? = null
     private var pendingAutoImportMarkerSsid: String? = null
+    @Volatile private var lanWirelessTetherBaseUrl: String? = null
+    @Volatile private var mtpIpWirelessEndpoint: MtpIpCameraEndpoint? = null
+    private var wirelessTetherLastTopMarker: String? = null
     private val sessionLaunchImportBaselineBySsid = linkedMapOf<String, String>()
     private var usbLibraryCache: List<OmCaptureUsbLibraryItem> = emptyList()
     private var usbLibraryCacheUpdatedAtMs: Long = 0L
@@ -366,7 +389,7 @@ class MainViewModel(
     private var usbCaptureSettleUntilMs = 0L
     private var nextDeepSkyProtectionProbeAtMs = 0L
     private val pendingUsbPropertyRefreshCodes = linkedSetOf<Int>()
-    private val _uiState = MutableStateFlow(
+    internal val _uiState = MutableStateFlow(
         MainUiState(
             workspace = initialWorkspace,
             rawProtocolInput = repository.sampleCommandListXml(),
@@ -386,9 +409,12 @@ class MainViewModel(
     val liveViewFrame: StateFlow<Bitmap?> = _liveViewFrame.asStateFlow()
     val usbCameraProperties = omCaptureUsbManager.cameraProperties
 
-    private inline fun updateUiState(transform: (MainUiState) -> MainUiState) {
+    internal inline fun updateUiState(transform: (MainUiState) -> MainUiState) {
         _uiState.update(transform)
     }
+
+    /** Application context accessor for feature logic extracted into extension files. */
+    internal fun appContext(): Application = getApplication()
 
     private inline fun updateRemoteRuntime(transform: (RemoteRuntimeState) -> RemoteRuntimeState) {
         updateUiState { current ->
@@ -538,6 +564,11 @@ class MainViewModel(
                 updateUiState { it.copy(wifiState = effectiveWifiState) }
                 when (effectiveWifiState) {
                     is WifiConnectionState.CameraWifi -> {
+                        lanWirelessTetherBaseUrl = null
+                        mtpIpWirelessEndpoint = null
+                        wirelessTetherLastTopMarker = null
+                        stopWirelessTetherAutoImportWatcher()
+                        defaultRepository.resetCameraBaseUrl()
                         D.wifi("Camera WiFi detected, session=${_uiState.value.sessionState}")
                         if (suppressWifiAutoRefresh || reconnectJob?.isActive == true || isFirstConnectActive) {
                             D.wifi("Skipping WiFi observer auto-refresh while reconnect/first-connect flow is active")
@@ -562,7 +593,21 @@ class MainViewModel(
                         }
                         val wasLiveViewActive = _uiState.value.remoteRuntime.liveViewActive
                         val hadActiveSession = _uiState.value.sessionState !is CameraSessionState.Idle
+                        if (effectiveWifiState is WifiConnectionState.OtherWifi &&
+                            (lanWirelessTetherBaseUrl != null || mtpIpWirelessEndpoint != null) &&
+                            hadActiveSession
+                        ) {
+                            D.wifi("Keeping LAN wireless tether session on ${effectiveWifiState.ssid ?: "current Wi-Fi"}")
+                            startWirelessTetherAutoImportWatcher("wifi-state")
+                            return@onEach
+                        }
+                        lanWirelessTetherBaseUrl = null
+                        mtpIpWirelessEndpoint = null
+                        wirelessTetherLastTopMarker = null
+                        stopWirelessTetherAutoImportWatcher()
                         pendingPropertyTargets.clear(); pendingPropertyTimestamps.clear()
+                        thumbnailContinuationJob?.cancel()
+                        thumbnailContinuationJob = null
                         thumbnailJob?.cancel()
                         thumbnailJob = null
                         detailPreviewJob?.cancel()
@@ -595,7 +640,13 @@ class MainViewModel(
                         }
                     }
                     WifiConnectionState.WifiOff -> {
+                        lanWirelessTetherBaseUrl = null
+                        mtpIpWirelessEndpoint = null
+                        wirelessTetherLastTopMarker = null
+                        stopWirelessTetherAutoImportWatcher()
                         pendingPropertyTargets.clear(); pendingPropertyTimestamps.clear()
+                        thumbnailContinuationJob?.cancel()
+                        thumbnailContinuationJob = null
                         thumbnailJob?.cancel()
                         thumbnailJob = null
                         detailPreviewJob?.cancel()
@@ -634,9 +685,11 @@ class MainViewModel(
         geoTagStatusNotifier.cancel()
         cameraBleManager.disconnect()
         imageListJob?.cancel()
+        thumbnailContinuationJob?.cancel()
         thumbnailJob?.cancel()
         detailPreviewJob?.cancel()
         downloadProgressJob?.cancel()
+        wirelessTetherAutoImportJob?.cancel()
         propertyApplyJob?.cancel()
         propertyLoadJob?.cancel()
         propertyRefreshJob?.cancel()
@@ -887,6 +940,7 @@ class MainViewModel(
             context = getApplication(),
             importFormat = currentState.tetherPhoneImportFormat,
             saveLocation = currentState.autoImportConfig.saveLocation,
+            folderStructure = currentState.autoImportConfig.folderStructure,
         )
     }
 
@@ -1537,6 +1591,7 @@ class MainViewModel(
             context = getApplication(),
             importFormat = currentState.tetherPhoneImportFormat,
             saveLocation = currentState.autoImportConfig.saveLocation,
+            folderStructure = currentState.autoImportConfig.folderStructure,
         )
     }
 
@@ -1558,10 +1613,10 @@ class MainViewModel(
         scanFilesNow: Boolean,
     ) {
         invalidateUsbLibraryCache(reloadIfVisible = true)
-        val preview = decodeTransferPreviewBitmap(image.objectBytes)
-            ?: decodeSampledPreviewBitmap(image.objectBytes)
-            ?: image.thumbnailBytes?.let(::decodeTransferPreviewBitmap)
-            ?: image.thumbnailBytes?.let(::decodeSampledPreviewBitmap)
+        val preview = ImagePreviewDecoder.decodeTransferPreviewBitmap(image.objectBytes)
+            ?: ImagePreviewDecoder.decodeSampledPreviewBitmap(image.objectBytes)
+            ?: image.thumbnailBytes?.let(ImagePreviewDecoder::decodeTransferPreviewBitmap)
+            ?: image.thumbnailBytes?.let(ImagePreviewDecoder::decodeSampledPreviewBitmap)
         updateUiState { current -> current.copy(
             lastCaptureThumbnail = preview ?: current.lastCaptureThumbnail,
         ) }
@@ -2264,6 +2319,24 @@ class MainViewModel(
         }
     }
 
+    private fun highSpeedWifiTransferSourceLabel(baseUrl: String?): String {
+        val host = baseUrl
+            ?.substringAfter("://", missingDelimiterValue = baseUrl)
+            ?.substringBefore("/")
+            ?.substringBefore(":")
+            ?.takeIf { it.isNotBlank() }
+        return if (host == null) "고속전달 Wi-Fi" else "고속전달 Wi-Fi $host"
+    }
+
+    private fun mtpIpTransferSourceLabel(endpoint: MtpIpCameraEndpoint): String {
+        val cameraLabel = endpoint.label.takeIf { it.isNotBlank() && it != "MTP/IP" }
+        return if (cameraLabel == null) {
+            "고속전달 MTP/IP ${endpoint.host}"
+        } else {
+            "고속전달 $cameraLabel ${endpoint.host}"
+        }
+    }
+
     private fun resetTransferSourceFromUsbToWifi() {
         val selectedSsid = _uiState.value.selectedCameraSsid
         updateUiState { current ->
@@ -2465,7 +2538,7 @@ class MainViewModel(
         decodeSavedMediaPlatformPreview(savedMedia)?.let { return it }
         val bytes = readSavedMediaBytes(savedMedia) ?: return null
         return withContext(Dispatchers.Default) {
-            decodeTransferPreviewBitmap(bytes) ?: decodeSampledPreviewBitmap(bytes)
+            ImagePreviewDecoder.decodeTransferPreviewBitmap(bytes) ?: ImagePreviewDecoder.decodeSampledPreviewBitmap(bytes)
         }
     }
 
@@ -2606,7 +2679,9 @@ class MainViewModel(
     }
 
     private fun currentUsbImportDateFolder(): String {
-        return LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)
+        return dev.dblink.core.model.DownloadFolderStructure
+            .fromPreferenceValue(_uiState.value.autoImportConfig.folderStructure)
+            .subfolder(LocalDate.now())
     }
 
     private fun OmCaptureUsbRuntimeState.toUiState(): OmCaptureUsbUiState {
@@ -2897,29 +2972,22 @@ class MainViewModel(
             ) }
             return
         }
-        if (currentWifi is WifiConnectionState.OtherWifi &&
-            _uiState.value.hasSavedCamera &&
-            _uiState.value.selectedCameraSsid != null
-        ) {
-            D.reconnect("RECONNECT_AUTO suppressed on refresh (wifi=OtherWifi, savedSsid=${_uiState.value.selectedCameraSsid})")
-            updateUiState { it.copy(
-                isRefreshing = false,
-                refreshStatus = "Wrong network — press Reconnect",
-                protocolError = "Connected to \"${currentWifi.ssid ?: "unknown"}\". Use the Reconnect button on the dashboard.",
-                sessionState = CameraSessionState.Idle,
-            ) }
-            return
-        }
         if (currentWifi is WifiConnectionState.OtherWifi) {
+            val savedSsid = _uiState.value.selectedCameraSsid
+            D.reconnect("RECONNECT_AUTO suppressed on refresh (wifi=OtherWifi, savedSsid=$savedSsid)")
             updateUiState { it.copy(
                 isRefreshing = false,
-                refreshStatus = "Wrong network",
-                protocolError = "Connected to \"${currentWifi.ssid ?: "unknown"}\". Switch to your camera's WiFi network.",
+                refreshStatus = if (_uiState.value.hasSavedCamera) "Press Reconnect to connect" else "Use High-speed Transfer",
+                protocolError = "Connected to \"${currentWifi.ssid ?: "current Wi-Fi"}\". Use Reconnect for the camera Wi-Fi AP, or open Library > 고속전달 for same-Wi-Fi transfer.",
                 sessionState = CameraSessionState.Idle,
             ) }
             return
         }
-
+        lanWirelessTetherBaseUrl = null
+        mtpIpWirelessEndpoint = null
+        wirelessTetherLastTopMarker = null
+        stopWirelessTetherAutoImportWatcher()
+        defaultRepository.resetCameraBaseUrl()
         startCameraHandshake()
     }
 
@@ -3099,7 +3167,15 @@ class MainViewModel(
         // library load, where play-mode image browsing is already expected.
         D.transfer("triggerAutoImport: deferred until library load")
 
-        val activeSsid = cameraWifiManager.getCurrentSsid() ?: _uiState.value.selectedCameraSsid
+        if (lanWirelessTetherBaseUrl != null) {
+            startWirelessTetherAutoImportWatcher("handshake")
+        }
+
+        val activeSsid = if (lanWirelessTetherBaseUrl == null) {
+            cameraWifiManager.getCurrentSsid() ?: _uiState.value.selectedCameraSsid
+        } else {
+            _uiState.value.selectedCameraSsid
+        }
         if (!activeSsid.isNullOrBlank()) {
             viewModelScope.launch {
                 preferencesRepository.updateCameraDisplayName(activeSsid, workspace.camera.name)
@@ -3275,6 +3351,8 @@ class MainViewModel(
                     D.wifi("autoConnect: already on ${credentials.ssid}, starting handshake directly")
                     pendingPropertyTargets.clear(); pendingPropertyTimestamps.clear()
                     stopLiveViewInternal()
+                    thumbnailContinuationJob?.cancel()
+                    thumbnailContinuationJob = null
                     thumbnailJob?.cancel()
                     thumbnailJob = null
                     detailPreviewJob?.cancel()
@@ -3319,6 +3397,8 @@ class MainViewModel(
 
                 pendingPropertyTargets.clear(); pendingPropertyTimestamps.clear()
                 stopLiveViewInternal()
+                thumbnailContinuationJob?.cancel()
+                thumbnailContinuationJob = null
                 thumbnailJob?.cancel()
                 thumbnailJob = null
                 detailPreviewJob?.cancel()
@@ -4050,6 +4130,13 @@ class MainViewModel(
         if (settingId == "time_match_geotags") {
             refreshMatchedGeoTags()
         }
+        if (settingId == "auto_import") {
+            if (enabled && lanWirelessTetherBaseUrl != null) {
+                startWirelessTetherAutoImportWatcher("setting")
+            } else if (!enabled) {
+                stopWirelessTetherAutoImportWatcher()
+            }
+        }
         // Keep geotag config in sync with the include_altitude toggle
         if (settingId == "geotag_include_altitude") {
             val updatedConfig = _uiState.value.geotagConfig.copy(writeAltitude = enabled)
@@ -4066,12 +4153,19 @@ class MainViewModel(
             preferencesRepository.saveStringPref("import_save_location", config.saveLocation)
             preferencesRepository.saveStringPref("import_file_format", config.fileFormat)
             preferencesRepository.saveStringPref("import_timing", config.importTiming)
+            preferencesRepository.saveStringPref("import_folder_structure", config.folderStructure)
+            preferencesRepository.saveStringPref("wireless_tether_camera_ip", config.wirelessTetherCameraIp)
         }
         if (config.importTiming == "since_launch") {
             val selectedSsid = _uiState.value.selectedCameraSsid
             if (!selectedSsid.isNullOrBlank()) {
                 sessionLaunchImportBaselineBySsid.remove(selectedSsid)
             }
+        }
+        if (config.importTiming == "manual") {
+            stopWirelessTetherAutoImportWatcher()
+        } else if (lanWirelessTetherBaseUrl != null) {
+            startWirelessTetherAutoImportWatcher("config")
         }
     }
 
@@ -4127,6 +4221,8 @@ class MainViewModel(
         }
         val transfer = _uiState.value.transferState
         if (transfer.sourceKind == TransferSourceKind.WifiCamera && transfer.images.isNotEmpty()) {
+            thumbnailContinuationJob?.cancel()
+            thumbnailContinuationJob = null
             thumbnailJob?.cancel()
             loadThumbnails(transfer.images)
         }
@@ -4457,7 +4553,7 @@ class MainViewModel(
         }
         val reconnectActive = reconnectJob?.isActive == true
         val handshakeActive = handshakeJob?.isActive == true
-        val hasNetwork = cameraWifiManager.getCameraNetwork() != null
+        val hasNetwork = cameraWifiManager.getCameraNetwork() != null || hasActiveLanWirelessTether()
         val sessionConnected = _uiState.value.sessionState is CameraSessionState.Connected ||
             _uiState.value.sessionState is CameraSessionState.LiveView
         val canSend = !reconnectActive && !handshakeActive && hasNetwork && sessionConnected
@@ -4482,8 +4578,12 @@ class MainViewModel(
         }
         val sessionConnected = _uiState.value.sessionState is CameraSessionState.Connected ||
             _uiState.value.sessionState is CameraSessionState.LiveView
-        val onCameraWifi = _uiState.value.wifiState is WifiConnectionState.CameraWifi
+        val onCameraWifi = _uiState.value.wifiState is WifiConnectionState.CameraWifi || hasActiveLanWirelessTether()
         return sessionConnected && onCameraWifi
+    }
+
+    private fun hasActiveLanWirelessTether(): Boolean {
+        return lanWirelessTetherBaseUrl != null && cameraWifiManager.isInfrastructureWifiConnected()
     }
 
     private fun moveRemoteToSafeIdle(statusLabel: String) {
@@ -4667,6 +4767,8 @@ class MainViewModel(
     }
 
     private suspend fun startLiveViewInternal() {
+        thumbnailContinuationJob?.cancel()
+        thumbnailContinuationJob = null
         thumbnailJob?.cancel()
         thumbnailJob = null
         stopLiveViewInternal()
@@ -4877,6 +4979,8 @@ class MainViewModel(
         }
         val previousTopMarker = _uiState.value.transferState.images.firstOrNull()?.let(::autoImportSortKey)
         D.ui("captureRemotePhoto: count=${_uiState.value.remoteRuntime.captureCount}, liveView=$liveViewActive")
+        thumbnailContinuationJob?.cancel()
+        thumbnailContinuationJob = null
         thumbnailJob?.cancel()
         thumbnailJob = null
         updateUiState { current -> current.copy(
@@ -6237,6 +6341,8 @@ class MainViewModel(
             attribute = 0,
             width = item.width,
             height = item.height,
+            rating = item.rating,
+            isCameraSelected = item.isCameraSelected,
         )
     }
 
@@ -6365,6 +6471,11 @@ class MainViewModel(
                 return true
             }
             val currentSelectedSsid = _uiState.value.selectedCameraSsid
+            if (requestSsid.isNullOrBlank()) {
+                return currentSelectedSsid.isNullOrBlank() ||
+                    lanWirelessTetherBaseUrl != null ||
+                    mtpIpWirelessEndpoint != null
+            }
             return !requestSsid.isNullOrBlank() &&
                 requestSsid.equals(currentSelectedSsid, ignoreCase = true)
         }
@@ -6436,12 +6547,54 @@ class MainViewModel(
                         errorMessage = null,
                     )
                 }
-                val imageResult = omCaptureUsbManager.loadLibraryItems()
+                val quickImageResult = omCaptureUsbManager.loadLibraryItems(
+                    maxItems = USB_LIBRARY_INITIAL_LOAD_LIMIT,
+                )
                 if (!isCurrentTransferRequest()) {
                     return@launch
                 }
-                if (imageResult.isSuccess) {
-                    val items = imageResult.getOrThrow()
+                if (quickImageResult.isSuccess) {
+                    val quickItems = quickImageResult.getOrThrow()
+                        .sortedWith(
+                            compareByDescending<OmCaptureUsbLibraryItem> { it.captureTimestampMillis ?: Long.MIN_VALUE }
+                                .thenByDescending { it.fileName },
+                        )
+                    applyUsbTransferItems(
+                        items = quickItems,
+                        isLoading = quickItems.size >= USB_LIBRARY_INITIAL_LOAD_LIMIT,
+                        errorMessage = null,
+                    )
+                    val images = _uiState.value.transferState.images
+                    loadThumbnails(images)
+                    scanDownloadedFiles()
+                    if (quickItems.size < USB_LIBRARY_INITIAL_LOAD_LIMIT) {
+                        return@launch
+                    }
+                } else {
+                    val throwable = quickImageResult.exceptionOrNull()
+                    D.err("TRANSFER", "Failed to load initial OM USB library images", throwable)
+                    updateUiState { current -> current.copy(
+                        transferState = current.transferState.copy(
+                            isLoading = false,
+                            errorMessage = throwable?.message ?: if (hasExistingImages) {
+                                "USB library refresh failed"
+                            } else {
+                                "Failed to load OM camera photos over USB"
+                            },
+                            sourceKind = TransferSourceKind.OmCaptureUsb,
+                            sourceLabel = current.omCaptureUsb.summary?.deviceLabel ?: "USB/PTP",
+                            supportsDelete = false,
+                        ),
+                    ) }
+                    return@launch
+                }
+
+                val fullImageResult = omCaptureUsbManager.loadLibraryItems()
+                if (!isCurrentTransferRequest()) {
+                    return@launch
+                }
+                if (fullImageResult.isSuccess) {
+                    val items = fullImageResult.getOrThrow()
                         .sortedWith(
                             compareByDescending<OmCaptureUsbLibraryItem> { it.captureTimestampMillis ?: Long.MIN_VALUE }
                                 .thenByDescending { it.fileName },
@@ -6451,7 +6604,7 @@ class MainViewModel(
                     loadThumbnails(images)
                     scanDownloadedFiles()
                 } else {
-                    val throwable = imageResult.exceptionOrNull()
+                    val throwable = fullImageResult.exceptionOrNull()
                     D.err("TRANSFER", "Failed to load OM USB library images", throwable)
                     updateUiState { current -> current.copy(
                         transferState = current.transferState.copy(
@@ -6471,6 +6624,11 @@ class MainViewModel(
             }
 
             clearUsbLibraryCache()
+            lanWirelessTetherBaseUrl = null
+            mtpIpWirelessEndpoint = null
+            wirelessTetherLastTopMarker = null
+            stopWirelessTetherAutoImportWatcher()
+            defaultRepository.resetCameraBaseUrl()
             if (!canSendRemoteCommand()) {
                 updateUiState { current -> current.copy(
                     transferState = current.transferState.copy(
@@ -6479,25 +6637,39 @@ class MainViewModel(
                     ),
                 ) }
                 val credentials = preferencesRepository.loadCameraCredentials(requestSsid)
-                val networkReady = ensureCameraWifiReady(
-                    ssid = credentials?.ssid,
-                    password = credentials?.password,
-                    retries = 10,
-                    retryDelayMillis = 500L,
-                )
-                if (!isCurrentTransferRequest()) {
-                    return@launch
+                var triedSavedCameraWifi = false
+                if (!credentials?.ssid.isNullOrBlank()) {
+                    triedSavedCameraWifi = true
+                    val networkReady = ensureCameraWifiReady(
+                        ssid = credentials.ssid,
+                        password = credentials.password,
+                        retries = 10,
+                        retryDelayMillis = 500L,
+                    )
+                    if (!isCurrentTransferRequest()) {
+                        return@launch
+                    }
+                    if (networkReady) {
+                        lanWirelessTetherBaseUrl = null
+                        mtpIpWirelessEndpoint = null
+                        wirelessTetherLastTopMarker = null
+                        stopWirelessTetherAutoImportWatcher()
+                        defaultRepository.resetCameraBaseUrl()
+                        loadCameraImages()
+                        return@launch
+                    }
                 }
-                if (networkReady) {
-                    loadCameraImages()
-                } else {
-                    updateUiState { current -> current.copy(
-                        transferState = current.transferState.copy(
-                            isLoading = false,
-                            errorMessage = "Reconnect to the saved camera before opening the library",
-                        ),
-                    ) }
-                }
+
+                updateUiState { current -> current.copy(
+                    transferState = current.transferState.copy(
+                        isLoading = false,
+                        errorMessage = if (triedSavedCameraWifi) {
+                            "Camera Wi-Fi AP was not reachable. Use Reconnect for the camera Wi-Fi AP, or use 고속전달 for same-Wi-Fi transfer."
+                        } else {
+                            "Connect to the camera Wi-Fi AP, or use 고속전달 when the camera and phone are on the same Wi-Fi."
+                        },
+                    ),
+                ) }
                 return@launch
             }
 
@@ -6505,8 +6677,19 @@ class MainViewModel(
                 transferState = current.transferState.copy(
                     isLoading = true,
                     errorMessage = null,
+                    sourceCameraSsid = requestSsid,
+                    sourceKind = TransferSourceKind.WifiCamera,
+                    sourceLabel = wifiTransferSourceLabel(current.selectedCardSlotSource, requestSsid),
+                    supportsDelete = true,
+                    usbObjectHandlesByPath = emptyMap(),
+                    usbAvailableStorageIds = emptyList(),
+                    selectedUsbStorageIds = null,
                 ),
             ) }
+            prepareWifiCameraForImageLibrary("camera-ap-library")
+            if (!isCurrentTransferRequest()) {
+                return@launch
+            }
             val slotResult = ensureSelectedPlayTargetSlotApplied()
             if (!isCurrentTransferRequest()) {
                 return@launch
@@ -6517,6 +6700,10 @@ class MainViewModel(
                     transferState = current.transferState.copy(
                         isLoading = false,
                         errorMessage = throwable?.message ?: "Failed to switch photo source",
+                        sourceCameraSsid = requestSsid,
+                        sourceKind = TransferSourceKind.WifiCamera,
+                        sourceLabel = wifiTransferSourceLabel(current.selectedCardSlotSource, requestSsid),
+                        supportsDelete = true,
                     ),
                 ) }
                 return@launch
@@ -6546,6 +6733,10 @@ class MainViewModel(
                 }
                 applyPendingLastCapturePreview(newestFirst)
                 maybeTriggerArmedAutoImport(newestFirst)
+                if (lanWirelessTetherBaseUrl != null) {
+                    wirelessTetherLastTopMarker = newestFirst.firstOrNull()?.let(::autoImportSortKey)
+                    startWirelessTetherAutoImportWatcher("library-load")
+                }
                 loadThumbnails(newestFirst)
                 scanDownloadedFiles()
             } else {
@@ -6562,89 +6753,461 @@ class MainViewModel(
                         } else {
                             "Failed to load photos"
                         },
+                        sourceCameraSsid = requestSsid,
+                        sourceKind = TransferSourceKind.WifiCamera,
+                        sourceLabel = wifiTransferSourceLabel(current.selectedCardSlotSource, requestSsid),
+                        supportsDelete = true,
                     ),
                 ) }
             }
         }
     }
 
-    private fun loadThumbnails(images: List<CameraImage>) {
-        thumbnailJob?.cancel()
-        thumbnailJob = viewModelScope.launch {
-            if (shouldPauseWifiLibraryMediaRequests()) {
+    fun loadHighSpeedWifiTransferImages() {
+        D.transfer("loadHighSpeedWifiTransferImages")
+        imageListJob?.cancel()
+        val hasExistingImages = _uiState.value.transferState.images.isNotEmpty()
+        val requestGeneration = transferLoadGeneration.incrementAndGet()
+        fun isCurrentTransferRequest(): Boolean = requestGeneration == transferLoadGeneration.get()
+        imageListJob = viewModelScope.launch {
+            clearUsbLibraryCache()
+            val sourceSsid = cameraWifiManager.getCurrentSsid()
+                ?: (_uiState.value.wifiState as? WifiConnectionState.OtherWifi)?.ssid
+            if (!cameraWifiManager.isInfrastructureWifiConnected()) {
+                updateUiState { current -> current.copy(
+                    transferState = current.transferState.copy(
+                        isLoading = false,
+                        errorMessage = "고속전달은 카메라와 폰이 같은 Wi-Fi에 연결되어 있어야 합니다. 기본 가져오기는 카메라 Wi-Fi AP에서 Refresh를 사용하세요.",
+                        sourceKind = TransferSourceKind.WifiCamera,
+                        sourceLabel = "고속전달 Wi-Fi",
+                        supportsDelete = true,
+                    ),
+                ) }
                 return@launch
             }
-            val transferState = _uiState.value.transferState
-            if (transferState.sourceKind == TransferSourceKind.OmCaptureUsb) {
-                val handleMap = transferState.usbObjectHandlesByPath
-                val toLoad = images
-                    .filter { it.fileName !in transferState.thumbnails }
-                    .take(USB_TRANSFER_THUMBNAIL_PREFETCH_LIMIT)
-                // Batch-pause live view ONCE for all thumbnails instead of
-                // per-thumbnail pause/resume which causes visible stutter.
-                val paused = omCaptureUsbManager.pauseLiveViewBatch("thumbnail-batch")
-                usbTransferThumbnailPrefetchActive = true
-                try {
-                    for ((index, image) in toLoad.withIndex()) {
-                        ensureActive()
-                        if (index > 0) {
-                            delay(USB_TRANSFER_THUMBNAIL_PREFETCH_DELAY_MS)
-                        }
-                        val handle = handleMap[image.fullPath] ?: continue
-                        val bytes = omCaptureUsbManager.loadLibraryThumbnail(handle).getOrNull()
-                        if (bytes == null) {
-                            D.usb(
-                                "Stopping USB thumbnail prefetch after a failed thumbnail " +
-                                    "handle=${handle.toString(16)} file=${image.fileName}",
-                            )
-                            break
-                        }
-                        val bitmap = decodeTransferPreviewBitmap(bytes) ?: continue
-                        updateTransferThumbnails(
-                            listOf(image.fileName to bitmap),
-                            overwriteExisting = false,
-                        )
-                    }
-                } finally {
-                    usbTransferThumbnailPrefetchActive = false
-                    if (paused) omCaptureUsbManager.resumeLiveViewBatch("thumbnail-batch")
+
+            updateUiState { current -> current.copy(
+                transferState = current.transferState.copy(
+                    isLoading = true,
+                    errorMessage = null,
+                    sourceCameraSsid = sourceSsid,
+                    sourceKind = TransferSourceKind.WifiCamera,
+                    sourceLabel = "고속전달 Wi-Fi",
+                    supportsDelete = true,
+                    usbObjectHandlesByPath = emptyMap(),
+                    usbAvailableStorageIds = emptyList(),
+                    selectedUsbStorageIds = null,
+                ),
+            ) }
+
+            val firstMtpEndpoint = prepareMtpIpWirelessTether(
+                statusLabel = "고속전달: OM Capture 무선 테더링 찾는 중...",
+            )
+            if (!isCurrentTransferRequest()) {
+                return@launch
+            }
+            if (firstMtpEndpoint != null) {
+                loadMtpIpCameraImagesNow(
+                    endpoint = firstMtpEndpoint,
+                    sourceSsid = sourceSsid,
+                    hasExistingImages = hasExistingImages,
+                    sourceLabel = mtpIpTransferSourceLabel(firstMtpEndpoint),
+                )
+                return@launch
+            }
+
+            val lanReady = prepareLanWirelessTether(
+                statusLabel = "고속전달: 같은 Wi-Fi HTTP 사진 소스 확인 중...",
+            )
+            if (!isCurrentTransferRequest()) {
+                return@launch
+            }
+            if (lanReady) {
+                val sourceLabel = highSpeedWifiTransferSourceLabel(lanWirelessTetherBaseUrl)
+                updateUiState { current -> current.copy(
+                    transferState = current.transferState.copy(
+                        isLoading = true,
+                        errorMessage = null,
+                        sourceLabel = sourceLabel,
+                        supportsDelete = true,
+                    ),
+                ) }
+                prepareWifiCameraForImageLibrary("high-speed-http-library")
+                if (!isCurrentTransferRequest()) {
+                    return@launch
                 }
+                val slotResult = ensureSelectedPlayTargetSlotApplied()
+                if (!isCurrentTransferRequest()) {
+                    return@launch
+                }
+                if (slotResult.isFailure) {
+                    val throwable = slotResult.exceptionOrNull()
+                    updateUiState { current -> current.copy(
+                        transferState = current.transferState.copy(
+                            isLoading = false,
+                            errorMessage = throwable?.message ?: "고속전달 사진 소스를 전환하지 못했습니다.",
+                        ),
+                    ) }
+                    return@launch
+                }
+                val imageResult = repository.getImageList("/DCIM")
+                if (imageResult.isSuccess) {
+                    if (!isCurrentTransferRequest()) {
+                        return@launch
+                    }
+                    val newestFirst = imageResult.getOrThrow()
+                        .sortedByDescending { "${it.captureDateKey}_${it.fileName}" }
+                    D.transfer("Got ${newestFirst.size} high-speed Wi-Fi images")
+                    applyTransferImageList(
+                        images = newestFirst,
+                        isLoading = false,
+                        errorMessage = null,
+                        sourceCameraSsid = sourceSsid,
+                        sourceKind = TransferSourceKind.WifiCamera,
+                        sourceLabel = sourceLabel,
+                        supportsDelete = true,
+                        usbObjectHandlesByPath = emptyMap(),
+                        usbAvailableStorageIds = emptyList(),
+                        selectedUsbStorageIds = null,
+                    )
+                    applyPendingLastCapturePreview(newestFirst)
+                    maybeTriggerArmedAutoImport(newestFirst)
+                    wirelessTetherLastTopMarker = newestFirst.firstOrNull()?.let(::autoImportSortKey)
+                    startWirelessTetherAutoImportWatcher("high-speed-http-library-load")
+                    loadThumbnails(newestFirst)
+                    scanDownloadedFiles()
+                    return@launch
+                }
+
+                D.err("TRANSFER", "High-speed HTTP image list failed", imageResult.exceptionOrNull())
+                val mtpEndpoint = prepareMtpIpWirelessTether(
+                    statusLabel = "고속전달: HTTP 목록 실패, MTP/IP 확인 중...",
+                )
+                if (!isCurrentTransferRequest()) {
+                    return@launch
+                }
+                if (mtpEndpoint != null) {
+                    loadMtpIpCameraImagesNow(
+                        endpoint = mtpEndpoint,
+                        sourceSsid = sourceSsid,
+                        hasExistingImages = hasExistingImages,
+                        sourceLabel = mtpIpTransferSourceLabel(mtpEndpoint),
+                    )
+                    return@launch
+                }
+                val throwable = imageResult.exceptionOrNull()
+                updateUiState { current -> current.copy(
+                    transferState = current.transferState.copy(
+                        isLoading = false,
+                        errorMessage = throwable?.message ?: if (hasExistingImages) {
+                            "고속전달 라이브러리 새로고침에 실패했습니다."
+                        } else {
+                            "같은 Wi-Fi에서 사진 목록을 가져오지 못했습니다."
+                        },
+                        sourceLabel = sourceLabel,
+                        supportsDelete = true,
+                    ),
+                ) }
                 return@launch
             }
-            if (ensureSelectedPlayTargetSlotApplied().isFailure) {
-                return@launch
-            }
-            if (_uiState.value.libraryCompatibilityMode == LibraryCompatibilityMode.HighSpeed) {
-                loadWifiThumbnailsFast(images)
-                return@launch
-            }
-            loadWifiThumbnailsSlow(images)
+
+            updateUiState { current -> current.copy(
+                transferState = current.transferState.copy(
+                    isLoading = false,
+                    errorMessage = "같은 Wi-Fi에서 OM 카메라를 찾지 못했습니다. 카메라를 OM Capture/PC 무선 테더링 모드로 연결하고, 폰과 카메라가 같은 5GHz Wi-Fi에 있는지 확인한 뒤 다시 시도하세요.",
+                    sourceKind = TransferSourceKind.WifiCamera,
+                    sourceLabel = "고속전달 Wi-Fi",
+                    supportsDelete = true,
+                ),
+            ) }
         }
     }
 
-    private suspend fun loadWifiThumbnailsFast(images: List<CameraImage>) = coroutineScope {
-        val toLoad = images.filter { it.fileName !in _uiState.value.transferState.thumbnails }
-        toLoad.chunked(6).forEach { batch ->
-            ensureActive()
-            if (shouldPauseWifiLibraryMediaRequests()) return@coroutineScope
-            if (!canSendRemoteCommand()) return@coroutineScope
-            val deferred = batch.filter { it.isJpeg }.map { image ->
-                async(Dispatchers.IO) {
-                    loadWifiThumbnailResult(image)
+    private suspend fun loadMtpIpCameraImagesNow(
+        endpoint: MtpIpCameraEndpoint,
+        sourceSsid: String?,
+        hasExistingImages: Boolean = _uiState.value.transferState.images.isNotEmpty(),
+        sourceLabel: String = mtpIpTransferSourceLabel(endpoint),
+    ) {
+        updateUiState { current -> current.copy(
+            transferState = current.transferState.copy(
+                isLoading = true,
+                errorMessage = null,
+                sourceKind = TransferSourceKind.WifiCamera,
+                sourceLabel = sourceLabel,
+                supportsDelete = false,
+            ),
+        ) }
+        val imageResult = mtpIpCameraClient.loadImages(endpoint)
+        if (imageResult.isSuccess) {
+            val newestFirst = imageResult.getOrThrow()
+                .map { it.image }
+                .sortedByDescending(::autoImportSortKey)
+            D.transfer("Got ${newestFirst.size} MTP/IP images from ${endpoint.host}")
+            applyTransferImageList(
+                images = newestFirst,
+                isLoading = false,
+                errorMessage = null,
+                sourceCameraSsid = sourceSsid,
+                sourceKind = TransferSourceKind.WifiCamera,
+                sourceLabel = sourceLabel,
+                supportsDelete = false,
+                usbObjectHandlesByPath = emptyMap(),
+                usbAvailableStorageIds = emptyList(),
+                selectedUsbStorageIds = null,
+            )
+            applyPendingLastCapturePreview(newestFirst)
+            maybeTriggerArmedAutoImport(newestFirst)
+            wirelessTetherLastTopMarker = newestFirst.firstOrNull()?.let(::autoImportSortKey)
+            startWirelessTetherAutoImportWatcher("mtpip-library-load")
+            loadThumbnails(newestFirst)
+            scanDownloadedFiles()
+        } else {
+            val throwable = imageResult.exceptionOrNull()
+            D.err("TRANSFER", "Failed to load MTP/IP images", throwable)
+            updateUiState { current -> current.copy(
+                transferState = current.transferState.copy(
+                    isLoading = false,
+                    errorMessage = throwable?.message ?: if (hasExistingImages) {
+                        "MTP/IP library refresh failed"
+                    } else {
+                        "Failed to load photos over wireless tether"
+                    },
+                    sourceKind = TransferSourceKind.WifiCamera,
+                    sourceLabel = sourceLabel,
+                    supportsDelete = false,
+                ),
+            ) }
+        }
+    }
+
+    private fun loadThumbnails(images: List<CameraImage>) {
+        thumbnailContinuationJob?.cancel()
+        thumbnailJob?.cancel()
+        val requestGeneration = transferLoadGeneration.get()
+        thumbnailJob = viewModelScope.launch {
+            var completedFullPass = false
+            try {
+                if (shouldPauseWifiLibraryMediaRequests()) {
+                    return@launch
+                }
+                val transferState = _uiState.value.transferState
+                if (transferState.sourceKind == TransferSourceKind.OmCaptureUsb) {
+                    val handleMap = transferState.usbObjectHandlesByPath
+                    val toLoad = images
+                        .filter { it.fileName !in transferState.thumbnails }
+                        .filter { it.fullPath in handleMap }
+                    D.transfer("USB thumbnail prefetch queue: ${toLoad.size} missing image(s)")
+                    // Batch-pause live view ONCE for all thumbnails instead of
+                    // per-thumbnail pause/resume which causes visible stutter.
+                    val paused = omCaptureUsbManager.pauseLiveViewBatch("thumbnail-batch")
+                    usbTransferThumbnailPrefetchActive = true
+                    val pendingUpdates = mutableListOf<Pair<String, Bitmap>>()
+                    try {
+                        for ((batchIndex, batch) in toLoad.chunked(USB_TRANSFER_THUMBNAIL_PREFETCH_LIMIT).withIndex()) {
+                            ensureActive()
+                            if (batchIndex > 0) {
+                                delay(TRANSFER_THUMBNAIL_BATCH_PAUSE_MS)
+                            }
+                            for ((index, image) in batch.withIndex()) {
+                                ensureActive()
+                                if (index > 0) {
+                                    delay(USB_TRANSFER_THUMBNAIL_PREFETCH_DELAY_MS)
+                                }
+                                val handle = handleMap[image.fullPath] ?: continue
+                                val bytes = omCaptureUsbManager.loadLibraryThumbnail(handle).getOrNull()
+                                if (bytes == null) {
+                                    D.usb(
+                                        "Skipping failed USB thumbnail " +
+                                            "handle=${handle.toString(16)} file=${image.fileName}",
+                                    )
+                                    continue
+                                }
+                                val bitmap = withContext(Dispatchers.Default) {
+                                    ImagePreviewDecoder.decodeTransferPreviewBitmap(
+                                        bytes,
+                                        maxDimension = TRANSFER_THUMBNAIL_BITMAP_MAX_DIMENSION,
+                                    )
+                                } ?: continue
+                                pendingUpdates += image.fileName to bitmap
+                                if (pendingUpdates.size >= USB_TRANSFER_THUMBNAIL_BATCH_SIZE) {
+                                    updateTransferThumbnails(pendingUpdates.toList(), overwriteExisting = false)
+                                    pendingUpdates.clear()
+                                }
+                            }
+                        }
+                        completedFullPass = true
+                    } finally {
+                        if (pendingUpdates.isNotEmpty()) {
+                            updateTransferThumbnails(pendingUpdates.toList(), overwriteExisting = false)
+                        }
+                        usbTransferThumbnailPrefetchActive = false
+                        if (paused) omCaptureUsbManager.resumeLiveViewBatch("thumbnail-batch")
+                    }
+                    return@launch
+                }
+                if (images.any { it.isMtpIpObject }) {
+                    completedFullPass = loadMtpIpThumbnails(images)
+                    return@launch
+                }
+                if (ensureSelectedPlayTargetSlotApplied().isFailure) {
+                    return@launch
+                }
+                completedFullPass = if (_uiState.value.libraryCompatibilityMode == LibraryCompatibilityMode.HighSpeed) {
+                    loadWifiThumbnailsFast(images)
+                } else {
+                    loadWifiThumbnailsSlow(images)
+                }
+            } finally {
+                val activeJob = currentCoroutineContext()[Job]
+                if (
+                    activeJob != null &&
+                    !completedFullPass &&
+                    isActiveThumbnailRequest(requestGeneration, activeJob)
+                ) {
+                    scheduleThumbnailContinuation("prefetch interrupted", requestGeneration)
                 }
             }
-            val results = mutableListOf<WifiThumbnailLoadResult>()
-            results += deferred.awaitAll().filterNotNull()
-            batch.filterNot { it.isJpeg }.forEach { image ->
-                ensureActive()
-                if (shouldPauseWifiLibraryMediaRequests()) return@coroutineScope
-                if (!canSendRemoteCommand()) return@coroutineScope
-                loadWifiThumbnailResult(image)?.let(results::add)
+        }
+    }
+
+    private fun isActiveThumbnailRequest(requestGeneration: Long, activeJob: Job): Boolean {
+        return requestGeneration == transferLoadGeneration.get() &&
+            thumbnailJob === activeJob &&
+            !activeJob.isCancelled
+    }
+
+    private fun scheduleThumbnailContinuation(reason: String, requestGeneration: Long) {
+        val transfer = _uiState.value.transferState
+        if (requestGeneration != transferLoadGeneration.get() || transfer.images.isEmpty()) {
+            return
+        }
+        if (
+            transfer.sourceKind == TransferSourceKind.WifiCamera &&
+            !canSendRemoteCommand() &&
+            !transfer.images.any { it.isMtpIpObject }
+        ) {
+            return
+        }
+        val missingCount = transfer.images.count { image ->
+            image.fileName !in transfer.thumbnails &&
+                when {
+                    transfer.sourceKind == TransferSourceKind.OmCaptureUsb ->
+                        image.fullPath in transfer.usbObjectHandlesByPath
+                    image.isMtpIpObject -> true
+                    else -> true
+                }
+        }
+        if (missingCount <= 0) {
+            return
+        }
+        thumbnailContinuationJob?.cancel()
+        thumbnailContinuationJob = viewModelScope.launch {
+            D.transfer("Scheduling thumbnail continuation after $reason (missing=$missingCount)")
+            delay(TRANSFER_THUMBNAIL_CONTINUATION_DELAY_MS)
+            if (requestGeneration != transferLoadGeneration.get()) {
+                return@launch
             }
-            updateTransferThumbnails(results.map { it.fileName to it.bitmap }, overwriteExisting = false)
-            results.filter { it.usedPreview }.forEach { result ->
-                previewThumbnailUpgrades += result.fileName
-                clearPreviewUnavailable(result.fileName)
+            val latestImages = _uiState.value.transferState.images
+            if (latestImages.isNotEmpty()) {
+                thumbnailContinuationJob = null
+                loadThumbnails(latestImages)
+            }
+        }
+    }
+
+    private suspend fun loadMtpIpThumbnails(images: List<CameraImage>): Boolean {
+        val toLoad = images
+            .filter { it.fileName !in _uiState.value.transferState.thumbnails }
+            .filter { it.isMtpIpObject }
+        D.transfer("MTP/IP thumbnail prefetch queue: ${toLoad.size} missing image(s)")
+        val pendingUpdates = mutableListOf<Pair<String, Bitmap>>()
+        for ((batchIndex, batch) in toLoad.chunked(USB_TRANSFER_THUMBNAIL_PREFETCH_LIMIT).withIndex()) {
+            currentCoroutineContext().ensureActive()
+            if (batchIndex > 0) {
+                delay(TRANSFER_THUMBNAIL_BATCH_PAUSE_MS)
+            }
+            for ((index, image) in batch.withIndex()) {
+                currentCoroutineContext().ensureActive()
+                if (shouldPauseWifiLibraryMediaRequests()) return false
+                if (index > 0) {
+                    delay(USB_TRANSFER_THUMBNAIL_PREFETCH_DELAY_MS)
+                }
+                val endpoint = mtpIpEndpointForImage(image) ?: continue
+                val handle = image.mtpIpHandle ?: continue
+                val bytes = mtpIpCameraClient.loadThumbnail(endpoint, handle).getOrNull()
+                if (bytes == null) {
+                    D.transfer("Skipping failed MTP/IP thumbnail handle=0x${handle.toString(16)} file=${image.fileName}")
+                    continue
+                }
+                val bitmap = withContext(Dispatchers.Default) {
+                    ImagePreviewDecoder.decodeTransferPreviewBitmap(
+                        bytes,
+                        maxDimension = TRANSFER_THUMBNAIL_BITMAP_MAX_DIMENSION,
+                    )
+                } ?: continue
+                pendingUpdates += image.fileName to bitmap
+                if (pendingUpdates.size >= USB_TRANSFER_THUMBNAIL_BATCH_SIZE) {
+                    updateTransferThumbnails(pendingUpdates.toList(), overwriteExisting = false)
+                    pendingUpdates.clear()
+                }
+            }
+        }
+        if (pendingUpdates.isNotEmpty()) {
+            updateTransferThumbnails(pendingUpdates.toList(), overwriteExisting = false)
+        }
+        return true
+    }
+
+    private fun mtpIpEndpointForImage(image: CameraImage): MtpIpCameraEndpoint? {
+        val host = image.mtpIpHost?.takeIf { it.isNotBlank() } ?: mtpIpWirelessEndpoint?.host ?: return null
+        val port = image.mtpIpPort.takeIf { it > 0 } ?: mtpIpWirelessEndpoint?.port ?: 15740
+        return MtpIpCameraEndpoint(host = host, port = port)
+    }
+
+    private suspend fun loadMtpIpSelectedPreviewBytes(image: CameraImage): ByteArray? = withContext(Dispatchers.IO) {
+        val endpoint = mtpIpEndpointForImage(image) ?: return@withContext null
+        val handle = image.mtpIpHandle ?: return@withContext null
+        mtpIpCameraClient.loadThumbnail(endpoint, handle).getOrNull()?.let { return@withContext it }
+        if (image.isMovie || image.fileSize > 96L * 1024L * 1024L) {
+            return@withContext null
+        }
+        val output = ByteArrayOutputStream()
+        mtpIpCameraClient.downloadObjectTo(endpoint, handle, output).getOrNull() ?: return@withContext null
+        output.toByteArray()
+    }
+
+    private suspend fun loadWifiThumbnailsFast(images: List<CameraImage>): Boolean = coroutineScope {
+        val toLoad = images
+            .filter { it.fileName !in _uiState.value.transferState.thumbnails }
+        D.transfer("Wi-Fi fast thumbnail prefetch queue: ${toLoad.size} missing image(s)")
+        toLoad.chunked(WIFI_THUMBNAIL_PREFETCH_LIMIT).forEachIndexed { pageIndex, page ->
+            ensureActive()
+            if (pageIndex > 0) {
+                delay(TRANSFER_THUMBNAIL_BATCH_PAUSE_MS)
+            }
+            page.chunked(6).forEach { batch ->
+                ensureActive()
+                if (shouldPauseWifiLibraryMediaRequests()) return@coroutineScope false
+                if (!canSendRemoteCommand()) return@coroutineScope false
+                val deferred = batch.filter { it.isJpeg }.map { image ->
+                    async(Dispatchers.IO) {
+                        loadWifiThumbnailResult(image)
+                    }
+                }
+                val results = mutableListOf<WifiThumbnailLoadResult>()
+                results += deferred.awaitAll().filterNotNull()
+                batch.filterNot { it.isJpeg }.forEach { image ->
+                    ensureActive()
+                    if (shouldPauseWifiLibraryMediaRequests()) return@coroutineScope false
+                    if (!canSendRemoteCommand()) return@coroutineScope false
+                    loadWifiThumbnailResult(image)?.let(results::add)
+                }
+                updateTransferThumbnails(results.map { it.fileName to it.bitmap }, overwriteExisting = false)
+                results.filter { it.usedPreview }.forEach { result ->
+                    previewThumbnailUpgrades += result.fileName
+                    clearPreviewUnavailable(result.fileName)
+                }
             }
         }
 
@@ -6653,64 +7216,67 @@ class MainViewModel(
             .filterNot { it.fileName in previewThumbnailUpgrades }
             .forEach { image ->
                 ensureActive()
-                if (shouldPauseWifiLibraryMediaRequests()) return@coroutineScope
-                if (!canSendRemoteCommand()) return@coroutineScope
+                if (shouldPauseWifiLibraryMediaRequests()) return@coroutineScope false
+                if (!canSendRemoteCommand()) return@coroutineScope false
                 val preview = loadWifiPreviewUpgradeBitmap(image) ?: return@forEach
                 previewThumbnailUpgrades += image.fileName
                 clearPreviewUnavailable(image.fileName)
                 updateTransferThumbnails(listOf(image.fileName to preview), overwriteExisting = true)
             }
+        true
     }
 
-    private suspend fun loadWifiThumbnailsSlow(images: List<CameraImage>) {
+    private suspend fun loadWifiThumbnailsSlow(images: List<CameraImage>): Boolean {
         waitForWifiMediaRequestCooldown()
         val toLoad = images
             .filter { it.fileName !in _uiState.value.transferState.thumbnails }
-            .take(WIFI_THUMBNAIL_PREFETCH_LIMIT)
+        D.transfer("Wi-Fi thumbnail prefetch queue: ${toLoad.size} missing image(s)")
         var consecutiveFailures = 0
-        var shouldLoadPreviewUpgrades = true
-        for (image in toLoad) {
+        for ((batchIndex, batch) in toLoad.chunked(WIFI_THUMBNAIL_PREFETCH_LIMIT).withIndex()) {
             currentCoroutineContext().ensureActive()
-            if (shouldPauseWifiLibraryMediaRequests()) return
-            if (!canSendRemoteCommand()) return
-            val result = loadWifiThumbnailResult(image)
-            if (result != null) {
-                consecutiveFailures = 0
-                updateTransferThumbnails(listOf(result.fileName to result.bitmap), overwriteExisting = false)
-                if (result.usedPreview) {
-                    previewThumbnailUpgrades += result.fileName
-                    clearPreviewUnavailable(result.fileName)
+            if (batchIndex > 0) {
+                delay(TRANSFER_THUMBNAIL_BATCH_PAUSE_MS)
+            }
+            for (image in batch) {
+                currentCoroutineContext().ensureActive()
+                if (shouldPauseWifiLibraryMediaRequests()) return false
+                if (!canSendRemoteCommand()) return false
+                val result = loadWifiThumbnailResult(image)
+                if (result != null) {
+                    consecutiveFailures = 0
+                    updateTransferThumbnails(listOf(result.fileName to result.bitmap), overwriteExisting = false)
+                    if (result.usedPreview) {
+                        previewThumbnailUpgrades += result.fileName
+                        clearPreviewUnavailable(result.fileName)
+                    }
+                    delay(WIFI_THUMBNAIL_REQUEST_DELAY_MS)
+                } else {
+                    consecutiveFailures += 1
+                    if (consecutiveFailures >= WIFI_THUMBNAIL_FAILURE_LIMIT) {
+                        startWifiMediaRequestCooldown("thumbnail failures")
+                        waitForWifiMediaRequestCooldown()
+                        consecutiveFailures = 0
+                    }
+                    delay(WIFI_THUMBNAIL_FAILURE_BACKOFF_MS * consecutiveFailures)
                 }
-                delay(WIFI_THUMBNAIL_REQUEST_DELAY_MS)
-            } else {
-                consecutiveFailures += 1
-                if (consecutiveFailures >= WIFI_THUMBNAIL_FAILURE_LIMIT) {
-                    shouldLoadPreviewUpgrades = false
-                    startWifiMediaRequestCooldown("thumbnail failures")
-                    break
-                }
-                delay(WIFI_THUMBNAIL_FAILURE_BACKOFF_MS * consecutiveFailures)
             }
         }
 
-        if (!shouldLoadPreviewUpgrades) {
-            return
-        }
         consecutiveFailures = 0
         val previewTargets = buildPreviewThumbnailTargets(images)
             .filterNot { it.isRaw || it.isMovie }
             .filterNot { it.fileName in previewThumbnailUpgrades }
         for (image in previewTargets) {
             currentCoroutineContext().ensureActive()
-            if (shouldPauseWifiLibraryMediaRequests()) return
-            if (!canSendRemoteCommand()) return
+            if (shouldPauseWifiLibraryMediaRequests()) return false
+            if (!canSendRemoteCommand()) return false
             waitForWifiMediaRequestCooldown()
             val preview = loadWifiPreviewUpgradeBitmap(image)
             if (preview == null) {
                 consecutiveFailures += 1
                 if (consecutiveFailures >= WIFI_THUMBNAIL_FAILURE_LIMIT) {
                     startWifiMediaRequestCooldown("preview thumbnail failures")
-                    return
+                    return true
                 }
                 delay(WIFI_THUMBNAIL_FAILURE_BACKOFF_MS * consecutiveFailures)
                 continue
@@ -6721,13 +7287,17 @@ class MainViewModel(
             updateTransferThumbnails(listOf(image.fileName to preview), overwriteExisting = true)
             delay(WIFI_THUMBNAIL_REQUEST_DELAY_MS)
         }
+        return true
     }
 
     private suspend fun loadWifiThumbnailResult(image: CameraImage): WifiThumbnailLoadResult? {
         val payload = loadWifiThumbnailPayload(image) ?: return null
         val bytes = payload.bytes
         val bitmap = withContext(Dispatchers.Default) {
-            decodeTransferPreviewBitmap(bytes)
+            ImagePreviewDecoder.decodeTransferPreviewBitmap(
+                bytes,
+                maxDimension = TRANSFER_THUMBNAIL_BITMAP_MAX_DIMENSION,
+            )
         } ?: return null
         return WifiThumbnailLoadResult(
             fileName = image.fileName,
@@ -6765,7 +7335,10 @@ class MainViewModel(
         } ?: return null
         updatePreviewDetails(image, bytes)
         return withContext(Dispatchers.Default) {
-            decodeTransferPreviewBitmap(bytes)
+            ImagePreviewDecoder.decodeTransferPreviewBitmap(
+                bytes,
+                maxDimension = TRANSFER_THUMBNAIL_BITMAP_MAX_DIMENSION,
+            )
         }
     }
 
@@ -6976,6 +7549,8 @@ class MainViewModel(
         transferLoadGeneration.incrementAndGet()
         imageListJob?.cancel()
         imageListJob = null
+        thumbnailContinuationJob?.cancel()
+        thumbnailContinuationJob = null
         thumbnailJob?.cancel()
         thumbnailJob = null
         detailPreviewJob?.cancel()
@@ -6992,6 +7567,8 @@ class MainViewModel(
     }
 
     private fun prepareOmCaptureUsbForTransferMode() {
+        thumbnailContinuationJob?.cancel()
+        thumbnailContinuationJob = null
         thumbnailJob?.cancel()
         thumbnailJob = null
         detailPreviewJob?.cancel()
@@ -7304,7 +7881,26 @@ class MainViewModel(
                     return@launch
                 }
                 val bitmap = withContext(Dispatchers.Default) {
-                    decodeTransferPreviewBitmap(previewBytes)
+                    ImagePreviewDecoder.decodeTransferPreviewBitmap(previewBytes)
+                }
+                if (bitmap == null) {
+                    markPreviewUnavailable(image.fileName)
+                    return@launch
+                }
+                previewThumbnailUpgrades += image.fileName
+                clearPreviewUnavailable(image.fileName)
+                updateTransferThumbnails(listOf(image.fileName to bitmap), overwriteExisting = true)
+                return@launch
+            }
+            if (image.isMtpIpObject) {
+                val previewBytes = loadMtpIpSelectedPreviewBytes(image)
+                if (previewBytes == null) {
+                    markPreviewUnavailable(image.fileName)
+                    return@launch
+                }
+                updatePreviewDetails(image, previewBytes)
+                val bitmap = withContext(Dispatchers.Default) {
+                    ImagePreviewDecoder.decodeTransferPreviewBitmap(previewBytes)
                 }
                 if (bitmap == null) {
                     markPreviewUnavailable(image.fileName)
@@ -7370,7 +7966,7 @@ class MainViewModel(
                 if (fullImageBytes != null) {
                     updatePreviewDetails(image, fullImageBytes)
                     bitmap = withContext(Dispatchers.Default) {
-                        decodeTransferPreviewBitmap(fullImageBytes)
+                        ImagePreviewDecoder.decodeTransferPreviewBitmap(fullImageBytes)
                     }
                     if (bitmap == null) {
                         D.transfer("Selected preview step full-raw was not decodable for ${image.fileName}")
@@ -7400,7 +7996,7 @@ class MainViewModel(
         }
         updatePreviewDetails(image, previewBytes)
         val decoded = withContext(Dispatchers.Default) {
-            decodeTransferPreviewBitmap(previewBytes)
+            ImagePreviewDecoder.decodeTransferPreviewBitmap(previewBytes)
         }
         if (decoded == null) {
             D.transfer("Selected preview step $label was not decodable for ${image.fileName}; trying next fallback")
@@ -7450,7 +8046,9 @@ class MainViewModel(
             context = getApplication(),
             images = listOf(image),
             saveLocation = _uiState.value.autoImportConfig.saveLocation,
+            folderStructure = _uiState.value.autoImportConfig.folderStructure,
             playTargetSlot = _uiState.value.selectedCardSlotSource,
+            cameraBaseUrl = defaultRepository.currentCameraBaseUrl,
         )
     }
 
@@ -7483,9 +8081,11 @@ class MainViewModel(
                 dev.dblink.core.download.UsbImportRequest(
                     handle = handle,
                     fileName = image.fileName,
+                    importFormat = usbImportFormatForImage(image),
                 ),
             ),
             saveLocation = _uiState.value.autoImportConfig.saveLocation,
+            folderStructure = _uiState.value.autoImportConfig.folderStructure,
         )
     }
 
@@ -7560,6 +8160,8 @@ class MainViewModel(
             dev.dblink.feature.transfer.ImageTypeFilter.JPG -> images.filter { it.isJpeg }
             dev.dblink.feature.transfer.ImageTypeFilter.RAW -> images.filter { it.isRaw }
             dev.dblink.feature.transfer.ImageTypeFilter.VIDEO -> images.filter { it.isMovie }
+            dev.dblink.feature.transfer.ImageTypeFilter.FIVE_STAR -> images.filter { it.isFiveStar }
+            dev.dblink.feature.transfer.ImageTypeFilter.SELECTED -> images.filter { it.isCameraSelected }
         }
     }
 
@@ -7591,7 +8193,9 @@ class MainViewModel(
             context = context,
             images = images,
             saveLocation = _uiState.value.autoImportConfig.saveLocation,
+            folderStructure = _uiState.value.autoImportConfig.folderStructure,
             playTargetSlot = _uiState.value.selectedCardSlotSource,
+            cameraBaseUrl = defaultRepository.currentCameraBaseUrl,
         )
     }
 
@@ -7601,6 +8205,7 @@ class MainViewModel(
                 dev.dblink.core.download.UsbImportRequest(
                     handle = handle,
                     fileName = image.fileName,
+                    importFormat = usbImportFormatForImage(image),
                 )
             }
         }
@@ -7633,7 +8238,16 @@ class MainViewModel(
             context = getApplication(),
             items = requests,
             saveLocation = _uiState.value.autoImportConfig.saveLocation,
+            folderStructure = _uiState.value.autoImportConfig.folderStructure,
         )
+    }
+
+    private fun usbImportFormatForImage(image: CameraImage): TetherPhoneImportFormat {
+        return if (image.isRaw) {
+            TetherPhoneImportFormat.RawOnly
+        } else {
+            TetherPhoneImportFormat.JpegOnly
+        }
     }
 
     fun cancelBackgroundDownload() {
@@ -7668,6 +8282,8 @@ class MainViewModel(
             return
         }
         pauseSessionKeepAliveForWifiTransfer()
+        thumbnailContinuationJob?.cancel()
+        thumbnailContinuationJob = null
         thumbnailJob?.cancel()
         thumbnailJob = null
         detailPreviewJob?.cancel()
@@ -7678,6 +8294,43 @@ class MainViewModel(
         propertyLoadJob = null
         propertyRefreshJob?.cancel()
         propertyRefreshJob = null
+    }
+
+    private suspend fun prepareWifiCameraForImageLibrary(reason: String) {
+        if (!canSendRemoteCommand()) {
+            return
+        }
+        prepareWifiTransferPipeline()
+        val state = _uiState.value
+        val liveViewActive = state.remoteRuntime.liveViewActive ||
+            state.sessionState is CameraSessionState.LiveView
+        if (liveViewActive) {
+            D.transfer("Preparing Wi-Fi image library ($reason): stopping live view before image list")
+            stopLiveViewInternal()
+            val stopResult = withTimeoutOrNull(2_500L) {
+                repository.stopLiveView()
+            }
+            if (stopResult == null) {
+                D.transfer("Preparing Wi-Fi image library ($reason): stop live view timed out, continuing")
+            } else {
+                stopResult.onFailure { throwable ->
+                    D.err("TRANSFER", "Preparing Wi-Fi image library ($reason): stop live view failed", throwable)
+                }
+            }
+        }
+
+        D.transfer("Preparing Wi-Fi image library ($reason): parking camera in play mode")
+        val parkResult = withTimeoutOrNull(3_000L) {
+            repository.switchCameraMode(ConnectMode.Play)
+        }
+        if (parkResult == null) {
+            D.transfer("Preparing Wi-Fi image library ($reason): play-mode switch timed out, continuing")
+        } else {
+            parkResult.onFailure { throwable ->
+                D.err("TRANSFER", "Preparing Wi-Fi image library ($reason): play-mode switch failed", throwable)
+            }
+        }
+        delay(1_100L)
     }
 
     fun deleteImage(image: CameraImage) {
@@ -7973,102 +8626,6 @@ class MainViewModel(
         }
     }
 
-    /**
-     * Writes GPS EXIF tags to a saved image if a matched geotag exists.
-     * Respects the geotag_include_altitude setting for altitude data.
-     */
-    private fun writeGeoTagExif(
-        resolver: android.content.ContentResolver,
-        uri: android.net.Uri,
-        fileName: String,
-    ) {
-        val geoTag = _uiState.value.transferState.matchedGeoTags[fileName] ?: return
-        try {
-            val fd = resolver.openFileDescriptor(uri, "rw") ?: return
-            fd.use {
-                val exif = ExifInterface(it.fileDescriptor)
-
-                // Check if image already has embedded GPS — don't overwrite
-                val existingLatLong = exif.latLong
-                if (existingLatLong != null && existingLatLong[0] != 0.0) {
-                    D.transfer("$fileName already has GPS EXIF, skipping geotag write")
-                    return
-                }
-
-                exif.setLatLong(geoTag.latitude, geoTag.longitude)
-                D.transfer("Writing GPS EXIF to $fileName: lat=${geoTag.latitude}, lon=${geoTag.longitude}")
-
-                // Write altitude only if geotag_include_altitude is enabled
-                val writeAltitude = _uiState.value.geotagConfig.writeAltitude
-                if (writeAltitude) {
-                    // Find altitude from the matched sample
-                    val matchedSample = _uiState.value.geoTagging.samples.minByOrNull {
-                        abs(it.capturedAtMillis - geoTag.matchedSampleAtMillis)
-                    }
-                    matchedSample?.altitude?.let { altitude ->
-                        exif.setAltitude(altitude)
-                        D.transfer("Writing altitude to $fileName: ${altitude}m")
-                    }
-                } else {
-                    D.transfer("geotag_include_altitude disabled — skipping altitude for $fileName")
-                }
-
-                exif.saveAttributes()
-            }
-        } catch (e: Exception) {
-            D.err("TRANSFER", "Failed to write GPS EXIF to $fileName", e)
-        }
-    }
-
-    /**
-     * Post-process batch-downloaded JPEGs to write geotag EXIF data.
-     * Called after ImageDownloadService completes, since the service itself
-     * has no access to ViewModel geotag state.
-     */
-    private suspend fun postProcessBatchGeoTags() {
-        val matchedGeoTags = _uiState.value.transferState.matchedGeoTags
-        if (matchedGeoTags.isEmpty()) return
-
-        val context = getApplication<Application>()
-        val resolver = context.contentResolver
-
-        // Query recently saved JPEGs in the configured save location
-        val saveLocation = _uiState.value.autoImportConfig.saveLocation.ifBlank { "Pictures/db link" }
-        val basePath = if (saveLocation.startsWith(Environment.DIRECTORY_PICTURES)) {
-            saveLocation
-        } else {
-            "${Environment.DIRECTORY_PICTURES}/${saveLocation.removePrefix("Pictures/")}"
-        }
-
-        withContext(Dispatchers.IO) {
-            for ((fileName, _) in matchedGeoTags) {
-                if (!fileName.uppercase().let { it.endsWith(".JPG") || it.endsWith(".JPEG") }) continue
-
-                // Find the file in MediaStore by display name and relative path
-                val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
-                val selectionArgs = arrayOf(fileName, "$basePath%")
-                val cursor = resolver.query(
-                    MediaStore.Images.Media.getContentUri(MEDIA_STORE_PRIMARY_VOLUME),
-                    arrayOf(MediaStore.MediaColumns._ID),
-                    selection,
-                    selectionArgs,
-                    "${MediaStore.MediaColumns.DATE_ADDED} DESC",
-                )
-                cursor?.use {
-                    if (it.moveToFirst()) {
-                        val id = it.getLong(0)
-                        val uri = android.content.ContentUris.withAppendedId(
-                            MediaStore.Images.Media.getContentUri(MEDIA_STORE_PRIMARY_VOLUME),
-                            id,
-                        )
-                        writeGeoTagExif(resolver, uri, fileName)
-                    }
-                }
-            }
-            D.transfer("postProcessBatchGeoTags: processed ${matchedGeoTags.size} matched files")
-        }
-    }
-
     fun syncGeoTagNow() {
         updateUiState { current -> current.copy(
             geoTagging = current.geoTagging.copy(statusLabel = "Syncing location..."),
@@ -8198,7 +8755,9 @@ class MainViewModel(
                     currentTransfer.backgroundTransferRunning == progress.isRunning &&
                     currentTransfer.backgroundTransferTotal == progress.total &&
                     currentTransfer.backgroundTransferCurrent == processed &&
-                    currentTransfer.backgroundTransferProgress == nextProgressLabel
+                    currentTransfer.backgroundTransferProgress == nextProgressLabel &&
+                    currentTransfer.perImageDownloadProgress == progress.fileProgress &&
+                    currentTransfer.pendingDownloadFileNames == progress.pendingFileNames
                 ) {
                     return@onEach
                 }
@@ -8212,6 +8771,8 @@ class MainViewModel(
                         backgroundTransferTotal = progress.total,
                         backgroundTransferCurrent = processed,
                         backgroundTransferProgress = nextProgressLabel,
+                        perImageDownloadProgress = progress.fileProgress,
+                        pendingDownloadFileNames = progress.pendingFileNames,
                     ),
                 ) }
                 if (!progress.isRunning) {
@@ -8321,6 +8882,144 @@ class MainViewModel(
             updateUiState { it.copy(selectedCardSlotSource = appliedSlot) }
         }
         return Result.success(Unit)
+    }
+
+    /** User-supplied fixed camera IP for 고속전달, or null when unset. */
+    private fun wirelessTetherManualIp(): String? =
+        _uiState.value.autoImportConfig.wirelessTetherCameraIp
+            .trim()
+            .takeIf { it.isNotBlank() }
+
+    private suspend fun prepareLanWirelessTether(statusLabel: String): Boolean {
+        if (!cameraWifiManager.isInfrastructureWifiConnected()) {
+            return false
+        }
+        updateUiState { it.copy(refreshStatus = statusLabel, protocolError = null) }
+
+        lanWirelessTetherBaseUrl?.let { existingBaseUrl ->
+            if (defaultRepository.probeCameraBaseUrl(
+                    baseUrl = existingBaseUrl,
+                    timeoutMillis = LAN_CAMERA_PROBE_TIMEOUT_MS,
+                ).isSuccess
+            ) {
+                defaultRepository.useCameraBaseUrl(existingBaseUrl)
+                mtpIpWirelessEndpoint = null
+                D.wifi("LAN wireless tether camera still reachable at $existingBaseUrl")
+                return true
+            }
+        }
+
+        // Direct connect to a user-supplied camera IP (libgphoto2 ptpip-style) — far
+        // more reliable than a subnet sweep, and uses a generous timeout for the one host.
+        wirelessTetherManualIp()?.let { manualIp ->
+            val manualBaseUrl = "http://$manualIp"
+            if (defaultRepository.probeCameraBaseUrl(manualBaseUrl, timeoutMillis = 3_000).isSuccess) {
+                defaultRepository.useCameraBaseUrl(manualBaseUrl)
+                lanWirelessTetherBaseUrl = manualBaseUrl
+                mtpIpWirelessEndpoint = null
+                wirelessTetherLastTopMarker = null
+                D.wifi("LAN wireless tether camera reached at manual IP $manualBaseUrl")
+                return true
+            }
+            D.wifi("LAN wireless tether manual IP $manualBaseUrl not reachable over HTTP; continuing discovery")
+        }
+
+        val foundBaseUrl = discoverLanWirelessCameraBaseUrl() ?: return false
+        defaultRepository.useCameraBaseUrl(foundBaseUrl)
+        lanWirelessTetherBaseUrl = foundBaseUrl
+        mtpIpWirelessEndpoint = null
+        wirelessTetherLastTopMarker = null
+        D.wifi("LAN wireless tether camera discovered at $foundBaseUrl")
+        return true
+    }
+
+    private suspend fun prepareMtpIpWirelessTether(statusLabel: String): MtpIpCameraEndpoint? {
+        if (!cameraWifiManager.isInfrastructureWifiConnected()) {
+            return null
+        }
+        updateUiState { it.copy(refreshStatus = statusLabel, protocolError = null) }
+        mtpIpWirelessEndpoint?.let { existing ->
+            val stillReachable = mtpIpCameraClient.discover(
+                hosts = listOf(existing.host),
+                port = existing.port,
+                timeoutMs = LAN_CAMERA_PROBE_TIMEOUT_MS,
+                batchSize = 1,
+                totalTimeoutMs = 2_500L,
+            )
+            if (stillReachable != null) {
+                lanWirelessTetherBaseUrl = null
+                defaultRepository.resetCameraBaseUrl()
+                D.wifi("MTP/IP wireless tether camera still reachable at ${existing.host}:${existing.port}")
+                return existing
+            }
+        }
+
+        // Direct connect to a user-supplied camera IP first (libgphoto2 ptpip-style),
+        // with a longer per-host timeout than the subnet sweep allows.
+        wirelessTetherManualIp()?.let { manualIp ->
+            val direct = mtpIpCameraClient.discover(
+                hosts = listOf(manualIp),
+                timeoutMs = 3_000,
+                batchSize = 1,
+                totalTimeoutMs = 6_000L,
+            )
+            if (direct != null) {
+                mtpIpWirelessEndpoint = direct
+                lanWirelessTetherBaseUrl = null
+                defaultRepository.resetCameraBaseUrl()
+                wirelessTetherLastTopMarker = null
+                D.wifi("MTP/IP wireless tether camera reached at manual IP ${direct.host}:${direct.port}")
+                return direct
+            }
+            D.wifi("MTP/IP wireless tether manual IP $manualIp not reachable on 15740; continuing discovery")
+        }
+
+        val hosts = cameraWifiManager.currentLanProbeHosts()
+        if (hosts.isEmpty()) {
+            D.wifi("prepareMtpIpWirelessTether: no LAN probe hosts")
+            return null
+        }
+        val endpoint = mtpIpCameraClient.discover(
+            hosts = hosts,
+            timeoutMs = LAN_CAMERA_PROBE_TIMEOUT_MS,
+            batchSize = LAN_CAMERA_PROBE_BATCH_SIZE,
+            totalTimeoutMs = LAN_CAMERA_DISCOVERY_TIMEOUT_MS,
+        ) ?: return null
+        mtpIpWirelessEndpoint = endpoint
+        lanWirelessTetherBaseUrl = null
+        defaultRepository.resetCameraBaseUrl()
+        wirelessTetherLastTopMarker = null
+        D.wifi("MTP/IP wireless tether camera discovered at ${endpoint.host}:${endpoint.port}")
+        return endpoint
+    }
+
+    private suspend fun discoverLanWirelessCameraBaseUrl(): String? {
+        val hosts = cameraWifiManager.currentLanProbeHosts()
+        if (hosts.isEmpty()) {
+            D.wifi("discoverLanWirelessCameraBaseUrl: no LAN probe hosts")
+            return null
+        }
+        return withTimeoutOrNull(LAN_CAMERA_DISCOVERY_TIMEOUT_MS) {
+            coroutineScope {
+                hosts.distinct()
+                    .chunked(LAN_CAMERA_PROBE_BATCH_SIZE)
+                    .forEach { batch ->
+                        val found = batch.map { host ->
+                            async(Dispatchers.IO) {
+                                val baseUrl = "http://$host"
+                                defaultRepository.probeCameraBaseUrl(
+                                    baseUrl = baseUrl,
+                                    timeoutMillis = LAN_CAMERA_PROBE_TIMEOUT_MS,
+                                ).getOrNull()
+                            }
+                        }.awaitAll().firstOrNull()
+                        if (found != null) {
+                            return@coroutineScope found
+                        }
+                    }
+                null
+            }
+        }
     }
 
     private suspend fun ensureCameraWifiReady(
@@ -9527,6 +10226,153 @@ class MainViewModel(
             value.equals(SYNTHETIC_SHUTTER_AUTO, ignoreCase = true)
     }
 
+    private fun startWirelessTetherAutoImportWatcher(reason: String) {
+        if (wirelessTetherAutoImportJob?.isActive == true) {
+            return
+        }
+        wirelessTetherAutoImportJob = viewModelScope.launch {
+            D.transfer("Wireless tether auto-import watcher started ($reason)")
+            while (true) {
+                delay(WIRELESS_TETHER_AUTO_IMPORT_POLL_MS)
+                if (!isWirelessTetherAutoImportEligible()) {
+                    continue
+                }
+                runCatching {
+                    pollWirelessTetherAutoImportOnce()
+                }.onFailure { throwable ->
+                    D.err("TRANSFER", "Wireless tether auto-import poll failed", throwable)
+                }
+            }
+        }
+    }
+
+    private fun stopWirelessTetherAutoImportWatcher() {
+        wirelessTetherAutoImportJob?.cancel()
+        wirelessTetherAutoImportJob = null
+    }
+
+    private fun isWirelessTetherAutoImportEligible(): Boolean {
+        val hasWirelessTether = lanWirelessTetherBaseUrl != null || mtpIpWirelessEndpoint != null
+        if (!hasWirelessTether || !cameraWifiManager.isInfrastructureWifiConnected()) {
+            return false
+        }
+        val autoImportEnabled = _uiState.value.settings.firstOrNull { it.id == "auto_import" }?.enabled == true
+        if (!autoImportEnabled || _uiState.value.autoImportConfig.importTiming == "manual") {
+            return false
+        }
+        val transfer = _uiState.value.transferState
+        val remote = _uiState.value.remoteRuntime
+        return !transfer.backgroundTransferRunning &&
+            !transfer.isDownloading &&
+            !transfer.isLoading &&
+            !remote.liveViewActive &&
+            !remote.isBusy &&
+            !isCapturing
+    }
+
+    private suspend fun pollWirelessTetherAutoImportOnce() {
+        mtpIpWirelessEndpoint?.let { endpoint ->
+            pollMtpIpWirelessAutoImportOnce(endpoint)
+            return
+        }
+        val imageResult = repository.getImageList("/DCIM")
+        if (imageResult.isFailure) {
+            D.err("TRANSFER", "Wireless tether image-list poll failed", imageResult.exceptionOrNull())
+            return
+        }
+        val newestFirst = imageResult.getOrThrow().sortedByDescending(::autoImportSortKey)
+        val topMarker = newestFirst.firstOrNull()?.let(::autoImportSortKey) ?: return
+        val previousMarker = wirelessTetherLastTopMarker
+        if (previousMarker.isNullOrBlank()) {
+            wirelessTetherLastTopMarker = topMarker
+            D.transfer("Wireless tether auto-import baseline set to $topMarker")
+            return
+        }
+        if (topMarker <= previousMarker) {
+            return
+        }
+
+        val newImages = newestFirst.filter { autoImportSortKey(it) > previousMarker }
+        if (newImages.isEmpty()) {
+            wirelessTetherLastTopMarker = topMarker
+            return
+        }
+        wirelessTetherLastTopMarker = topMarker
+        D.transfer("Wireless tether auto-import detected ${newImages.size} new image(s)")
+        applyTransferImageList(
+            images = newestFirst,
+            isLoading = false,
+            errorMessage = null,
+            sourceCameraSsid = _uiState.value.selectedCameraSsid,
+            sourceKind = TransferSourceKind.WifiCamera,
+            sourceLabel = wifiTransferSourceLabel(
+                _uiState.value.selectedCardSlotSource,
+                _uiState.value.selectedCameraSsid,
+            ),
+            supportsDelete = true,
+            usbObjectHandlesByPath = emptyMap(),
+            usbAvailableStorageIds = emptyList(),
+            selectedUsbStorageIds = null,
+        )
+        startAutoImportFromImages(
+            images = newImages,
+            displayImages = newestFirst,
+        )
+    }
+
+    private suspend fun pollMtpIpWirelessAutoImportOnce(endpoint: MtpIpCameraEndpoint) {
+        val eventHandle = mtpIpCameraClient.waitForNewObjectEvent(
+            endpoint = endpoint,
+            timeoutMs = 2_500,
+        ).getOrNull()
+        val imageResult = mtpIpCameraClient.loadImages(endpoint)
+        if (imageResult.isFailure) {
+            D.err("TRANSFER", "MTP/IP wireless tether image-list poll failed", imageResult.exceptionOrNull())
+            return
+        }
+        val newestFirst = imageResult.getOrThrow()
+            .map { it.image }
+            .sortedByDescending(::autoImportSortKey)
+        val topMarker = newestFirst.firstOrNull()?.let(::autoImportSortKey) ?: return
+        val previousMarker = wirelessTetherLastTopMarker
+        if (previousMarker.isNullOrBlank()) {
+            wirelessTetherLastTopMarker = topMarker
+            D.transfer("MTP/IP auto-import baseline set to $topMarker")
+            return
+        }
+        val eventImages = eventHandle?.let { handle ->
+            newestFirst.filter { it.mtpIpHandle == handle }
+        }.orEmpty()
+        val markerImages = newestFirst.filter { autoImportSortKey(it) > previousMarker }
+        val newImages = (eventImages + markerImages)
+            .distinctBy { it.fullPath }
+            .sortedByDescending(::autoImportSortKey)
+        if (newImages.isEmpty()) {
+            if (topMarker > previousMarker) {
+                wirelessTetherLastTopMarker = topMarker
+            }
+            return
+        }
+        wirelessTetherLastTopMarker = topMarker
+        D.transfer("MTP/IP wireless tether auto-import detected ${newImages.size} new image(s)")
+        applyTransferImageList(
+            images = newestFirst,
+            isLoading = false,
+            errorMessage = null,
+            sourceCameraSsid = _uiState.value.selectedCameraSsid,
+            sourceKind = TransferSourceKind.WifiCamera,
+            sourceLabel = mtpIpTransferSourceLabel(endpoint),
+            supportsDelete = false,
+            usbObjectHandlesByPath = emptyMap(),
+            usbAvailableStorageIds = emptyList(),
+            selectedUsbStorageIds = null,
+        )
+        startAutoImportFromImages(
+            images = newImages,
+            displayImages = newestFirst,
+        )
+    }
+
     private fun autoImportMarkerKey(ssid: String?): String {
         val normalizedSsid = ssid?.trim()?.ifBlank { null } ?: "default"
         return "$AUTO_IMPORT_MARKER_PREFIX$normalizedSsid"
@@ -9551,7 +10397,10 @@ class MainViewModel(
         startAutoImportFromImages(images)
     }
 
-    private suspend fun startAutoImportFromImages(images: List<CameraImage>) {
+    private suspend fun startAutoImportFromImages(
+        images: List<CameraImage>,
+        displayImages: List<CameraImage> = images,
+    ) {
         if (images.isEmpty()) {
             D.transfer("startAutoImportFromImages: no images available")
             return
@@ -9559,6 +10408,7 @@ class MainViewModel(
 
         val config = _uiState.value.autoImportConfig
         val newestFirst = images.sortedByDescending(::autoImportSortKey)
+        val displayNewestFirst = displayImages.sortedByDescending(::autoImportSortKey)
         val skipDuplicates = _uiState.value.settings.firstOrNull { it.id == "import_skip_duplicates" }?.enabled != false
         val importNewOnly = _uiState.value.settings.firstOrNull { it.id == "import_new_only" }?.enabled != false
 
@@ -9618,14 +10468,16 @@ class MainViewModel(
         D.transfer("startAutoImportFromImages: starting background download of ${toDownload.size} images")
         prepareWifiTransferPipeline()
         dev.dblink.core.download.ImageDownloadService.startDownload(
-            getApplication<Application>(),
-            toDownload,
-            config.saveLocation,
-            _uiState.value.selectedCardSlotSource,
+            context = getApplication<Application>(),
+            images = toDownload,
+            saveLocation = config.saveLocation,
+            folderStructure = config.folderStructure,
+            playTargetSlot = _uiState.value.selectedCardSlotSource,
+            cameraBaseUrl = defaultRepository.currentCameraBaseUrl,
         )
         updateUiState { current -> current.copy(
             transferState = current.transferState.copy(
-                images = newestFirst,
+                images = displayNewestFirst,
                 isDownloading = true,
                 batchDownloadTotal = toDownload.size,
                 batchDownloadCurrent = 0,
@@ -9679,6 +10531,8 @@ class MainViewModel(
             saveLocation = preferencesRepository.loadStringPref("import_save_location", "Pictures/db link"),
             fileFormat = preferencesRepository.loadStringPref("import_file_format", "jpeg"),
             importTiming = preferencesRepository.loadStringPref("import_timing", "manual"),
+            folderStructure = preferencesRepository.loadStringPref("import_folder_structure", "date_day"),
+            wirelessTetherCameraIp = preferencesRepository.loadStringPref("wireless_tether_camera_ip", ""),
         )
         val libraryCompatibilityMode = LibraryCompatibilityMode.fromPreferenceValue(
             preferencesRepository.loadStringPref(
@@ -9753,66 +10607,6 @@ class MainViewModel(
         // Wi-Fi, the Wi-Fi observer handles the session without a competing launch path.
     }
 
-    private fun pushGeoTagSample(
-        sample: GeoTagLocationSample,
-        statusLabel: String,
-    ) {
-        val updatedGeoTagging = _uiState.value.geoTagging.copy(
-            latestSample = sample,
-            samples = (_uiState.value.geoTagging.samples + sample)
-                .sortedByDescending { it.capturedAtMillis }
-                .distinctBy { it.capturedAtMillis to it.latitude to it.longitude }
-                .take(64),
-            statusLabel = statusLabel,
-            totalPinsCaptured = _uiState.value.geoTagging.totalPinsCaptured + 1,
-        )
-        updateUiState { it.copy(geoTagging = updatedGeoTagging) }
-        persistGeoTagging(updatedGeoTagging)
-        refreshMatchedGeoTags()
-        syncGeoTagStatusNotification(updatedGeoTagging)
-        deepSkyLiveStackCoordinator.updateSkyHintContext(sample, null)
-    }
-
-    private fun syncGeoTagTrackingState(state: GeoTagTrackingState) {
-        val current = _uiState.value.geoTagging
-        val latestChanged = current.latestSample?.capturedAtMillis != state.latestSample?.capturedAtMillis
-        val nextSnapshot = current.copy(
-            sessionActive = state.isRunning,
-            statusLabel = state.statusLabel,
-            latestSample = state.latestSample ?: current.latestSample,
-            samples = if (state.samples.isNotEmpty()) state.samples else current.samples,
-            totalPinsCaptured = maxOf(current.totalPinsCaptured, state.totalPinsCaptured),
-        )
-        if (nextSnapshot == current) {
-            return
-        }
-        updateUiState { it.copy(geoTagging = nextSnapshot) }
-        if (latestChanged) {
-            nextSnapshot.latestSample?.let { sample ->
-                refreshMatchedGeoTags()
-                deepSkyLiveStackCoordinator.updateSkyHintContext(sample, null)
-            }
-        }
-        if (!state.isRunning) {
-            persistGeoTagging(nextSnapshot)
-        }
-        syncGeoTagStatusNotification(nextSnapshot)
-    }
-
-    private fun syncGeoTagStatusNotification(snapshot: GeoTaggingSnapshot = _uiState.value.geoTagging) {
-        if (snapshot.sessionActive) {
-            geoTagStatusNotifier.cancel()
-            return
-        }
-        geoTagStatusNotifier.update(snapshot)
-    }
-
-    private fun persistGeoTagging(snapshot: GeoTaggingSnapshot) {
-        viewModelScope.launch {
-            preferencesRepository.saveGeoTagging(snapshot)
-        }
-    }
-
     private fun updatePreviewDetails(image: CameraImage, imageBytes: ByteArray) {
         val geoTagInfo = extractPreviewGeoTag(imageBytes)
         if (geoTagInfo == null) {
@@ -9827,320 +10621,6 @@ class MainViewModel(
                 matchedGeoTags = transferState.matchedGeoTags + (image.fileName to geoTagInfo),
             ),
         ) }
-    }
-
-    private fun extractPreviewGeoTag(imageBytes: ByteArray): ImageGeoTagInfo? {
-        return runCatching {
-            val exif = ByteArrayInputStream(imageBytes).use { inputStream ->
-                ExifInterface(inputStream)
-            }
-            val photoCapturedAtMillis = readExifCapturedAtMillis(exif)
-            val latLong = exif.latLong
-            if (latLong != null) {
-                return@runCatching ImageGeoTagInfo(
-                    latitude = latLong[0],
-                    longitude = latLong[1],
-                    matchedSampleAtMillis = photoCapturedAtMillis ?: 0L,
-                    photoCapturedAtMillis = photoCapturedAtMillis,
-                    sourceLabel = "Embedded GPS metadata",
-                    altitudeMeters = exif.getAltitude(Double.NaN).takeUnless { it.isNaN() },
-                )
-            }
-
-            if (!isAutoGeoMatchEnabled()) {
-                return@runCatching null
-            }
-
-            val match = photoCapturedAtMillis?.let { capturedAt ->
-                GeoTagMatcher.matchNearestSample(
-                    photoCapturedAtMillis = capturedAt,
-                    samples = _uiState.value.geoTagging.samples,
-                    clockOffsetMinutes = _uiState.value.geoTagging.clockOffsetMinutes,
-                    maxDistanceMinutes = _uiState.value.geotagConfig.matchWindowMinutes,
-                )
-            } ?: return@runCatching null
-
-            ImageGeoTagInfo(
-                latitude = match.latitude,
-                longitude = match.longitude,
-                matchedSampleAtMillis = match.capturedAtMillis,
-                photoCapturedAtMillis = photoCapturedAtMillis,
-                sourceLabel = "Matched from phone geotag log",
-                placeName = match.placeName,
-                altitudeMeters = match.altitude,
-            )
-        }.getOrNull()
-    }
-
-    private fun decodeTransferPreviewBitmap(imageBytes: ByteArray): Bitmap? {
-        decodeSampledPreviewBitmap(imageBytes)?.let { return it }
-        decodePlatformPreviewBitmap(imageBytes)?.let { return it }
-        extractTiffPreviewBytes(imageBytes)?.let { previewBytes ->
-            decodeSampledPreviewBitmap(previewBytes)?.let { return it }
-            decodePlatformPreviewBitmap(previewBytes)?.let { return it }
-        }
-        extractExifThumbnailBytes(imageBytes)?.let { thumbnailBytes ->
-            decodeSampledPreviewBitmap(thumbnailBytes)?.let { return it }
-            decodePlatformPreviewBitmap(thumbnailBytes)?.let { return it }
-        }
-        extractEmbeddedJpegPreview(imageBytes)?.let { embeddedPreview ->
-            decodeSampledPreviewBitmap(embeddedPreview)?.let { return it }
-            decodePlatformPreviewBitmap(embeddedPreview)?.let { return it }
-        }
-        return null
-    }
-
-    private fun decodePlatformPreviewBitmap(imageBytes: ByteArray): Bitmap? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
-            return null
-        }
-        return runCatching {
-            val source = ImageDecoder.createSource(ByteBuffer.wrap(imageBytes))
-            ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
-                val longestSide = maxOf(info.size.width, info.size.height)
-                if (longestSide > 2048) {
-                    val scale = 2048f / longestSide.toFloat()
-                    decoder.setTargetSize(
-                        (info.size.width * scale).toInt().coerceAtLeast(1),
-                        (info.size.height * scale).toInt().coerceAtLeast(1),
-                    )
-                }
-                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-            }
-        }.getOrNull()
-    }
-
-    private fun extractTiffPreviewBytes(imageBytes: ByteArray): ByteArray? {
-        if (imageBytes.size < 8) {
-            return null
-        }
-        val byteOrder = when {
-            imageBytes[0] == 'I'.code.toByte() && imageBytes[1] == 'I'.code.toByte() -> ByteOrder.LITTLE_ENDIAN
-            imageBytes[0] == 'M'.code.toByte() && imageBytes[1] == 'M'.code.toByte() -> ByteOrder.BIG_ENDIAN
-            else -> return null
-        }
-        val firstIfdOffset = readTiffUInt(imageBytes, 4, byteOrder)?.toInt() ?: return null
-        val pendingOffsets = ArrayDeque<Int>().apply {
-            add(firstIfdOffset)
-        }
-        val visitedOffsets = linkedSetOf<Int>()
-        val previewCandidates = linkedSetOf<Pair<Int, Int>>()
-
-        while (pendingOffsets.isNotEmpty()) {
-            val ifdOffset = pendingOffsets.removeFirst()
-            if (!visitedOffsets.add(ifdOffset) || ifdOffset <= 0 || ifdOffset + 2 > imageBytes.size) {
-                continue
-            }
-            val entryCount = readTiffUShort(imageBytes, ifdOffset, byteOrder) ?: continue
-            var jpegOffset: Int? = null
-            var jpegLength: Int? = null
-            var stripOffsets: LongArray? = null
-            var stripByteCounts: LongArray? = null
-            var tileOffsets: LongArray? = null
-            var tileByteCounts: LongArray? = null
-            for (entryIndex in 0 until entryCount) {
-                val entryOffset = ifdOffset + 2 + entryIndex * 12
-                if (entryOffset + 12 > imageBytes.size) {
-                    break
-                }
-                val tag = readTiffUShort(imageBytes, entryOffset, byteOrder) ?: continue
-                val type = readTiffUShort(imageBytes, entryOffset + 2, byteOrder) ?: continue
-                val count = readTiffUInt(imageBytes, entryOffset + 4, byteOrder)?.toInt() ?: continue
-                val values = readTiffValues(imageBytes, entryOffset + 8, type, count, byteOrder)
-                when (tag) {
-                    0x0201 -> jpegOffset = values.firstOrNull()?.toInt()
-                    0x0202 -> jpegLength = values.firstOrNull()?.toInt()
-                    0x0111 -> stripOffsets = values
-                    0x0117 -> stripByteCounts = values
-                    0x0144 -> tileOffsets = values
-                    0x0145 -> tileByteCounts = values
-                    0x014A, 0x8769, 0x8825, 0xA005 -> {
-                        values.mapTo(pendingOffsets) { it.toInt() }
-                    }
-                }
-            }
-
-            if (jpegOffset != null && jpegLength != null) {
-                previewCandidates += jpegOffset to jpegLength
-            }
-            if (stripOffsets != null && stripByteCounts != null && stripOffsets.size == stripByteCounts.size) {
-                stripOffsets.indices.forEach { index ->
-                    previewCandidates += stripOffsets[index].toInt() to stripByteCounts[index].toInt()
-                }
-            }
-            if (tileOffsets != null && tileByteCounts != null && tileOffsets.size == tileByteCounts.size) {
-                tileOffsets.indices.forEach { index ->
-                    previewCandidates += tileOffsets[index].toInt() to tileByteCounts[index].toInt()
-                }
-            }
-
-            val nextIfdOffset = readTiffUInt(imageBytes, ifdOffset + 2 + entryCount * 12, byteOrder)?.toInt()
-            if (nextIfdOffset != null && nextIfdOffset > 0) {
-                pendingOffsets += nextIfdOffset
-            }
-        }
-
-        return previewCandidates
-            .asSequence()
-            .filter { (offset, length) ->
-                offset >= 0 &&
-                    length > 32 &&
-                    offset + length <= imageBytes.size
-            }
-            .sortedByDescending { (_, length) -> length }
-            .mapNotNull { (offset, length) ->
-                imageBytes.copyOfRange(offset, offset + length).let { candidate ->
-                    if (candidate.size >= 2 &&
-                        candidate[0] == 0xFF.toByte() &&
-                        candidate[1] == 0xD8.toByte()
-                    ) {
-                        candidate
-                    } else {
-                        extractTiffPreviewBytes(candidate) ?: extractEmbeddedJpegPreview(candidate)
-                    }
-                }
-            }
-            .firstOrNull()
-    }
-
-    private fun decodeSampledPreviewBitmap(
-        imageBytes: ByteArray,
-        maxDimension: Int = 2048,
-    ): Bitmap? {
-        val bounds = BitmapFactory.Options().apply {
-            inJustDecodeBounds = true
-        }
-        BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, bounds)
-        val options = BitmapFactory.Options()
-        if (bounds.outWidth > 0 && bounds.outHeight > 0) {
-            var sampleSize = 1
-            val longestSide = maxOf(bounds.outWidth, bounds.outHeight)
-            while (longestSide / sampleSize > maxDimension) {
-                sampleSize *= 2
-            }
-            options.inSampleSize = sampleSize.coerceAtLeast(1)
-        }
-        return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, options)
-    }
-
-    private fun extractExifThumbnailBytes(imageBytes: ByteArray): ByteArray? {
-        return runCatching {
-            ByteArrayInputStream(imageBytes).use { inputStream ->
-                val exif = ExifInterface(inputStream)
-                if (exif.hasThumbnail()) {
-                    exif.thumbnailBytes
-                } else {
-                    null
-                }
-            }
-        }.getOrNull()
-    }
-
-    private fun extractEmbeddedJpegPreview(imageBytes: ByteArray): ByteArray? {
-        var bestStart = -1
-        var bestEnd = -1
-        var index = 0
-        while (index < imageBytes.size - 1) {
-            if (imageBytes[index] == 0xFF.toByte() && imageBytes[index + 1] == 0xD8.toByte()) {
-                var end = index + 2
-                while (end < imageBytes.size - 1) {
-                    if (imageBytes[end] == 0xFF.toByte() && imageBytes[end + 1] == 0xD9.toByte()) {
-                        val candidateEnd = end + 2
-                        if (candidateEnd - index > bestEnd - bestStart) {
-                            bestStart = index
-                            bestEnd = candidateEnd
-                        }
-                        break
-                    }
-                    end++
-                }
-                index = end
-            } else {
-                index++
-            }
-        }
-        return if (bestStart >= 0 && bestEnd > bestStart) {
-            imageBytes.copyOfRange(bestStart, bestEnd)
-        } else {
-            null
-        }
-    }
-
-    private fun readTiffUShort(
-        data: ByteArray,
-        offset: Int,
-        byteOrder: ByteOrder,
-    ): Int? {
-        if (offset < 0 || offset + 2 > data.size) {
-            return null
-        }
-        return ByteBuffer.wrap(data, offset, 2).order(byteOrder).short.toInt() and 0xFFFF
-    }
-
-    private fun readTiffUInt(
-        data: ByteArray,
-        offset: Int,
-        byteOrder: ByteOrder,
-    ): Long? {
-        if (offset < 0 || offset + 4 > data.size) {
-            return null
-        }
-        return ByteBuffer.wrap(data, offset, 4).order(byteOrder).int.toLong() and 0xFFFFFFFFL
-    }
-
-    private fun readTiffValues(
-        data: ByteArray,
-        valueFieldOffset: Int,
-        type: Int,
-        count: Int,
-        byteOrder: ByteOrder,
-    ): LongArray {
-        val typeSize = when (type) {
-            1, 2, 6, 7 -> 1
-            3, 8 -> 2
-            4, 9, 13 -> 4
-            5, 10, 12 -> 8
-            16, 17, 18 -> 8
-            else -> return longArrayOf()
-        }
-        val totalBytes = typeSize * count
-        val dataOffset = if (totalBytes <= 4) {
-            valueFieldOffset
-        } else {
-            readTiffUInt(data, valueFieldOffset, byteOrder)?.toInt() ?: return longArrayOf()
-        }
-        if (dataOffset < 0 || dataOffset + totalBytes > data.size) {
-            return longArrayOf()
-        }
-        return LongArray(count) { index ->
-            val elementOffset = dataOffset + index * typeSize
-            when (type) {
-                1, 2, 6, 7 -> data[elementOffset].toLong() and 0xFFL
-                3, 8 -> readTiffUShort(data, elementOffset, byteOrder)?.toLong() ?: 0L
-                4, 9, 13 -> readTiffUInt(data, elementOffset, byteOrder) ?: 0L
-                16, 17, 18 -> {
-                    if (elementOffset + 8 > data.size) {
-                        0L
-                    } else {
-                        ByteBuffer.wrap(data, elementOffset, 8).order(byteOrder).long
-                    }
-                }
-                else -> 0L
-            }
-        }
-    }
-
-    private fun readExifCapturedAtMillis(exif: ExifInterface): Long? {
-        val candidateValues = listOf(
-            exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL),
-            exif.getAttribute(ExifInterface.TAG_DATETIME_DIGITIZED),
-            exif.getAttribute(ExifInterface.TAG_DATETIME),
-        )
-        val formatter = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
-        formatter.timeZone = TimeZone.getDefault()
-        return candidateValues.firstNotNullOfOrNull { value ->
-            value?.let { formatter.parse(it)?.time }
-        }
     }
 
     private fun markPreviewUnavailable(fileName: String) {
@@ -10161,42 +10641,6 @@ class MainViewModel(
                 previewUnavailable = current.previewUnavailable - fileName,
             ),
         ) }
-    }
-
-    private fun refreshMatchedGeoTags() {
-        val currentTransfer = _uiState.value.transferState
-        if (currentTransfer.matchedGeoTags.isEmpty()) return
-
-        val refreshed = currentTransfer.matchedGeoTags.mapNotNull { (fileName, geoTagInfo) ->
-            if (geoTagInfo.sourceLabel.startsWith("Embedded", ignoreCase = true)) {
-                fileName to geoTagInfo
-            } else if (!isAutoGeoMatchEnabled()) {
-                null
-            } else {
-                val photoTime = geoTagInfo.photoCapturedAtMillis ?: return@mapNotNull null
-                GeoTagMatcher.matchNearestSample(
-                    photoCapturedAtMillis = photoTime,
-                    samples = _uiState.value.geoTagging.samples,
-                    clockOffsetMinutes = _uiState.value.geoTagging.clockOffsetMinutes,
-                    maxDistanceMinutes = _uiState.value.geotagConfig.matchWindowMinutes,
-                )?.let { sample ->
-                    fileName to geoTagInfo.copy(
-                        latitude = sample.latitude,
-                        longitude = sample.longitude,
-                        matchedSampleAtMillis = sample.capturedAtMillis,
-                        sourceLabel = "Matched from phone geotag log",
-                    )
-                }
-            }
-        }.toMap()
-
-        updateUiState { it.copy(
-            transferState = currentTransfer.copy(matchedGeoTags = refreshed),
-        ) }
-    }
-
-    private fun isAutoGeoMatchEnabled(): Boolean {
-        return _uiState.value.settings.firstOrNull { it.id == "time_match_geotags" }?.enabled == true
     }
 
     private fun resolveWorkbenchVisibility(settings: List<SettingItem>): Boolean {

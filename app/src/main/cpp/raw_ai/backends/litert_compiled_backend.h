@@ -55,6 +55,9 @@ private:
 
     // Model configuration copy
     ModelConfig config_;
+    int imageInputIndex_ = -1;
+    int conditionInputIndex_ = -1;
+    int imageOutputIndex_ = -1;
 
     // Cache diagnostic statistics
     bool isInitialized_ = false;

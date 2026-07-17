@@ -24,6 +24,8 @@ class RawAiTestSession(
     private val outputBuffer = ByteBuffer.allocateDirect(elements * bytesPerElement).order(ByteOrder.nativeOrder())
     private val outputMap = mutableMapOf<Int, Any>(0 to outputBuffer)
     private val interpreter: Interpreter
+    private var imageInputPosition = -1
+    private var conditionInputPosition = -1
     val modelPath: String
     val modelSha256: String
     val modelLoadMillis: Double
@@ -68,7 +70,10 @@ class RawAiTestSession(
         inputBuffer.rewind()
         conditionBuffer.rewind()
         outputBuffer.rewind()
-        interpreter.runForMultipleInputsOutputs(arrayOf(inputBuffer, conditionBuffer), outputMap)
+        val orderedInputs = arrayOfNulls<Any>(interpreter.inputTensorCount)
+        orderedInputs[imageInputPosition] = inputBuffer
+        orderedInputs[conditionInputPosition] = conditionBuffer
+        interpreter.runForMultipleInputsOutputs(orderedInputs, outputMap)
         outputBuffer.rewind()
         when (precision) {
             ModelPrecision.FP32 -> for (index in outputNchw.indices) outputNchw[index] = outputBuffer.float
@@ -88,8 +93,17 @@ class RawAiTestSession(
         check(interpreter.inputTensorCount == 2 && interpreter.outputTensorCount == 1) {
             "Tensor count mismatch for $precision: inputs=${interpreter.inputTensorCount} outputs=${interpreter.outputTensorCount}"
         }
-        val input = interpreter.getInputTensor(0)
-        val condition = interpreter.getInputTensor(1)
+        for (position in 0 until interpreter.inputTensorCount) {
+            when (interpreter.getInputTensor(position).name()) {
+                "input" -> imageInputPosition = position
+                "cond" -> conditionInputPosition = position
+            }
+        }
+        check(imageInputPosition >= 0 && conditionInputPosition >= 0) {
+            "Missing named input contract: expected input and cond"
+        }
+        val input = interpreter.getInputTensor(imageInputPosition)
+        val condition = interpreter.getInputTensor(conditionInputPosition)
         val output = interpreter.getOutputTensor(0)
         val inputType = runCatching { input.dataType() }.getOrNull()
         val conditionType = runCatching { condition.dataType() }.getOrNull()

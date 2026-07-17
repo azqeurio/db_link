@@ -389,6 +389,58 @@ fun SettingsScreen(
                     },
                 )
                 Text(
+                    text = stringResource(R.string.settings_folder_structure_label),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Chalk.copy(alpha = 0.46f),
+                    fontWeight = FontWeight.Bold,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OptionChip(
+                        label = stringResource(R.string.settings_folder_structure_date_day),
+                        selected = autoImportConfig.folderStructure == "date_day",
+                        modifier = Modifier.weight(1f),
+                    ) { onAutoImportConfigChanged(autoImportConfig.copy(folderStructure = "date_day")) }
+                    OptionChip(
+                        label = stringResource(R.string.settings_folder_structure_date_month),
+                        selected = autoImportConfig.folderStructure == "date_month",
+                        modifier = Modifier.weight(1f),
+                    ) { onAutoImportConfigChanged(autoImportConfig.copy(folderStructure = "date_month")) }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OptionChip(
+                        label = stringResource(R.string.settings_folder_structure_date_year),
+                        selected = autoImportConfig.folderStructure == "date_year",
+                        modifier = Modifier.weight(1f),
+                    ) { onAutoImportConfigChanged(autoImportConfig.copy(folderStructure = "date_year")) }
+                    OptionChip(
+                        label = stringResource(R.string.settings_folder_structure_flat),
+                        selected = autoImportConfig.folderStructure == "flat",
+                        modifier = Modifier.weight(1f),
+                    ) { onAutoImportConfigChanged(autoImportConfig.copy(folderStructure = "flat")) }
+                }
+                Text(
+                    text = stringResource(
+                        R.string.settings_folder_structure_preview,
+                        buildSaveLocationPreview(autoImportConfig.saveLocation, autoImportConfig.folderStructure),
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Chalk.copy(alpha = 0.58f),
+                    lineHeight = 18.sp,
+                )
+                EditablePathRow(
+                    label = stringResource(R.string.settings_wireless_tether_ip_label),
+                    currentValue = autoImportConfig.wirelessTetherCameraIp,
+                    onValueChanged = { newIp ->
+                        onAutoImportConfigChanged(autoImportConfig.copy(wirelessTetherCameraIp = newIp.trim()))
+                    },
+                )
+                Text(
+                    text = stringResource(R.string.settings_wireless_tether_ip_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Chalk.copy(alpha = 0.58f),
+                    lineHeight = 18.sp,
+                )
+                Text(
                     text = stringResource(R.string.settings_auto_import_format_label),
                     style = MaterialTheme.typography.labelMedium,
                     color = Chalk.copy(alpha = 0.46f),
@@ -1079,9 +1131,10 @@ private fun LanguageButton(
             text = label,
             style = MaterialTheme.typography.labelSmall,
             textAlign = TextAlign.Center,
-            maxLines = 1,
-            softWrap = false,
+            maxLines = 2,
+            softWrap = true,
             overflow = TextOverflow.Ellipsis,
+            lineHeight = 12.sp,
         )
     }
 }
@@ -1106,9 +1159,28 @@ private fun OptionChip(
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
-            maxLines = 1,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            lineHeight = 12.sp,
         )
     }
+}
+
+/**
+ * Example destination path shown under the folder-structure picker, e.g.
+ * `Pictures/db link/2026-06-25/_6250001.JPG`, so the user can see exactly where
+ * a downloaded photo will land for the chosen base location + structure.
+ */
+private fun buildSaveLocationPreview(saveLocation: String, folderStructure: String): String {
+    val base = saveLocation.ifBlank { "Pictures/db link" }
+        .let { if (it.startsWith("Pictures")) it else "Pictures/${it.removePrefix("Pictures/")}" }
+        .trimEnd('/')
+    val subfolder = dev.dblink.core.model.DownloadFolderStructure
+        .fromPreferenceValue(folderStructure)
+        .subfolder(java.time.LocalDate.now())
+    val folder = if (subfolder.isBlank()) base else "$base/$subfolder"
+    return "$folder/_6250001.JPG"
 }
 
 @Composable

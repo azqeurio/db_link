@@ -48,40 +48,43 @@ class FullImageValidationTest {
     }
 
     @Test
-    fun fp16ExecutesDeterministicallyAndIsComparedWithFp32() {
+    fun standardAndSuperLightExecuteDeterministicallyAndAreCompared() {
         val input = referenceInput().data
-        fp32Session().use { fp32 ->
-            val fp16 = try {
-                fp16Session()
-            } catch (unsupported: IllegalStateException) {
-                val reason = unsupported.message.orEmpty()
-                println("PR3_FP16_UNSUPPORTED runtime=org.tensorflow:tensorflow-lite:2.16.1 reason=${reason.replace('\n', ' ')}")
-                assertTrue(reason.contains("input_type == kTfLiteFloat32"))
-                assertTrue(reason.contains("CONV_2D"))
-                return
-            }
-            fp16.use {
-                val fp32Output = FloatArray(TILE_ELEMENTS)
-                val fp16Output = FloatArray(TILE_ELEMENTS)
+        session("superlight", ModelPrecision.FP32).use { superlight ->
+            session("standard", ModelPrecision.FP32).use { standard ->
+                val superlightOutput = FloatArray(TILE_ELEMENTS)
+                val standardOutput = FloatArray(TILE_ELEMENTS)
                 val repeat = FloatArray(TILE_ELEMENTS)
-                fp32.run(input, 0f, fp32Output)
-                it.run(input, 0f, fp16Output)
-                it.run(input, 0f, repeat)
-                val summary = Pr3Metrics.summarize(nchwToHwc(fp16Output))
-                val difference = Pr3Metrics.difference(fp32Output, fp16Output)
-                val determinism = Pr3Metrics.difference(fp16Output, repeat)
-                println("PR3_FP16 modelPath=${it.modelPath} loadMs=${it.modelLoadMillis} finite=${summary.finite} nan=${summary.nan} " +
-                    "posInf=${summary.positiveInfinity} negInf=${summary.negativeInfinity} min=${summary.minimum} max=${summary.maximum} mean=${summary.mean}")
-                println("PR3_FP16_VS_FP32 max=${difference.maximum} mean=${difference.mean} rmse=${difference.rmse} " +
-                    "psnrPeak1=${difference.psnrPeakOne} changedPercent=${difference.changedPercent} index=${difference.largestIndex} channels=${difference.channels}")
-                println("PR3_FP16_DETERMINISM max=${determinism.maximum} mean=${determinism.mean}")
+                superlight.run(input, 0f, superlightOutput)
+                standard.run(input, 0f, standardOutput)
+                standard.run(input, 0f, repeat)
+                val summary = Pr3Metrics.summarize(nchwToHwc(standardOutput))
+                val difference = Pr3Metrics.difference(superlightOutput, standardOutput)
+                val determinism = Pr3Metrics.difference(standardOutput, repeat)
+                println("PHASE5_VARIANTS standard=${standard.modelPath} superlight=${superlight.modelPath} " +
+                    "finite=${summary.finite} maxDifference=${difference.maximum} meanDifference=${difference.mean} " +
+                    "rmse=${difference.rmse} standardRepeatMax=${determinism.maximum}")
                 assertEquals(TILE_ELEMENTS, summary.finite)
                 assertEquals(0, summary.nan + summary.positiveInfinity + summary.negativeInfinity)
                 assertEquals(0.0, determinism.maximum, 0.0)
-                assertTrue("FP16 max difference=${difference.maximum}", difference.maximum <= 0.01)
-                assertTrue("FP16 mean difference=${difference.mean}", difference.mean <= 0.001)
             }
         }
+    }
+
+    @Test
+    fun explicitModelSwitchingDoesNotReuseStaleState() {
+        val input = referenceInput().data
+        val firstSuperLight = FloatArray(TILE_ELEMENTS)
+        val standardOutput = FloatArray(TILE_ELEMENTS)
+        val secondSuperLight = FloatArray(TILE_ELEMENTS)
+        session("superlight", ModelPrecision.FP32).use { it.run(input, 1f, firstSuperLight) }
+        session("standard", ModelPrecision.FP32).use { it.run(input, 1f, standardOutput) }
+        session("superlight", ModelPrecision.FP32).use { it.run(input, 1f, secondSuperLight) }
+        val restored = Pr3Metrics.difference(firstSuperLight, secondSuperLight)
+        val distinct = Pr3Metrics.difference(firstSuperLight, standardOutput)
+        println("PHASE5_SWITCH superlightRepeatMax=${restored.maximum} standardDifferenceMax=${distinct.maximum}")
+        assertEquals(0.0, restored.maximum, 0.0)
+        assertTrue(distinct.maximum > 0.0)
     }
 
     @Test
@@ -144,8 +147,7 @@ class FullImageValidationTest {
             "heapBefore=$heapBefore peakObserved=$peakHeap heapAfter=$heapAfter nativeHeap=${Debug.getNativeHeapAllocatedSize()}")
     }
 
-    private fun fp32Session(): RawAiTestSession = session("cpu_reference", ModelPrecision.FP32)
-    private fun fp16Session(): RawAiTestSession = session("accelerated", ModelPrecision.FP16)
+    private fun fp32Session(): RawAiTestSession = session("superlight", ModelPrecision.FP32)
 
     private fun session(key: String, precision: ModelPrecision): RawAiTestSession {
         val manifest = JSONObject(targetContext.assets.open("raw_ai/model_manifest.json").bufferedReader().use { it.readText() })

@@ -24,7 +24,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.dblink.ui.theme.AppleBlue
 import dev.dblink.ui.theme.Chalk
 import dev.dblink.ui.theme.Graphite
@@ -86,6 +88,9 @@ fun ActionCard(
                             style = MaterialTheme.typography.titleSmall,
                             color = if (enabled) Chalk else Chalk.copy(alpha = 0.35f),
                             fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            lineHeight = 16.sp,
                         )
                         Box(
                             modifier = Modifier

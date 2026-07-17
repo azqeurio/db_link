@@ -25,6 +25,8 @@ import dev.dblink.core.model.TetherPhoneImportFormat
 import dev.dblink.core.preferences.AppPreferencesRepository
 import dev.dblink.core.protocol.CameraImage
 import dev.dblink.core.protocol.DefaultCameraRepository
+import dev.dblink.core.usb.MtpIpCameraClient
+import dev.dblink.core.usb.MtpIpCameraEndpoint
 import dev.dblink.core.usb.OmCaptureUsbSavedMedia
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -40,6 +42,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -51,7 +54,6 @@ import java.net.ConnectException
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.time.LocalDate
-import java.time.format.DateTimeFormatter
 
 data class DownloadProgress(
     val total: Int = 0,
@@ -63,11 +65,16 @@ data class DownloadProgress(
     val isCancelled: Boolean = false,
     val etaMillis: Long = 0L,
     val title: String = "Downloading from camera",
+    /** Per-file download fraction (0f..1f) for files currently transferring. */
+    val fileProgress: Map<String, Float> = emptyMap(),
+    /** File names queued in the current batch that have not finished yet (active + waiting). */
+    val pendingFileNames: Set<String> = emptySet(),
 )
 
 data class UsbImportRequest(
     val handle: Int,
     val fileName: String,
+    val importFormat: TetherPhoneImportFormat? = null,
 )
 
 private data class DownloadRequestItem(
@@ -81,6 +88,9 @@ private data class DownloadRequestItem(
     val usbHandle: Int? = null,
     val usbMode: String = "",
     val usbImportFormat: String = "",
+    val mtpIpHost: String? = null,
+    val mtpIpPort: Int = 0,
+    val mtpIpHandle: Int? = null,
 )
 
 private data class DownloadTotals(
@@ -95,6 +105,7 @@ class ImageDownloadService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private val preferencesRepository by lazy { AppPreferencesRepository(applicationContext) }
     private val repository by lazy { DefaultCameraRepository(AppEnvironment.current()) }
+    private val mtpIpCameraClient by lazy { MtpIpCameraClient() }
     private val omCaptureUsbManager by lazy {
         (application as DbLinkApplication).appContainer.omCaptureUsbManager
     }
@@ -105,18 +116,30 @@ class ImageDownloadService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val SOURCE_WIFI = "wifi"
         private const val SOURCE_USB = "usb"
+        private const val SOURCE_MTPIP = "mtpip"
         private const val USB_MODE_LIBRARY = "library"
         private const val USB_MODE_IMPORT_LATEST = "import_latest"
         private const val USB_MODE_CAPTURE_LATEST = "capture_latest"
         private const val ACTION_CANCEL = "dev.dblink.action.DOWNLOAD_CANCEL"
         private const val EXTRA_REQUESTS_JSON = "requests_json"
         private const val EXTRA_SAVE_LOCATION = "save_location"
+        private const val EXTRA_FOLDER_STRUCTURE = "folder_structure"
         private const val EXTRA_PLAY_TARGET_SLOT = "play_target_slot"
+        private const val EXTRA_CAMERA_BASE_URL = "camera_base_url"
         private const val LIBRARY_COMPATIBILITY_MODE_PREF = "library_compatibility_mode"
         private const val LIBRARY_COMPATIBILITY_HIGH_SPEED = "high_speed"
-        private const val WIFI_JPEG_PARALLELISM = 4
-        private const val WIFI_RAW_PARALLELISM = 3
-        private const val WIFI_LARGE_STILL_PARALLELISM = 2
+        // Full-resolution image transfers run sequentially (one connection at a
+        // time), matching OI.Share / OM Capture and libgphoto2's single-session
+        // PTP transfers. The Olympus/OM camera AP runs a small embedded HTTP
+        // server that corrupts or truncates concurrent full-image streams (the
+        // RAW path already had to be forced sequential for the same reason), so
+        // JPEG must not be downloaded in parallel either or the saved files end
+        // up broken. The "High speed" library setting still parallelizes the
+        // small thumbnail requests used for grid loading — only the large file
+        // downloads are kept serial here.
+        private const val WIFI_JPEG_PARALLELISM = 1
+        private const val WIFI_RAW_PARALLELISM = 1
+        private const val WIFI_LARGE_STILL_PARALLELISM = 1
         private const val WIFI_TYPICAL_JPEG_BYTES = 15L * 1024L * 1024L
         private const val WIFI_TYPICAL_RAW_BYTES = 20L * 1024L * 1024L
         private const val WIFI_TARGET_IN_FLIGHT_BYTES = 80L * 1024L * 1024L
@@ -133,23 +156,30 @@ class ImageDownloadService : Service() {
             context: Context,
             images: List<CameraImage>,
             saveLocation: String = "",
+            folderStructure: String = "date_day",
             playTargetSlot: Int? = null,
+            cameraBaseUrl: String = AppEnvironment.current().cameraBaseUrl,
         ) {
             startRequests(
                 context = context,
                 requests = images.map { image ->
                     DownloadRequestItem(
-                        source = SOURCE_WIFI,
+                        source = if (image.isMtpIpObject) SOURCE_MTPIP else SOURCE_WIFI,
                         fileName = image.fileName,
                         directory = image.directory,
                         fileSize = image.fileSize,
                         attribute = image.attribute,
                         width = image.width,
                         height = image.height,
+                        mtpIpHost = image.mtpIpHost,
+                        mtpIpPort = image.mtpIpPort,
+                        mtpIpHandle = image.mtpIpHandle,
                     )
                 },
                 saveLocation = saveLocation,
+                folderStructure = folderStructure,
                 playTargetSlot = playTargetSlot,
+                cameraBaseUrl = cameraBaseUrl,
             )
         }
 
@@ -157,6 +187,7 @@ class ImageDownloadService : Service() {
             context: Context,
             items: List<UsbImportRequest>,
             saveLocation: String = "",
+            folderStructure: String = "date_day",
         ) {
             startRequests(
                 context = context,
@@ -166,10 +197,13 @@ class ImageDownloadService : Service() {
                         fileName = item.fileName,
                         usbHandle = item.handle,
                         usbMode = USB_MODE_LIBRARY,
+                        usbImportFormat = (item.importFormat ?: inferUsbImportFormat(item.fileName)).preferenceValue,
                     )
                 },
                 saveLocation = saveLocation,
+                folderStructure = folderStructure,
                 playTargetSlot = null,
+                cameraBaseUrl = null,
             )
         }
 
@@ -177,6 +211,7 @@ class ImageDownloadService : Service() {
             context: Context,
             importFormat: TetherPhoneImportFormat,
             saveLocation: String = "",
+            folderStructure: String = "date_day",
         ) {
             startRequests(
                 context = context,
@@ -189,7 +224,9 @@ class ImageDownloadService : Service() {
                     ),
                 ),
                 saveLocation = saveLocation,
+                folderStructure = folderStructure,
                 playTargetSlot = null,
+                cameraBaseUrl = null,
             )
         }
 
@@ -197,6 +234,7 @@ class ImageDownloadService : Service() {
             context: Context,
             importFormat: TetherPhoneImportFormat,
             saveLocation: String = "",
+            folderStructure: String = "date_day",
         ) {
             startRequests(
                 context = context,
@@ -209,7 +247,9 @@ class ImageDownloadService : Service() {
                     ),
                 ),
                 saveLocation = saveLocation,
+                folderStructure = folderStructure,
                 playTargetSlot = null,
+                cameraBaseUrl = null,
             )
         }
 
@@ -223,6 +263,8 @@ class ImageDownloadService : Service() {
             requests: List<DownloadRequestItem>,
             saveLocation: String,
             playTargetSlot: Int?,
+            cameraBaseUrl: String?,
+            folderStructure: String = "date_day",
         ) {
             if (requests.isEmpty()) return
             val title = notificationTitleFor(requests)
@@ -235,7 +277,11 @@ class ImageDownloadService : Service() {
             val intent = Intent(context, ImageDownloadService::class.java).apply {
                 putExtra(EXTRA_REQUESTS_JSON, serializeRequests(requests))
                 putExtra(EXTRA_SAVE_LOCATION, saveLocation)
+                putExtra(EXTRA_FOLDER_STRUCTURE, folderStructure)
                 putExtra(EXTRA_PLAY_TARGET_SLOT, playTargetSlot ?: 0)
+                cameraBaseUrl?.takeIf { it.isNotBlank() }?.let {
+                    putExtra(EXTRA_CAMERA_BASE_URL, it)
+                }
             }
             ContextCompat.startForegroundService(context, intent)
         }
@@ -255,6 +301,9 @@ class ImageDownloadService : Service() {
                             put("usbMode", request.usbMode)
                             put("usbImportFormat", request.usbImportFormat)
                             request.usbHandle?.let { put("usbHandle", it) }
+                            request.mtpIpHost?.let { put("mtpIpHost", it) }
+                            if (request.mtpIpPort > 0) put("mtpIpPort", request.mtpIpPort)
+                            request.mtpIpHandle?.let { put("mtpIpHandle", it) }
                         },
                     )
                 }
@@ -280,6 +329,9 @@ class ImageDownloadService : Service() {
                                 usbHandle = item.optInt("usbHandle").takeIf { item.has("usbHandle") },
                                 usbMode = item.optString("usbMode"),
                                 usbImportFormat = item.optString("usbImportFormat"),
+                                mtpIpHost = item.optString("mtpIpHost").takeIf { item.has("mtpIpHost") },
+                                mtpIpPort = item.optInt("mtpIpPort", 0),
+                                mtpIpHandle = item.optInt("mtpIpHandle").takeIf { item.has("mtpIpHandle") },
                             ),
                         )
                     }
@@ -295,14 +347,39 @@ class ImageDownloadService : Service() {
                 requests.any { it.usbMode == USB_MODE_CAPTURE_LATEST } -> "Importing new capture from OM camera"
                 requests.any { it.usbMode == USB_MODE_IMPORT_LATEST } -> "Importing latest photo from OM camera"
                 requests.all { it.source == SOURCE_USB } -> "Importing from OM camera"
+                requests.all { it.source == SOURCE_MTPIP } -> "Importing over wireless tether"
                 requests.all { it.source == SOURCE_WIFI } -> "Downloading from camera"
-                else -> "Importing from camera"
+            else -> "Importing from camera"
             }
+        }
+
+        private fun inferUsbImportFormat(fileName: String): TetherPhoneImportFormat {
+            val normalized = fileName.uppercase()
+            return if (
+                normalized.endsWith(".ORF") ||
+                normalized.endsWith(".ORI") ||
+                normalized.endsWith(".RAW")
+            ) {
+                TetherPhoneImportFormat.RawOnly
+            } else {
+                TetherPhoneImportFormat.JpegOnly
+            }
+        }
+
+        private fun importFormatForRequest(request: DownloadRequestItem): TetherPhoneImportFormat {
+            return request.usbImportFormat
+                .takeIf { it.isNotBlank() }
+                ?.let(TetherPhoneImportFormat::fromPreferenceValue)
+                ?: inferUsbImportFormat(request.fileName)
         }
     }
 
     private var saveLocation: String = ""
+    private var folderStructure: dev.dblink.core.model.DownloadFolderStructure =
+        dev.dblink.core.model.DownloadFolderStructure.DateDay
     private var playTargetSlot: Int? = null
+    private val fileProgressMap = java.util.concurrent.ConcurrentHashMap<String, Float>()
+    private val pendingFileNames = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val existingMediaCache = linkedSetOf<String>()
     private var existingMediaCachePrimed = false
 
@@ -326,13 +403,18 @@ class ImageDownloadService : Service() {
             return START_NOT_STICKY
         }
         saveLocation = intent?.getStringExtra(EXTRA_SAVE_LOCATION)?.ifBlank { null } ?: ""
+        folderStructure = dev.dblink.core.model.DownloadFolderStructure
+            .fromPreferenceValue(intent?.getStringExtra(EXTRA_FOLDER_STRUCTURE))
         playTargetSlot = intent?.getIntExtra(EXTRA_PLAY_TARGET_SLOT, 0)?.takeIf { it in 1..2 }
+        intent?.getStringExtra(EXTRA_CAMERA_BASE_URL)
+            ?.takeIf { it.isNotBlank() }
+            ?.let(repository::useCameraBaseUrl)
         val title = notificationTitleFor(requests)
         startForeground(
             NOTIFICATION_ID,
             buildNotification(_progress.value.copy(total = requests.size, title = title)),
         )
-        acquireRuntimeLocks(hasWifiTransfers = requests.any { it.source == SOURCE_WIFI })
+        acquireRuntimeLocks(hasWifiTransfers = requests.any { it.source == SOURCE_WIFI || it.source == SOURCE_MTPIP })
         startDownloading(requests, title)
         return START_REDELIVER_INTENT
     }
@@ -344,6 +426,8 @@ class ImageDownloadService : Service() {
         downloadJob?.cancel()
         downloadJob = scope.launch {
             resetExistingMediaCache()
+            fileProgressMap.clear()
+            pendingFileNames.clear()
             try {
                 coroutineScope {
                     val mediaCacheJob = async {
@@ -377,6 +461,7 @@ class ImageDownloadService : Service() {
             val pendingRequests = requests.filterNot(::isRequestAlreadySaved)
             val skipped = requests.size - pendingRequests.size
             val startedAt = System.currentTimeMillis()
+            beginPendingBatch(pendingRequests.map { it.fileName })
 
             if (pendingRequests.isEmpty()) {
                 D.transfer("Background transfer complete: 0 saved, 0 failed, $skipped already saved")
@@ -607,9 +692,12 @@ class ImageDownloadService : Service() {
             .toInt()
             .coerceAtLeast(1)
         val concurrencyCap = when {
+            // OM camera AP HTTP servers commonly abort concurrent ORF streams with
+            // HTTP 500 or an early EOF; RAW must stay sequential even when the file
+            // size also matches the large-still bucket.
+            requests.any(::isRawTransfer) -> WIFI_RAW_PARALLELISM
             maxSize >= WIFI_LARGE_STILL_THRESHOLD_BYTES -> WIFI_LARGE_STILL_PARALLELISM
             requests.all(::isJpegTransfer) -> WIFI_JPEG_PARALLELISM
-            requests.any(::isRawTransfer) -> WIFI_RAW_PARALLELISM
             else -> WIFI_RAW_PARALLELISM
         }
         return targetParallelism.coerceAtMost(concurrencyCap)
@@ -772,6 +860,48 @@ class ImageDownloadService : Service() {
         updateNotification(_progress.value)
     }
 
+    private fun beginFileProgress(fileName: String) {
+        fileProgressMap[fileName] = 0f
+        publishFileProgress()
+    }
+
+    private fun updateFileProgress(fileName: String, copied: Long, total: Long) {
+        if (total <= 0L) return
+        val fraction = (copied.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+        val previous = fileProgressMap[fileName] ?: 0f
+        // Throttle UI churn: only republish on a >=2% step or completion.
+        if (fraction >= 1f || fraction - previous >= 0.02f) {
+            fileProgressMap[fileName] = fraction
+            publishFileProgress()
+        }
+    }
+
+    private fun endFileProgress(fileName: String) {
+        if (fileProgressMap.remove(fileName) != null) {
+            publishFileProgress()
+        }
+    }
+
+    private fun publishFileProgress() {
+        _progress.update { it.copy(fileProgress = HashMap(fileProgressMap)) }
+    }
+
+    private fun beginPendingBatch(fileNames: Collection<String>) {
+        pendingFileNames.clear()
+        pendingFileNames.addAll(fileNames)
+        publishPendingFiles()
+    }
+
+    private fun clearPending(fileName: String) {
+        if (pendingFileNames.remove(fileName)) {
+            publishPendingFiles()
+        }
+    }
+
+    private fun publishPendingFiles() {
+        _progress.update { it.copy(pendingFileNames = HashSet(pendingFileNames)) }
+    }
+
     private suspend fun executeTransferRequest(request: DownloadRequestItem): Boolean {
         return try {
             processRequest(request)
@@ -780,12 +910,17 @@ class ImageDownloadService : Service() {
         } catch (throwable: Throwable) {
             D.err("DOWNLOAD", "Failed transfer for ${request.fileName}", throwable)
             false
+        } finally {
+            // Once a file finishes (saved, skipped, or failed) it is no longer queued,
+            // so drop it from the pending set to clear its "waiting" overlay.
+            clearPending(request.fileName)
         }
     }
 
     private suspend fun processRequest(request: DownloadRequestItem): Boolean {
         return when (request.source) {
             SOURCE_USB -> processUsbRequest(request)
+            SOURCE_MTPIP -> processMtpIpRequest(request)
             else -> processWifiRequest(request)
         }
     }
@@ -803,44 +938,93 @@ class ImageDownloadService : Service() {
             D.transfer("Skipping already-downloaded Wi-Fi media ${image.fileName}")
             return true
         }
-        var lastFailure: Throwable? = null
-        repeat(WIFI_TRANSFER_MAX_ATTEMPTS) { attempt ->
-            currentCoroutineContext().ensureActive()
-            val attemptNumber = attempt + 1
-            if (attempt > 0) {
-                val retryDelayMs = when (attempt) {
-                    1 -> 450L
-                    else -> 1_000L
+        beginFileProgress(image.fileName)
+        try {
+            var lastFailure: Throwable? = null
+            repeat(WIFI_TRANSFER_MAX_ATTEMPTS) { attempt ->
+                currentCoroutineContext().ensureActive()
+                val attemptNumber = attempt + 1
+                if (attempt > 0) {
+                    // Restart this file's progress ring for the retry attempt.
+                    fileProgressMap[image.fileName] = 0f
+                    publishFileProgress()
+                    val retryDelayMs = when (attempt) {
+                        1 -> 450L
+                        else -> 1_000L
+                    }
+                    D.transfer(
+                        "Retrying Wi-Fi media ${image.fileName} " +
+                            "attempt=$attemptNumber/$WIFI_TRANSFER_MAX_ATTEMPTS delay=${retryDelayMs}ms",
+                    )
+                    kotlinx.coroutines.delay(retryDelayMs)
                 }
-                D.transfer(
-                    "Retrying Wi-Fi media ${image.fileName} " +
-                        "attempt=$attemptNumber/$WIFI_TRANSFER_MAX_ATTEMPTS delay=${retryDelayMs}ms",
-                )
-                kotlinx.coroutines.delay(retryDelayMs)
+                try {
+                    return saveStreamToGallery(
+                        fileName = image.fileName,
+                        dateFolder = image.dateFolderName,
+                        rethrowWriteFailures = true,
+                    ) { outputStream ->
+                        repository.downloadFullImageTo(image, outputStream) { copied, total ->
+                            updateFileProgress(image.fileName, copied, total)
+                        }.getOrThrow()
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (throwable: Throwable) {
+                    lastFailure = throwable
+                    if (!isTransientWifiTransferFailure(throwable) || attempt == WIFI_TRANSFER_MAX_ATTEMPTS - 1) {
+                        throw throwable
+                    }
+                    D.err(
+                        "DOWNLOAD",
+                        "Transient Wi-Fi transfer failure for ${image.fileName}; will retry",
+                        throwable,
+                    )
+                }
             }
-            try {
-                return saveStreamToGallery(
-                    fileName = image.fileName,
-                    dateFolder = image.dateFolderName,
-                    rethrowWriteFailures = true,
-                ) { outputStream ->
-                    repository.downloadFullImageTo(image, outputStream).getOrThrow()
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (throwable: Throwable) {
-                lastFailure = throwable
-                if (!isTransientWifiTransferFailure(throwable) || attempt == WIFI_TRANSFER_MAX_ATTEMPTS - 1) {
-                    throw throwable
-                }
-                D.err(
-                    "DOWNLOAD",
-                    "Transient Wi-Fi transfer failure for ${image.fileName}; will retry",
-                    throwable,
-                )
-            }
+            throw lastFailure ?: IllegalStateException("Unknown Wi-Fi transfer failure for ${image.fileName}")
+        } finally {
+            endFileProgress(image.fileName)
         }
-        throw lastFailure ?: IllegalStateException("Unknown Wi-Fi transfer failure for ${image.fileName}")
+    }
+
+    private suspend fun processMtpIpRequest(request: DownloadRequestItem): Boolean {
+        val host = request.mtpIpHost?.takeIf { it.isNotBlank() }
+            ?: error("MTP/IP transfer request missing host for ${request.fileName}")
+        val handle = request.mtpIpHandle
+            ?: error("MTP/IP transfer request missing object handle for ${request.fileName}")
+        val endpoint = MtpIpCameraEndpoint(
+            host = host,
+            port = request.mtpIpPort.takeIf { it > 0 } ?: 15740,
+        )
+        val image = CameraImage(
+            directory = request.directory,
+            fileName = request.fileName,
+            fileSize = request.fileSize,
+            attribute = request.attribute,
+            width = request.width,
+            height = request.height,
+            mtpIpHost = host,
+            mtpIpPort = endpoint.port,
+            mtpIpHandle = handle,
+        )
+        val dateFolder = image.dateFolderName
+        if (isAlreadySaved(image.fileName, dateFolder)) {
+            D.transfer("Skipping already-imported MTP/IP media ${image.fileName}")
+            return true
+        }
+        beginFileProgress(image.fileName)
+        try {
+            return saveStreamToGallery(
+                fileName = image.fileName,
+                dateFolder = dateFolder,
+                rethrowWriteFailures = true,
+            ) { outputStream ->
+                mtpIpCameraClient.downloadObjectTo(endpoint, handle, outputStream).getOrThrow()
+            }
+        } finally {
+            endFileProgress(image.fileName)
+        }
     }
 
     private fun isRequestAlreadySaved(request: DownloadRequestItem): Boolean {
@@ -858,7 +1042,7 @@ class ImageDownloadService : Service() {
         }
         return when (request.usbMode) {
             USB_MODE_CAPTURE_LATEST -> {
-                val importFormat = TetherPhoneImportFormat.fromPreferenceValue(request.usbImportFormat)
+                val importFormat = importFormatForRequest(request)
                 omCaptureUsbManager.captureAndImportLatestImage(
                     saveMedia = saveMedia,
                     importFormat = importFormat,
@@ -867,7 +1051,7 @@ class ImageDownloadService : Service() {
             }
 
             USB_MODE_IMPORT_LATEST -> {
-                val importFormat = TetherPhoneImportFormat.fromPreferenceValue(request.usbImportFormat)
+                val importFormat = importFormatForRequest(request)
                 omCaptureUsbManager.importLatestImage(
                     saveMedia = saveMedia,
                     importFormat = importFormat,
@@ -882,7 +1066,7 @@ class ImageDownloadService : Service() {
                     D.transfer("Skipping already-imported USB media ${request.fileName}")
                     return true
                 }
-                val importFormat = TetherPhoneImportFormat.fromPreferenceValue(request.usbImportFormat)
+                val importFormat = importFormatForRequest(request)
                 omCaptureUsbManager.importLibraryHandle(
                     handle = handle,
                     saveMedia = saveMedia,
@@ -959,12 +1143,14 @@ class ImageDownloadService : Service() {
         fileName: String,
         dateFolder: String = "",
         rethrowWriteFailures: Boolean = false,
+        verifyImageIntegrity: Boolean = true,
         writeData: suspend (java.io.OutputStream) -> Unit,
     ): Boolean {
         return saveStreamToGalleryDetailed(
             fileName = fileName,
             dateFolder = dateFolder,
             rethrowWriteFailures = rethrowWriteFailures,
+            verifyImageIntegrity = verifyImageIntegrity,
             writeData = writeData,
         ) != null
     }
@@ -986,6 +1172,7 @@ class ImageDownloadService : Service() {
         fileName: String,
         dateFolder: String = "",
         rethrowWriteFailures: Boolean = false,
+        verifyImageIntegrity: Boolean = false,
         writeData: suspend (java.io.OutputStream) -> Unit,
     ): OmCaptureUsbSavedMedia? {
         val resolver = contentResolver
@@ -1010,8 +1197,19 @@ class ImageDownloadService : Service() {
         try {
             resolver.openOutputStream(uri)?.use { outputStream ->
                 outputStream.buffered(STREAM_WRITE_BUFFER_BYTES).use { bufferedOutput ->
-                    writeData(bufferedOutput)
-                    bufferedOutput.flush()
+                    if (verifyImageIntegrity) {
+                        val verifier = ImageIntegrityOutputStream(bufferedOutput, fileName)
+                        writeData(verifier)
+                        verifier.flush()
+                        // Reject empty/garbled/truncated JPEGs before the entry is
+                        // committed, so a broken image is never published to the
+                        // gallery (the catch below deletes the pending entry and the
+                        // Wi-Fi retry loop re-fetches a clean copy).
+                        verifier.verifyOrThrow()
+                    } else {
+                        writeData(bufferedOutput)
+                        bufferedOutput.flush()
+                    }
                 }
             }
                 ?: throw IllegalStateException("ContentResolver returned null OutputStream for $uri")
@@ -1196,7 +1394,7 @@ class ImageDownloadService : Service() {
             return
         }
         val requestedTargets = requests
-            .filter { it.source == SOURCE_WIFI || it.usbMode == USB_MODE_LIBRARY }
+            .filter { it.source == SOURCE_WIFI || it.source == SOURCE_MTPIP || it.usbMode == USB_MODE_LIBRARY }
             .map { request ->
                 CachedMediaLookupTarget(
                     collection = mediaCollectionForFileName(request.fileName),
@@ -1254,17 +1452,18 @@ class ImageDownloadService : Service() {
         if (request.source == SOURCE_USB) {
             return currentUsbImportDateFolder()
         }
-        if (request.source != SOURCE_WIFI || request.directory.isBlank()) {
+        if ((request.source != SOURCE_WIFI && request.source != SOURCE_MTPIP) || request.directory.isBlank()) {
             return ""
         }
-        return CameraImage(
+        val captureDate = CameraImage(
             directory = request.directory,
             fileName = request.fileName,
             fileSize = request.fileSize,
             attribute = request.attribute,
             width = request.width,
             height = request.height,
-        ).dateFolderName
+        ).captureDate
+        return folderStructure.subfolder(captureDate)
     }
 
     private data class CachedMediaLookupTarget(
@@ -1274,7 +1473,7 @@ class ImageDownloadService : Service() {
     )
 
     private fun currentUsbImportDateFolder(): String {
-        return LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)
+        return folderStructure.subfolder(LocalDate.now())
     }
 
     private fun isTransientWifiTransferFailure(throwable: Throwable): Boolean {
@@ -1286,12 +1485,16 @@ class ImageDownloadService : Service() {
             -> true
             else -> {
                 val message = throwable.message.orEmpty()
+                val lowered = message.lowercase()
                 "HTTP 500" in message ||
                     "HTTP 503" in message ||
                     "HTTP 520" in message ||
-                    "timeout" in message.lowercase() ||
-                    "socket closed" in message.lowercase() ||
-                    "unexpected end of stream" in message.lowercase()
+                    "timeout" in lowered ||
+                    "socket closed" in lowered ||
+                    "unexpected end of stream" in lowered ||
+                    "truncated transfer" in lowered ||
+                    "corrupt jpeg" in lowered ||
+                    "empty image body" in lowered
             }
         }
     }
@@ -1343,5 +1546,69 @@ class ImageDownloadService : Service() {
         releaseRuntimeLocks()
         scope.cancel()
         super.onDestroy()
+    }
+}
+
+/**
+ * Pass-through [java.io.OutputStream] that validates an image as it is written,
+ * so non-image content returned by the camera (e.g. an HTML/XML error page) is
+ * rejected before it is committed to the gallery.
+ *
+ * Validation is streaming and never buffers the whole file. For JPEG it checks
+ * the leading SOI (FFD8) marker; for every type it requires a non-empty body.
+ *
+ * It deliberately does NOT check for a trailing EOI (FFD9) marker: OM SYSTEM /
+ * Olympus cameras append proprietary data after the EOI, so the marker is not
+ * the last bytes of the file and a tail check produces false "corrupt" failures
+ * on perfectly good images. Truncation is caught authoritatively by the
+ * Content-Length check in [dev.dblink.core.protocol.CameraHttpGateway.copyBytesTo].
+ */
+private class ImageIntegrityOutputStream(
+    private val delegate: java.io.OutputStream,
+    fileName: String,
+) : java.io.OutputStream() {
+
+    private val isJpeg = fileName.uppercase().let { it.endsWith(".JPG") || it.endsWith(".JPEG") }
+    private var total = 0L
+    private val firstBytes = ByteArray(2)
+    private var firstLen = 0
+    private val singleByte = ByteArray(1)
+
+    override fun write(b: Int) {
+        delegate.write(b)
+        singleByte[0] = b.toByte()
+        record(singleByte, 0, 1)
+    }
+
+    override fun write(b: ByteArray, off: Int, len: Int) {
+        delegate.write(b, off, len)
+        record(b, off, len)
+    }
+
+    private fun record(b: ByteArray, off: Int, len: Int) {
+        if (len <= 0) return
+        total += len
+        var i = 0
+        while (firstLen < firstBytes.size && i < len) {
+            firstBytes[firstLen++] = b[off + i]
+            i++
+        }
+    }
+
+    override fun flush() = delegate.flush()
+
+    override fun close() = delegate.close()
+
+    fun verifyOrThrow() {
+        if (total <= 0L) {
+            throw java.io.IOException("Camera returned an empty image body.")
+        }
+        if (!isJpeg) return
+        val soiOk = firstLen >= 2 &&
+            (firstBytes[0].toInt() and 0xFF) == 0xFF &&
+            (firstBytes[1].toInt() and 0xFF) == 0xD8
+        if (!soiOk) {
+            throw java.io.IOException("Corrupt JPEG (missing SOI marker, size=$total bytes).")
+        }
     }
 }

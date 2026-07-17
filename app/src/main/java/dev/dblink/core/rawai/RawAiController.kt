@@ -14,43 +14,39 @@ class RawAiController(private val context: Context) {
 
     private var enginePointer: Long = 0
     private var isInitialized = false
+    private var initializedModel: RawAiModelId? = null
 
     /**
      * Initializes the RawAiEngine by copying models, validating SHA-256 hashes,
      * and setting up the native LiteRT CompiledModel handle.
      */
     @Synchronized
-    fun initialize(): Boolean {
-        if (isInitialized) return true
+    fun initialize(modelId: RawAiModelId): Boolean {
+        if (isInitialized) return initializedModel == modelId
 
         try {
             val manifestJson = context.assets.open("raw_ai/model_manifest.json").bufferedReader().use { it.readText() }
             val manifestObj = JSONObject(manifestJson)
             val filesObj = manifestObj.getJSONObject("model_files")
 
-            val fp32Info = filesObj.getJSONObject("cpu_reference")
-            val fp32Name = fp32Info.getString("path")
-            val fp32Sha = fp32Info.getString("sha256")
+            val modelInfo = filesObj.getJSONObject(modelId.manifestKey)
+            check(modelInfo.getString("id") == modelId.stableId) {
+                "Manifest model ID mismatch for ${modelId.stableId}"
+            }
+            val modelFile = ModelAssetStore.stage(
+                context,
+                modelInfo.getString("path"),
+                modelInfo.getString("sha256"),
+            )
 
-            val fp16Info = filesObj.getJSONObject("accelerated")
-            val fp16Name = fp16Info.getString("path")
-            val fp16Sha = fp16Info.getString("sha256")
-
-            // 1. Copy and validate FP32 model
-            val fp32LocalFile = ModelAssetStore.stage(context, fp32Name, fp32Sha)
-
-            // 2. Copy and validate FP16 model
-            ModelAssetStore.stage(context, fp16Name, fp16Sha)
-
-            // 3. Create Native Engine passing the manifest JSON and the validated model path
-            // We pass the parent models directory or specific model path.
-            // Under PR 2 CPU Single-Tile, we pass the validated FP32 model path to the engine.
-            enginePointer = createNativeEngine(fp32LocalFile.absolutePath, manifestJson)
+            // Selection is explicit: initialize exactly the requested model, with no fallback.
+            enginePointer = createNativeEngine(modelFile.absolutePath, manifestJson)
             if (enginePointer == 0L) {
                 return false
             }
 
             isInitialized = true
+            initializedModel = modelId
             return true
         } catch (e: Exception) {
             e.printStackTrace()
@@ -73,6 +69,20 @@ class RawAiController(private val context: Context) {
                 initializationMs = 0.0,
                 processingMs = 0.0,
                 peakMemoryBytes = 0
+            )
+        }
+
+        if (request.modelId != initializedModel) {
+            return RawAiResult(
+                success = false,
+                selectedBackend = "DISABLED",
+                fallbackReason = null,
+                errorCode = "EXPLICIT_MODEL_SELECTION_REQUIRED",
+                errorMessage = "Requested ${request.modelId.stableId}, but ${initializedModel?.stableId} is initialized. " +
+                    "Release and explicitly initialize the requested model; no model fallback was attempted.",
+                initializationMs = 0.0,
+                processingMs = 0.0,
+                peakMemoryBytes = 0,
             )
         }
 
@@ -111,6 +121,7 @@ class RawAiController(private val context: Context) {
             enginePointer = 0L
         }
         isInitialized = false
+        initializedModel = null
     }
 
     // ==========================================

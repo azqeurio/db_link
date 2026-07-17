@@ -148,6 +148,14 @@
     <string name="settings_import_skip_duplicates_summary">Do not overwrite files already on the device</string>
     <string name="settings_auto_import_dest_label">Save location</string>
     <string name="settings_auto_import_dest_default">Pictures/db link</string>
+    <string name="settings_folder_structure_label">Folder structure</string>
+    <string name="settings_folder_structure_date_day">By date</string>
+    <string name="settings_folder_structure_date_month">Year / month</string>
+    <string name="settings_folder_structure_date_year">By year</string>
+    <string name="settings_folder_structure_flat">No subfolders</string>
+    <string name="settings_folder_structure_preview">Example: %1$s</string>
+    <string name="settings_wireless_tether_ip_label">High-speed camera IP (optional)</string>
+    <string name="settings_wireless_tether_ip_hint">For \"고속전달\" on the same Wi-Fi: enter the camera\'s IP (e.g. 192.168.100.50) so the app connects directly instead of scanning the whole network. Leave blank to auto-discover. Find the IP in the camera\'s Wi-Fi/tethering screen or your router\'s device list.</string>
     <string name="settings_auto_import_format_label">File format</string>
     <string name="settings_auto_import_format_jpeg">JPEG only</string>
     <string name="settings_auto_import_format_jpeg_raw">JPEG + RAW</string>

@@ -31,7 +31,7 @@ class CpuParityTest {
             "Unsupported reference byte order: ${referenceManifest.getString("endianness")}"
         }
 
-        val modelInfo = modelManifest.getJSONObject("model_files").getJSONObject("cpu_reference")
+        val modelInfo = modelManifest.getJSONObject("model_files").getJSONObject("superlight")
         val modelName = modelInfo.getString("path")
         val expectedModelSha = modelInfo.getString("sha256").lowercase()
         val modelFile = ModelAssetStore.stage(context, modelName, expectedModelSha)

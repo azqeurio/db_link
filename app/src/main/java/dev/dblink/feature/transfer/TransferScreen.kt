@@ -4,6 +4,9 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Bitmap
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -34,6 +37,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -50,8 +54,12 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
+import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.ZoomIn
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SelectAll
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -67,6 +75,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -108,6 +117,8 @@ enum class ImageTypeFilter(val label: String) {
     JPG("JPG"),
     RAW("RAW"),
     VIDEO("Video"),
+    FIVE_STAR("5-star"),
+    SELECTED("Share Order"),
 }
 
 enum class TransferSourceKind {
@@ -132,6 +143,10 @@ data class TransferUiState(
     val isSelectionMode: Boolean = false,
     val batchDownloadTotal: Int = 0,
     val batchDownloadCurrent: Int = 0,
+    /** Per-file download fraction (0f..1f) for files currently transferring over Wi-Fi/MTP. */
+    val perImageDownloadProgress: Map<String, Float> = emptyMap(),
+    /** File names queued in the active batch but not yet downloading (shown dimmed). */
+    val pendingDownloadFileNames: Set<String> = emptySet(),
     val typeFilter: ImageTypeFilter = ImageTypeFilter.ALL,
     val downloadedFileNames: Set<String> = emptySet(),
     val matchedGeoTags: Map<String, ImageGeoTagInfo> = emptyMap(),
@@ -168,11 +183,17 @@ data class DateSection(
     val images: List<CameraImage>,
 )
 
+private const val BACKGROUND_STATUS_SCROLL_ITEM_WEIGHT = 1_000_000
+private const val BACKGROUND_STATUS_SCROLL_DELTA_THRESHOLD = 16
+private const val BACKGROUND_STATUS_EXPAND_AT_TOP_THRESHOLD = 24
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TransferScreen(
     transferState: TransferUiState,
+    autoLoadImages: Boolean = true,
     onLoadImages: () -> Unit,
+    onStartHighSpeedWifiTransfer: () -> Unit = {},
     onDownloadImage: (CameraImage) -> Unit,
     onCancelDownload: () -> Unit = {},
     onDeleteImage: (CameraImage) -> Unit = {},
@@ -195,14 +216,26 @@ fun TransferScreen(
         mutableStateOf(false)
     }
     val showSourceDialog = showSourceDialogState.value
+
+    // Auto-load only after the host confirms the normal camera-AP / USB library
+    // path is ready. Same-Wi-Fi high-speed transfer stays manual.
+    LaunchedEffect(autoLoadImages) {
+        if (autoLoadImages && transferState.images.isEmpty() && !transferState.isLoading) {
+            onLoadImages()
+        }
+    }
     val primaryActionLabel = if (transferState.sourceKind == TransferSourceKind.OmCaptureUsb) {
         "Import"
     } else {
         "Save"
     }
+    val isHighSpeedWifiSource =
+        transferState.sourceKind == TransferSourceKind.WifiCamera &&
+            transferState.sourceLabel.startsWith("고속전달")
     val sourceValue = if (
         transferState.sourceKind == TransferSourceKind.WifiCamera &&
-        selectedCardSlotSource in 1..2
+        selectedCardSlotSource in 1..2 &&
+        !isHighSpeedWifiSource
     ) {
         "Slot $selectedCardSlotSource"
     } else {
@@ -210,7 +243,7 @@ fun TransferScreen(
     }
     val sourceClickable = when (transferState.sourceKind) {
         TransferSourceKind.OmCaptureUsb -> transferState.usbAvailableStorageIds.isNotEmpty()
-        TransferSourceKind.WifiCamera -> wifiSourceSelectionAvailable
+        TransferSourceKind.WifiCamera -> wifiSourceSelectionAvailable && !isHighSpeedWifiSource
     }
 
     // Apply type filter (needed for both detail view pager and grid)
@@ -220,6 +253,8 @@ fun TransferScreen(
             ImageTypeFilter.JPG -> transferState.images.filter { it.isJpeg }
             ImageTypeFilter.RAW -> transferState.images.filter { it.isRaw }
             ImageTypeFilter.VIDEO -> transferState.images.filter { it.isMovie }
+            ImageTypeFilter.FIVE_STAR -> transferState.images.filter { it.isFiveStar }
+            ImageTypeFilter.SELECTED -> transferState.images.filter { it.isCameraSelected }
         }
     }
 
@@ -244,8 +279,10 @@ fun TransferScreen(
         return
     }
 
-    // Detail view (single image with pager for swipe)
-    if (transferState.selectedImage != null && !transferState.isSelectionMode) {
+    // Detail view (single image with pager for swipe). Also available in selection
+    // mode via the enlarge button, where it shows a selection toggle instead of the
+    // download/delete bar so the user can review large and pick while swiping.
+    if (transferState.selectedImage != null) {
         val selectedIndex = remember(sortedFilteredImages, transferState.selectedImage) {
             sortedFilteredImages.indexOfFirst { it.fullPath == transferState.selectedImage.fullPath }
                 .coerceAtLeast(0)
@@ -263,6 +300,9 @@ fun TransferScreen(
             downloadedFileNames = transferState.downloadedFileNames,
             supportsDelete = transferState.supportsDelete,
             primaryActionLabel = primaryActionLabel,
+            selectionMode = transferState.isSelectionMode,
+            selectedFullPaths = transferState.selectedImages,
+            onToggleSelection = onToggleSelection,
             onDownload = onDownloadImage,
             onCancelDownload = onCancelDownload,
             onDelete = onDeleteImage,
@@ -285,6 +325,39 @@ fun TransferScreen(
                     images = imgs.sortedByDescending { it.fileName },
                 )
             }
+    }
+    val gridState = rememberLazyGridState()
+    val backgroundDownloadVisible = !transferState.isSelectionMode && transferState.backgroundTransferRunning
+    var backgroundDownloadCollapsed by remember { mutableStateOf(false) }
+
+    LaunchedEffect(backgroundDownloadVisible, gridState) {
+        if (!backgroundDownloadVisible) {
+            backgroundDownloadCollapsed = false
+        } else {
+            var previousScroll = gridState.firstVisibleItemIndex * BACKGROUND_STATUS_SCROLL_ITEM_WEIGHT +
+                gridState.firstVisibleItemScrollOffset
+            backgroundDownloadCollapsed = previousScroll > BACKGROUND_STATUS_EXPAND_AT_TOP_THRESHOLD
+            snapshotFlow {
+                gridState.firstVisibleItemIndex * BACKGROUND_STATUS_SCROLL_ITEM_WEIGHT +
+                    gridState.firstVisibleItemScrollOffset
+            }
+                .distinctUntilChanged()
+                .collect { currentScroll ->
+                    val delta = currentScroll - previousScroll
+                    when {
+                        currentScroll <= BACKGROUND_STATUS_EXPAND_AT_TOP_THRESHOLD -> {
+                            backgroundDownloadCollapsed = false
+                        }
+                        delta > BACKGROUND_STATUS_SCROLL_DELTA_THRESHOLD -> {
+                            backgroundDownloadCollapsed = true
+                        }
+                        delta < -BACKGROUND_STATUS_SCROLL_DELTA_THRESHOLD -> {
+                            backgroundDownloadCollapsed = false
+                        }
+                    }
+                    previousScroll = currentScroll
+                }
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -316,7 +389,14 @@ fun TransferScreen(
                 }
             } else {
                 SectionHeader(stringResource(R.string.dest_library))
-                Spacer(modifier = Modifier.width(1.dp))
+                if (transferState.sourceKind == TransferSourceKind.WifiCamera) {
+                    HighSpeedTransferChip(
+                        enabled = !transferState.isLoading,
+                        onClick = onStartHighSpeedWifiTransfer,
+                    )
+                } else {
+                    Spacer(modifier = Modifier.width(1.dp))
+                }
             }
         }
         if (!transferState.isSelectionMode) {
@@ -335,6 +415,8 @@ fun TransferScreen(
                             ImageTypeFilter.JPG -> transferState.images.count { it.isJpeg }
                             ImageTypeFilter.RAW -> transferState.images.count { it.isRaw }
                             ImageTypeFilter.VIDEO -> transferState.images.count { it.isMovie }
+                            ImageTypeFilter.FIVE_STAR -> transferState.images.count { it.isFiveStar }
+                            ImageTypeFilter.SELECTED -> transferState.images.count { it.isCameraSelected }
                         }
                         FilterChip(
                             selected = transferState.typeFilter == filter,
@@ -383,15 +465,6 @@ fun TransferScreen(
                     onClick = onLoadImages,
                 )
             }
-        }
-
-        if (!transferState.isSelectionMode && transferState.backgroundTransferRunning) {
-            BackgroundTransferStatusCard(
-                progress = transferState.backgroundTransferProgress,
-                current = transferState.backgroundTransferCurrent,
-                total = transferState.backgroundTransferTotal,
-                onCancel = onCancelDownload,
-            )
         }
 
         Box(modifier = Modifier.weight(1f)) {
@@ -457,12 +530,22 @@ fun TransferScreen(
             }
             else -> {
                 val hasInlineStatus = transferState.isLoading || transferState.errorMessage != null
+                val backgroundDownloadTopInset by animateDpAsState(
+                    targetValue = when {
+                        !backgroundDownloadVisible -> 0.dp
+                        backgroundDownloadCollapsed -> 14.dp
+                        else -> 78.dp
+                    },
+                    animationSpec = tween(durationMillis = 220),
+                    label = "backgroundDownloadTopInset",
+                )
                 Box(modifier = Modifier.fillMaxSize()) {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(3),
+                        state = gridState,
                         contentPadding = PaddingValues(
                             start = 16.dp, end = 16.dp,
-                            top = if (hasInlineStatus) 58.dp else 4.dp,
+                            top = (if (hasInlineStatus) 58.dp else 4.dp) + backgroundDownloadTopInset,
                             bottom = if (transferState.isSelectionMode && transferState.selectedImages.isNotEmpty()) 80.dp else 8.dp,
                         ),
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -492,12 +575,17 @@ fun TransferScreen(
                                 val thumbnail = transferState.thumbnails[image.fileName]
                                 val isSelected = image.fullPath in transferState.selectedImages
                                 val isDownloaded = image.fileName in transferState.downloadedFileNames
+                                val downloadProgress = transferState.perImageDownloadProgress[image.fileName]
+                                val isPendingDownload = downloadProgress == null &&
+                                    image.fileName in transferState.pendingDownloadFileNames
                                 ImageThumbnailCell(
                                     image = image,
                                     thumbnail = thumbnail,
                                     isSelected = isSelected,
                                     isSelectionMode = transferState.isSelectionMode,
                                     isDownloaded = isDownloaded,
+                                    downloadProgress = downloadProgress,
+                                    isPendingDownload = isPendingDownload,
                                     onClick = {
                                         if (transferState.isSelectionMode) {
                                             onToggleSelection(image)
@@ -510,6 +598,7 @@ fun TransferScreen(
                                             onToggleSelection(image)
                                         }
                                     },
+                                    onEnlarge = { onSelectImage(image) },
                                 )
                             }
                         }
@@ -581,6 +670,19 @@ fun TransferScreen(
                                 }
                             }
                         }
+                    }
+
+                    if (backgroundDownloadVisible) {
+                        BackgroundTransferStatusOverlay(
+                            progress = transferState.backgroundTransferProgress,
+                            current = transferState.backgroundTransferCurrent,
+                            total = transferState.backgroundTransferTotal,
+                            collapsed = backgroundDownloadCollapsed,
+                            onCancel = onCancelDownload,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = if (hasInlineStatus) 52.dp else 0.dp),
+                        )
                     }
 
                     if (transferState.isSelectionMode && transferState.selectedImages.isNotEmpty()) {
@@ -700,60 +802,169 @@ fun TransferScreen(
 
 }
 
+/**
+ * Compact "고속전달" (high-speed same-Wi-Fi import) trigger shown on the Library
+ * header row. Replaces the older full-width card — just a small Wi-Fi icon + label.
+ */
 @Composable
-private fun BackgroundTransferStatusCard(
+private fun HighSpeedTransferChip(
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Graphite.copy(alpha = 0.78f))
+            .border(1.dp, AppleBlue.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.Wifi,
+            contentDescription = null,
+            tint = if (enabled) AppleBlue else AppleBlue.copy(alpha = 0.4f),
+            modifier = Modifier.size(14.dp),
+        )
+        Text(
+            text = "고속전달",
+            color = if (enabled) Color.White else Color.White.copy(alpha = 0.4f),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun BackgroundTransferStatusOverlay(
     progress: String,
     current: Int,
     total: Int,
+    collapsed: Boolean,
+    modifier: Modifier = Modifier,
     onCancel: () -> Unit,
 ) {
-    GlassCard(
-        modifier = Modifier
+    val animatedProgress by animateFloatAsState(
+        targetValue = if (total > 0) (current.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f) else 0f,
+        animationSpec = tween(durationMillis = 180),
+        label = "backgroundTransferProgress",
+    )
+
+    Box(
+        modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 2.dp),
+            .padding(horizontal = 20.dp, vertical = 6.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+        AnimatedVisibility(
+            visible = !collapsed,
+            enter = slideInVertically(
+                animationSpec = tween(durationMillis = 220),
+                initialOffsetY = { -it },
+            ) + fadeIn(animationSpec = tween(durationMillis = 180)),
+            exit = slideOutVertically(
+                animationSpec = tween(durationMillis = 180),
+                targetOffsetY = { -it },
+            ) + fadeOut(animationSpec = tween(durationMillis = 120)),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Graphite.copy(alpha = 0.94f))
+                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp),
             ) {
-                Text(
-                    text = progress,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                TextButton(
-                    onClick = onCancel,
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = stringResource(R.string.common_cancel),
-                        color = Color(0xFFFF8A80),
-                        fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.labelSmall,
+                        text = progress.ifBlank {
+                            if (total > 0) "$current / $total" else "Downloading..."
+                        },
+                        modifier = Modifier.weight(1f),
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    TextButton(
+                        onClick = onCancel,
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.common_cancel),
+                            color = Color(0xFFFF8A80),
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+                if (total > 0) {
+                    LinearProgressIndicator(
+                        progress = { animatedProgress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp)
+                            .clip(RoundedCornerShape(999.dp)),
+                        color = AppleBlue,
+                        trackColor = Color.White.copy(alpha = 0.1f),
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp)
+                            .clip(RoundedCornerShape(999.dp)),
+                        color = AppleBlue,
+                        trackColor = Color.White.copy(alpha = 0.1f),
+                    )
+                }
+                if (total > 0) {
+                    Text(
+                        text = "$current / $total",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.56f),
                     )
                 }
             }
+        }
+
+        AnimatedVisibility(
+            visible = collapsed,
+            modifier = Modifier.align(Alignment.TopCenter),
+            enter = slideInVertically(
+                animationSpec = tween(durationMillis = 180),
+                initialOffsetY = { -it },
+            ) + fadeIn(animationSpec = tween(durationMillis = 140)),
+            exit = slideOutVertically(
+                animationSpec = tween(durationMillis = 140),
+                targetOffsetY = { -it },
+            ) + fadeOut(animationSpec = tween(durationMillis = 90)),
+        ) {
             if (total > 0) {
                 LinearProgressIndicator(
-                    progress = { (current.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f) },
+                    progress = { animatedProgress },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(2.dp),
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(999.dp)),
                     color = AppleBlue,
                     trackColor = Color.White.copy(alpha = 0.1f),
                 )
-                Text(
-                    text = "$current / $total",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White.copy(alpha = 0.56f),
+            } else {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(999.dp)),
+                    color = AppleBlue,
+                    trackColor = Color.White.copy(alpha = 0.1f),
                 )
             }
         }
@@ -941,8 +1152,11 @@ private fun ImageThumbnailCell(
     isSelected: Boolean,
     isSelectionMode: Boolean,
     isDownloaded: Boolean = false,
+    downloadProgress: Float? = null,
+    isPendingDownload: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    onEnlarge: (() -> Unit)? = null,
 ) {
     Box(
         modifier = Modifier
@@ -1003,6 +1217,82 @@ private fun ImageThumbnailCell(
             )
         }
 
+        // Per-image download progress ring (shown while this photo is transferring)
+        if (downloadProgress != null) {
+            val animatedProgress by animateFloatAsState(
+                targetValue = downloadProgress.coerceIn(0f, 1f),
+                label = "thumbDownloadProgress",
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.45f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (downloadProgress > 0f) {
+                    CircularProgressIndicator(
+                        progress = { animatedProgress },
+                        modifier = Modifier.size(40.dp),
+                        color = AppleBlue,
+                        trackColor = Color.White.copy(alpha = 0.30f),
+                        strokeWidth = 3.dp,
+                    )
+                    Text(
+                        text = "${(animatedProgress * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                    )
+                } else {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(40.dp),
+                        color = AppleBlue,
+                        trackColor = Color.White.copy(alpha = 0.30f),
+                        strokeWidth = 3.dp,
+                    )
+                }
+            }
+        }
+
+        // Queued-for-download overlay: dim photos waiting their turn in the batch
+        // so the user can see "this one will download later".
+        if (isPendingDownload) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Schedule,
+                    contentDescription = "Queued for download",
+                    tint = Color.White.copy(alpha = 0.85f),
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+        }
+
+        // Enlarge button (selection mode): view the photo large and swipe while still selecting.
+        if (isSelectionMode && onEnlarge != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(4.dp)
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .clickable(onClick = onEnlarge),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.ZoomIn,
+                    contentDescription = "Enlarge",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+
         // File type badge for RAW/MOV
         if (image.isRaw || image.isMovie) {
             Row(
@@ -1026,6 +1316,42 @@ private fun ImageThumbnailCell(
                     maxLines = 1,
                     softWrap = false,
                 )
+            }
+        }
+
+        if ((image.rating ?: 0) > 0 || image.isCameraSelected) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(4.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color.Black.copy(alpha = 0.62f))
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                image.rating?.takeIf { it > 0 }?.let { rating ->
+                    Icon(
+                        Icons.Rounded.Star,
+                        contentDescription = null,
+                        tint = Color(0xFFFFC857),
+                        modifier = Modifier.size(10.dp),
+                    )
+                    Text(
+                        text = rating.toString(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                if (image.isCameraSelected) {
+                    Icon(
+                        Icons.Rounded.CheckCircle,
+                        contentDescription = "Share Order",
+                        tint = AppleBlue,
+                        modifier = Modifier.size(10.dp),
+                    )
+                }
             }
         }
     }
@@ -1220,6 +1546,9 @@ private fun ImageDetailPager(
     downloadedFileNames: Set<String>,
     supportsDelete: Boolean,
     primaryActionLabel: String,
+    selectionMode: Boolean = false,
+    selectedFullPaths: Set<String> = emptySet(),
+    onToggleSelection: (CameraImage) -> Unit = {},
     onDownload: (CameraImage) -> Unit,
     onCancelDownload: () -> Unit,
     onDelete: (CameraImage) -> Unit,
@@ -1407,22 +1736,30 @@ private fun ImageDetailPager(
         // Bottom info bar
         val selectedImage = currentImage
         if (selectedImage != null) {
-            DetailBottomBar(
-                currentImage = selectedImage,
-                currentGeoTag = currentGeoTag,
-                currentPreviewUnavailable = currentPreviewUnavailable,
-                isDownloading = isDownloading,
-                downloadProgress = downloadProgress,
-                backgroundTransferRunning = backgroundTransferRunning,
-                backgroundTransferProgress = backgroundTransferProgress,
-                isAlreadyDownloaded = selectedImage.fileName in downloadedFileNames,
-                supportsDelete = supportsDelete,
-                primaryActionLabel = primaryActionLabel,
-                onOpenMap = { geoTag -> openMapForGeoTag(context, geoTag) },
-                onDelete = onDelete,
-                onDownload = onDownload,
-                onCancelDownload = onCancelDownload,
-            )
+            if (selectionMode) {
+                SelectionPreviewBar(
+                    currentImage = selectedImage,
+                    isSelected = selectedImage.fullPath in selectedFullPaths,
+                    onToggleSelection = { onToggleSelection(selectedImage) },
+                )
+            } else {
+                DetailBottomBar(
+                    currentImage = selectedImage,
+                    currentGeoTag = currentGeoTag,
+                    currentPreviewUnavailable = currentPreviewUnavailable,
+                    isDownloading = isDownloading,
+                    downloadProgress = downloadProgress,
+                    backgroundTransferRunning = backgroundTransferRunning,
+                    backgroundTransferProgress = backgroundTransferProgress,
+                    isAlreadyDownloaded = selectedImage.fileName in downloadedFileNames,
+                    supportsDelete = supportsDelete,
+                    primaryActionLabel = primaryActionLabel,
+                    onOpenMap = { geoTag -> openMapForGeoTag(context, geoTag) },
+                    onDelete = onDelete,
+                    onDownload = onDownload,
+                    onCancelDownload = onCancelDownload,
+                )
+            }
         }
     }
 }
@@ -1554,6 +1891,51 @@ private fun DetailBottomBar(
                 color = Color.White.copy(alpha = 0.68f),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SelectionPreviewBar(
+    currentImage: CameraImage,
+    isSelected: Boolean,
+    onToggleSelection: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF0A0A0A))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = currentImage.fileName,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.labelLarge,
+            color = Color.White,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Button(
+            onClick = onToggleSelection,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (isSelected) AppleBlue else Graphite,
+            ),
+            shape = RoundedCornerShape(14.dp),
+        ) {
+            Icon(
+                imageVector = if (isSelected) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = Color.White,
+            )
+            Text(
+                text = if (isSelected) "  선택됨" else "  선택",
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
             )
         }
     }

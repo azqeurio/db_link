@@ -49,7 +49,7 @@ class RawDomainDeviceTest {
         val androidOutputIso = FloatArray(width * height * 3)
         RawAiTestSession(
             context,
-            "model_fp32.tflite",
+            "rawforge_superlight_fp32.tflite",
             "0efe3fd811cb8691e6347021fbb147fd81282952145274460d1238da58715806",
             ModelPrecision.FP32,
         ).use { session ->

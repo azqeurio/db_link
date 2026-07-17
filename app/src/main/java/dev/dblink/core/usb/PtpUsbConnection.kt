@@ -35,7 +35,7 @@ class PtpUsbConnection(
     private val bulkOut: UsbEndpoint,
     private val bulkIn: UsbEndpoint,
     private val interruptIn: UsbEndpoint,
-) {
+) : PtpTransport {
     enum class ClaimMode(
         val logLabel: String,
     ) {
@@ -116,7 +116,7 @@ class PtpUsbConnection(
     private var kernelDriverDetached = false
 
     @Volatile
-    var isClosed: Boolean = false
+    override var isClosed: Boolean = false
         private set
 
     private val useNativeBulkTransfers =
@@ -177,7 +177,7 @@ class PtpUsbConnection(
      * Send a PTP command container to the camera.
      * @return true if all bytes were sent successfully.
      */
-    fun sendCommand(container: PtpContainer): Boolean {
+    override fun sendCommand(container: PtpContainer): Boolean {
         if (isClosed) return false
         val bytes = container.toByteArray()
         D.ptp(">> ${container}")
@@ -210,7 +210,7 @@ class PtpUsbConnection(
      * Send a PTP data container to the camera.
      * For large payloads, splits into multiple USB packets.
      */
-    fun sendData(container: PtpContainer): Boolean {
+    override fun sendData(container: PtpContainer): Boolean {
         if (isClosed) return false
         val bytes = container.toByteArray()
         D.ptp(">> DATA ${container.code.opName()} ${bytes.size} bytes")
@@ -242,7 +242,7 @@ class PtpUsbConnection(
      * @param timeoutMs timeout for the bulk transfer
      * @return parsed PTP container, or null on error/timeout
      */
-    fun receiveResponse(timeoutMs: Int = DEFAULT_TIMEOUT_MS): PtpContainer? {
+    override fun receiveResponse(timeoutMs: Int): PtpContainer? {
         if (isClosed) return null
         val buffer = ByteArray(MAX_PACKET_SIZE)
         val received = readBulkIn(
@@ -275,14 +275,14 @@ class PtpUsbConnection(
      *
      * @return Pair of (data payload, response container) or null on error
      */
-    fun receiveDataAndResponse(timeoutMs: Int = LARGE_TRANSFER_TIMEOUT_MS): Pair<ByteArray, PtpContainer>? {
+    override fun receiveDataAndResponse(timeoutMs: Int): Pair<ByteArray, PtpContainer>? {
         return when (val result = receiveDataAndResponseDetailed(timeoutMs)) {
             is PtpDataAndResponseResult.Success -> result.data to result.response
             is PtpDataAndResponseResult.Failure -> null
         }
     }
 
-    fun receiveDataAndResponseDetailed(timeoutMs: Int = LARGE_TRANSFER_TIMEOUT_MS): PtpDataAndResponseResult {
+    override fun receiveDataAndResponseDetailed(timeoutMs: Int): PtpDataAndResponseResult {
         if (isClosed) {
             return PtpDataAndResponseResult.Failure(
                 phase = PtpInitFailurePhase.DataReceive,
@@ -389,7 +389,7 @@ class PtpUsbConnection(
      *
      * @return event container, or null if no event pending
      */
-    fun pollEvent(timeoutMs: Int = 100): PtpContainer? {
+    override fun pollEvent(timeoutMs: Int): PtpContainer? {
         if (isClosed) return null
         val buffer = ByteArray(interruptIn.maxPacketSize)
         val received = bulkTransfer(
@@ -417,7 +417,7 @@ class PtpUsbConnection(
      * This standards-based event retrieval path is kept as a secondary option for
      * bodies or Android stacks where the interrupt endpoint stays silent.
      */
-    fun pollExtendedEvent(timeoutMs: Int = DEFAULT_TIMEOUT_MS): PtpContainer? {
+    override fun pollExtendedEvent(timeoutMs: Int): PtpContainer? {
         if (isClosed) return null
         if (!extendedEventBackendLogged) {
             extendedEventBackendLogged = true
@@ -681,7 +681,7 @@ class PtpUsbConnection(
     /**
      * Close the USB connection.
      */
-    fun close() {
+    override fun close() {
         if (isClosed) return
         isClosed = true
         runCatching { release() }

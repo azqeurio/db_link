@@ -28,9 +28,11 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
+import java.net.Inet4Address
 
 /**
  * Monitors WiFi connection state and detects whether the device is connected
@@ -413,6 +415,46 @@ class CameraWifiManager(private val context: Context) {
      */
     fun isWifiEnabled(): Boolean = wifiManager.isWifiEnabled
 
+    fun isInfrastructureWifiConnected(): Boolean {
+        return currentState() is WifiConnectionState.OtherWifi
+    }
+
+    fun currentLanProbeHosts(): List<String> {
+        val linkProperties = currentInfrastructureWifiLinkProperties() ?: return emptyList()
+        val localLinkAddress = linkProperties.localIpv4LinkAddress() ?: return emptyList()
+        val localInetAddress = localLinkAddress.address as? Inet4Address ?: return emptyList()
+        val localAddress = localInetAddress.hostAddress ?: return emptyList()
+        val prefix = localAddress.substringBeforeLast('.', missingDelimiterValue = "")
+        if (prefix.isBlank()) {
+            return emptyList()
+        }
+
+        val subnetHosts = localInetAddress.probeHostsForPrefix(
+            prefixLength = localLinkAddress.prefixLength,
+            fallbackPrefix = prefix,
+        )
+        val subnetHostSet = subnetHosts.toHashSet()
+        val arpHosts = arpNeighborIpv4Hosts()
+        val ordered = linkedSetOf<String>()
+        linkProperties.defaultGatewayIpv4()?.let(ordered::add)
+        currentDhcpIpv4Candidates().forEach(ordered::add)
+        arpHosts
+            .filter { it in subnetHostSet || it.substringBeforeLast('.', missingDelimiterValue = "") == prefix }
+            .forEach(ordered::add)
+        localInetAddress.nearbyProbeHosts(subnetHostSet).forEach(ordered::add)
+        listOf(2, 3, 4, 5, 10, 11, 20, 30, 40, 50, 60, 70, 80, 90, 100, 101, 102, 110, 120, 150, 200, 210, 220, 230, 240, 250, 254).forEach { lastOctet ->
+            ordered += "$prefix.$lastOctet"
+        }
+        ordered += subnetHosts
+        ordered.remove(localAddress)
+        D.wifi(
+            "currentLanProbeHosts: local=$localAddress/${localLinkAddress.prefixLength} " +
+                "gateway=${linkProperties.defaultGatewayIpv4()} arp=${arpHosts.size} " +
+                "subnet=${subnetHosts.size} candidates=${ordered.size}",
+        )
+        return ordered.toList()
+    }
+
     @Suppress("DEPRECATION")
     private fun requestCameraWifiScan(attempt: Int, ssid: String) {
         runCatching {
@@ -556,6 +598,25 @@ class CameraWifiManager(private val context: Context) {
         return state
     }
 
+    private fun currentInfrastructureWifiLinkProperties(): LinkProperties? {
+        val activeNetwork = connectivityManager.activeNetwork
+        val activeCapabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
+        if (activeCapabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
+            val activeLinkProperties = connectivityManager.getLinkProperties(activeNetwork)
+            if (!hasCameraSubnet(activeLinkProperties)) {
+                return activeLinkProperties
+            }
+        }
+        return connectivityManager.allNetworks
+            .asSequence()
+            .filter { network ->
+                connectivityManager.getNetworkCapabilities(network)
+                    ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            }
+            .mapNotNull { network -> connectivityManager.getLinkProperties(network) }
+            .firstOrNull { linkProperties -> !hasCameraSubnet(linkProperties) }
+    }
+
     private fun isRequestedCameraNetworkActive(): Boolean {
         val network = requestedCameraNetwork ?: return false
         return isCameraNetwork(network)
@@ -603,6 +664,103 @@ class CameraWifiManager(private val context: Context) {
             ?.removePrefix("\"")
             ?.removeSuffix("\"")
             ?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
+    }
+
+    private fun LinkProperties.localIpv4LinkAddress() =
+        linkAddresses.firstOrNull { it.address is Inet4Address }
+
+    private fun Inet4Address.probeHostsForPrefix(
+        prefixLength: Int,
+        fallbackPrefix: String,
+    ): List<String> {
+        if (prefixLength !in 20..30) {
+            return (1..254).map { "$fallbackPrefix.$it" }
+        }
+        val addressValue = toUnsignedInt()
+        val mask = (0xffffffffL shl (32 - prefixLength)) and 0xffffffffL
+        val network = addressValue and mask
+        val broadcast = network or (mask xor 0xffffffffL)
+        val firstHost = network + 1
+        val lastHost = broadcast - 1
+        if (firstHost > lastHost || lastHost - firstHost > 1024) {
+            return (1..254).map { "$fallbackPrefix.$it" }
+        }
+        return (firstHost..lastHost).map(::ipv4String)
+    }
+
+    private fun Inet4Address.nearbyProbeHosts(subnetHosts: Set<String>): List<String> {
+        val local = toUnsignedInt()
+        return (1L..32L)
+            .flatMap { distance -> listOf(local - distance, local + distance) }
+            .map(::ipv4String)
+            .filter { it in subnetHosts }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun currentDhcpIpv4Candidates(): List<String> {
+        val dhcp = runCatching { wifiManager.dhcpInfo }.getOrNull() ?: return emptyList()
+        return listOf(dhcp.gateway, dhcp.serverAddress)
+            .mapNotNull(::dhcpIntToIpv4String)
+            .distinct()
+    }
+
+    private fun dhcpIntToIpv4String(value: Int): String? {
+        if (value == 0) return null
+        return listOf(
+            value and 0xff,
+            (value ushr 8) and 0xff,
+            (value ushr 16) and 0xff,
+            (value ushr 24) and 0xff,
+        ).joinToString(".")
+    }
+
+    private fun arpNeighborIpv4Hosts(): List<String> {
+        return runCatching {
+            File("/proc/net/arp")
+                .readLines()
+                .drop(1)
+                .mapNotNull { line ->
+                    val parts = line.trim().split(Regex("\\s+"))
+                    val ip = parts.getOrNull(0)?.takeIf(::isIpv4Address) ?: return@mapNotNull null
+                    val flags = parts.getOrNull(2).orEmpty()
+                    val mac = parts.getOrNull(3).orEmpty()
+                    if (flags == "0x0" || mac == "00:00:00:00:00:00") {
+                        null
+                    } else {
+                        ip
+                    }
+                }
+                .distinct()
+        }.getOrDefault(emptyList())
+    }
+
+    private fun isIpv4Address(value: String): Boolean {
+        val parts = value.split('.')
+        return parts.size == 4 && parts.all { part ->
+            part.toIntOrNull()?.let { it in 0..255 } == true
+        }
+    }
+
+    private fun Inet4Address.toUnsignedInt(): Long {
+        return address.fold(0L) { acc, byte ->
+            (acc shl 8) or (byte.toLong() and 0xffL)
+        }
+    }
+
+    private fun ipv4String(value: Long): String {
+        return listOf(
+            (value shr 24) and 0xffL,
+            (value shr 16) and 0xffL,
+            (value shr 8) and 0xffL,
+            value and 0xffL,
+        ).joinToString(".")
+    }
+
+    private fun LinkProperties.defaultGatewayIpv4(): String? {
+        return routes
+            .firstOrNull { it.isDefaultRoute && it.gateway is Inet4Address }
+            ?.gateway
+            ?.hostAddress
     }
 }
 

@@ -298,6 +298,8 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--crop", choices=("center", "top-left", "top-right", "bottom-left", "bottom-right"), default="center")
     parser.add_argument("--crop-size", type=int, default=256)
+    parser.add_argument("--full", action="store_true", help="Use the complete visible active area")
+    parser.add_argument("--rawforge-only", action="store_true", help="Skip the diagnostic LibRaw RGB tensor")
     parser.add_argument("--x", type=int)
     parser.add_argument("--y", type=int)
     parser.add_argument("--model", type=Path)
@@ -319,14 +321,16 @@ def main() -> int:
         )
         source["effective_rgb_xyz_matrix"] = effective_matrix.astype(float).tolist()
         source["color_matrix_policy"] = matrix_policy
-        rect = crop_rect(raw.sizes.iwidth, raw.sizes.iheight, args.crop_size, args.crop, args.x, args.y)
+        rect = (0, 0, raw.sizes.iwidth, raw.sizes.iheight) if args.full else crop_rect(
+            raw.sizes.iwidth, raw.sizes.iheight, args.crop_size, args.crop, args.x, args.y,
+        )
         authoritative = rawforge_tensor(raw_path, rect, effective_matrix)
-        production = libraw_dcraw_tensor(raw, rect)
+        production = None if args.rawforge_only else libraw_dcraw_tensor(raw, rect)
 
     stem = raw_path.stem
     crop = {
         "coordinate_space": "visible-active-area, sensor orientation, before display rotation",
-        "name": args.crop,
+        "name": "full-visible-area" if args.full else args.crop,
         "x": rect[0],
         "y": rect[1],
         "width": rect[2],
@@ -354,8 +358,7 @@ def main() -> int:
             "upstream_iso_value": float(source["iso"]) if source["iso"] else None,
         },
     }
-    manifest["tensors"].append(
-        write_tensor(
+    manifest["tensors"].append(write_tensor(
             args.output_dir,
             stem,
             "rawforge_malvar_linrec2020",
@@ -370,10 +373,9 @@ def main() -> int:
                 "clipping": "clip [0,1] before float16 model-input quantization",
                 "upstream_model_dtype": "float16; exported values losslessly widened to float32",
             },
-        )
-    )
-    manifest["tensors"].append(
-        write_tensor(
+    ))
+    if production is not None:
+        manifest["tensors"].append(write_tensor(
             args.output_dir,
             stem,
             "android_libraw_dcraw_equivalent",
@@ -390,14 +392,16 @@ def main() -> int:
                 },
                 "scale": "processed uint16 / 65535",
             },
-        )
-    )
+        ))
 
     if args.model:
         model = args.model.resolve()
         manifest["model"] = {"file_name": model.name, "sha256": sha256(model)}
         iso = float(source["iso"]) if source["iso"] else 0.0
-        for input_name, tensor in (("rawforge", authoritative), ("android_equivalent", production)):
+        model_inputs = [("rawforge", authoritative)]
+        if production is not None:
+            model_inputs.append(("android_equivalent", production))
+        for input_name, tensor in model_inputs:
             for cond_name, cond in (("cond0", 0.0), ("iso_over_6400", min(iso, 65535.0) / 6400.0)):
                 output = run_tflite(model, tensor, cond)[0].transpose(1, 2, 0)
                 manifest["tensors"].append(

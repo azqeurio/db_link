@@ -9,7 +9,7 @@ object OmCaptureCapabilityRegistry {
 
     private val features: List<OmCaptureFeatureDescriptor> = listOf(
         feature("usb_connection", "USB Connection", "Connection", "Observed USB/PTP session behavior", listOf("GetDeviceInfo", "OpenSession"), OmCaptureSupportState.Supported, OmCaptureAndroidPolicy.Native, OmCaptureSection.Connection, OmCaptureImplementationStatus.Implemented, "USB/PTP session startup is available."),
-        feature("wifi_connection", "Wi-Fi Connection", "Connection", "Observed Wi-Fi control behavior", listOf("existing Wi-Fi remote"), OmCaptureSupportState.Supported, OmCaptureAndroidPolicy.Adapted, OmCaptureSection.Connection, OmCaptureImplementationStatus.Adapted, "Uses the existing app Wi-Fi flow."),
+        feature("wifi_connection", "Wi-Fi Connection", "Connection", "Observed Wi-Fi control and wireless tether behavior", listOf("camera AP HTTP", "same-Wi-Fi HTTP LAN", "MTP/IP tether"), OmCaptureSupportState.Supported, OmCaptureAndroidPolicy.Adapted, OmCaptureSection.Connection, OmCaptureImplementationStatus.Adapted, "Uses the existing app Wi-Fi flow plus LAN HTTP and MTP/IP transfer discovery."),
         feature("create_new_link", "Create New Link", "Connection", "Onboarding and saved-camera workflow", listOf("saved camera identity"), OmCaptureSupportState.Supported, OmCaptureAndroidPolicy.Adapted, OmCaptureSection.Connection, OmCaptureImplementationStatus.Adapted, "Mapped to QR onboarding."),
         feature("edit_existing_links", "Edit Existing Links", "Connection", "Saved-camera workflow", listOf("saved camera profiles"), OmCaptureSupportState.Supported, OmCaptureAndroidPolicy.Adapted, OmCaptureSection.Connection, OmCaptureImplementationStatus.Adapted, "Mapped to saved cameras."),
 

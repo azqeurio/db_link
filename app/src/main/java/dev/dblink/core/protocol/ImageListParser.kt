@@ -26,6 +26,11 @@ data class CameraImage(
     val attribute: Int,
     val width: Int,
     val height: Int,
+    val rating: Int? = null,
+    val isCameraSelected: Boolean = false,
+    val mtpIpHost: String? = null,
+    val mtpIpPort: Int = 0,
+    val mtpIpHandle: Int? = null,
 ) {
     /** Full path for CGI requests: /DCIM/100OLYMP/P1010001.JPG */
     val fullPath: String get() = "$directory/$fileName"
@@ -44,6 +49,10 @@ data class CameraImage(
     val isJpeg: Boolean get() = fileName.uppercase().let {
         it.endsWith(".JPG") || it.endsWith(".JPEG")
     }
+
+    val isFiveStar: Boolean get() = rating == 5
+
+    val isMtpIpObject: Boolean get() = !mtpIpHost.isNullOrBlank() && mtpIpHandle != null
 
     /**
      * Parse capture date from Olympus filename convention _MDDNNNN.EXT.
@@ -126,6 +135,7 @@ object ImageListParser {
                     val attribute = parts.getOrNull(3)?.trim()?.toIntOrNull() ?: 0
                     val width = parts.getOrNull(4)?.trim()?.toIntOrNull() ?: 0
                     val height = parts.getOrNull(5)?.trim()?.toIntOrNull() ?: 0
+                    val metadata = parts.drop(6).joinToString(",")
 
                     images.add(
                         CameraImage(
@@ -135,6 +145,8 @@ object ImageListParser {
                             attribute = attribute,
                             width = width,
                             height = height,
+                            rating = parseRating(metadata),
+                            isCameraSelected = parseCameraSelection(metadata),
                         )
                     )
                 } catch (e: Exception) {
@@ -145,5 +157,51 @@ object ImageListParser {
 
         D.transfer("Parsed ${images.size} images from response")
         return images
+    }
+
+    private fun parseRating(metadata: String): Int? {
+        if (metadata.isBlank()) return null
+        val compact = metadata
+            .lowercase(Locale.US)
+            .replace(Regex("[\\s_:\\-=]+"), "")
+        if ("5star" in compact || "star5" in compact || "rating5" in compact) {
+            return 5
+        }
+        val directMatch = Regex("""(?:rating|stars?|rank)\D*([0-5])""", RegexOption.IGNORE_CASE)
+            .find(metadata)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+        if (directMatch != null) {
+            return directMatch.coerceIn(0, 5)
+        }
+        return Regex("""\b([0-5])\s*(?:stars?|rating)\b""", RegexOption.IGNORE_CASE)
+            .find(metadata)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?.coerceIn(0, 5)
+    }
+
+    private fun parseCameraSelection(metadata: String): Boolean {
+        if (metadata.isBlank()) return false
+        val normalized = metadata.lowercase(Locale.US)
+        val compact = normalized.replace(Regex("[\\s_:\\-=]+"), "")
+        return listOf(
+            "selected",
+            "selection",
+            "picked",
+            "pick",
+            "favorite",
+            "favourite",
+            "share order",
+            "share-order",
+            "share_order",
+            "sharemark",
+            "share mark",
+            "share",
+        ).any { token -> token in normalized } ||
+            "shareorder" in compact ||
+            "sharemark" in compact
     }
 }

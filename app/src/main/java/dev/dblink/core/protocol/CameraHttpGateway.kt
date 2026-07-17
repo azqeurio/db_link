@@ -1,6 +1,7 @@
 package dev.dblink.core.protocol
 
 import dev.dblink.core.logging.D
+import java.io.EOFException
 import java.io.OutputStream
 import java.net.Proxy
 import java.util.Collections
@@ -71,15 +72,38 @@ class CameraHttpGateway(
         path: String,
         query: Map<String, String> = emptyMap(),
         timeoutMillis: Int = 3_000,
+    ): Result<String> = getTextInternal(
+        path = path,
+        query = query,
+        timeoutMillis = timeoutMillis,
+        queryAlreadyEncoded = false,
+    )
+
+    fun getTextWithEncodedQuery(
+        path: String,
+        query: Map<String, String> = emptyMap(),
+        timeoutMillis: Int = 3_000,
+    ): Result<String> = getTextInternal(
+        path = path,
+        query = query,
+        timeoutMillis = timeoutMillis,
+        queryAlreadyEncoded = true,
+    )
+
+    private fun getTextInternal(
+        path: String,
+        query: Map<String, String>,
+        timeoutMillis: Int,
+        queryAlreadyEncoded: Boolean,
     ): Result<String> = runCatching {
-        val url = buildUrl(path, query)
+        val url = buildUrl(path, query, queryAlreadyEncoded)
         D.http("GET(text) $url timeout=${timeoutMillis}ms")
         val startTime = System.currentTimeMillis()
-        executeRequest(path, query, timeoutMillis).use { response ->
+        executeRequest(path, query, timeoutMillis, queryAlreadyEncoded).use { response ->
             val elapsed = System.currentTimeMillis() - startTime
             D.http("GET(text) $path -> ${response.code} in ${elapsed}ms")
             if (!response.isSuccessful) {
-                D.err("HTTP", "GET(text) FAILED: $path -> HTTP ${response.code}, headers=${response.headers}")
+                D.err("HTTP", "GET(text) FAILED: $url -> HTTP ${response.code}, headers=${response.headers}")
             }
             check(response.isSuccessful) { "Camera request failed with HTTP ${response.code}." }
             val bodyString = checkNotNull(response.body) { "Camera returned an empty response body." }.string()
@@ -94,15 +118,38 @@ class CameraHttpGateway(
         path: String,
         query: Map<String, String> = emptyMap(),
         timeoutMillis: Int = 6_000,
+    ): Result<ByteArray> = getBytesInternal(
+        path = path,
+        query = query,
+        timeoutMillis = timeoutMillis,
+        queryAlreadyEncoded = false,
+    )
+
+    fun getBytesWithEncodedQuery(
+        path: String,
+        query: Map<String, String> = emptyMap(),
+        timeoutMillis: Int = 6_000,
+    ): Result<ByteArray> = getBytesInternal(
+        path = path,
+        query = query,
+        timeoutMillis = timeoutMillis,
+        queryAlreadyEncoded = true,
+    )
+
+    private fun getBytesInternal(
+        path: String,
+        query: Map<String, String>,
+        timeoutMillis: Int,
+        queryAlreadyEncoded: Boolean,
     ): Result<ByteArray> = runCatching {
-        val url = buildUrl(path, query)
+        val url = buildUrl(path, query, queryAlreadyEncoded)
         D.http("GET(bytes) $url timeout=${timeoutMillis}ms")
         val startTime = System.currentTimeMillis()
-        executeRequest(path, query, timeoutMillis).use { response ->
+        executeRequest(path, query, timeoutMillis, queryAlreadyEncoded).use { response ->
             val elapsed = System.currentTimeMillis() - startTime
             D.http("GET(bytes) $path -> ${response.code} in ${elapsed}ms")
             if (!response.isSuccessful) {
-                D.err("HTTP", "GET(bytes) FAILED: $path -> HTTP ${response.code}")
+                D.err("HTTP", "GET(bytes) FAILED: $url -> HTTP ${response.code}")
             }
             check(response.isSuccessful) { "Camera request failed with HTTP ${response.code}." }
             val bodyBytes = checkNotNull(response.body) { "Camera returned an empty response body." }.bytes()
@@ -118,6 +165,8 @@ class CameraHttpGateway(
         output: OutputStream,
         query: Map<String, String> = emptyMap(),
         timeoutMillis: Int = 6_000,
+        expectedBytes: Long = -1L,
+        onProgress: ((bytesCopied: Long, totalBytes: Long) -> Unit)? = null,
     ): Result<Long> {
         var call: Call? = null
         return runCatching {
@@ -135,15 +184,43 @@ class CameraHttpGateway(
                 val elapsed = System.currentTimeMillis() - startTime
                 D.http("GET(stream) $path -> ${response.code} in ${elapsed}ms")
                 if (!response.isSuccessful) {
-                    D.err("HTTP", "GET(stream) FAILED: $path -> HTTP ${response.code}")
+                    D.err("HTTP", "GET(stream) FAILED: $url -> HTTP ${response.code}")
                 }
                 check(response.isSuccessful) { "Camera request failed with HTTP ${response.code}." }
                 val body = checkNotNull(response.body) { "Camera returned an empty response body." }
-                body.byteStream().use { input ->
-                    input.copyTo(output, STREAM_COPY_BUFFER_BYTES)
+                val declaredLength = body.contentLength()
+                // Total used only to report a download fraction; prefer the
+                // server's Content-Length, fall back to the caller's expected size.
+                val totalForProgress = if (declaredLength >= 0L) declaredLength else expectedBytes
+                // Copy the actual response bytes and count them. Returning the real
+                // byte count (not Content-Length) lets callers verify integrity, and
+                // the manual loop lets us surface per-file download progress.
+                val copiedBytes = body.byteStream().use { input ->
+                    val buffer = ByteArray(STREAM_COPY_BUFFER_BYTES)
+                    var copied = 0L
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        copied += read
+                        onProgress?.invoke(copied, totalForProgress)
+                    }
+                    copied
                 }
-                val copiedBytes = body.contentLength().takeIf { it >= 0L } ?: -1L
-                D.http("GET(stream) $path -> ${copiedBytes.takeIf { it >= 0L } ?: "unknown"} bytes")
+                // The Olympus/OM camera HTTP server sends Content-Length for file
+                // GETs, so a mismatch means the body was cut short (flaky Wi-Fi or
+                // the camera aborting the stream under load). Fail loudly so the
+                // caller's retry can re-fetch a complete file instead of saving a
+                // truncated, corrupt image to the gallery.
+                if (declaredLength >= 0L && copiedBytes != declaredLength) {
+                    throw EOFException(
+                        "Truncated transfer for $path: expected $declaredLength bytes but received $copiedBytes.",
+                    )
+                }
+                D.http(
+                    "GET(stream) $path -> $copiedBytes bytes " +
+                        "(declared=${declaredLength.takeIf { it >= 0L } ?: "unknown"})",
+                )
                 copiedBytes
             }
         }.onFailure {
@@ -178,7 +255,7 @@ class CameraHttpGateway(
             val elapsed = System.currentTimeMillis() - startTime
             D.http("POST(text) $path -> ${response.code} in ${elapsed}ms")
             if (!response.isSuccessful) {
-                D.err("HTTP", "POST(text) FAILED: $path -> HTTP ${response.code}")
+                D.err("HTTP", "POST(text) FAILED: $url -> HTTP ${response.code}")
             }
             check(response.isSuccessful) { "Camera request failed with HTTP ${response.code}." }
             val bodyString = checkNotNull(response.body) { "Camera returned an empty response body." }.string()
@@ -194,9 +271,10 @@ class CameraHttpGateway(
         path: String,
         query: Map<String, String>,
         timeoutMillis: Int,
+        queryAlreadyEncoded: Boolean = false,
     ) = clientFor(timeoutMillis).newCall(
         Request.Builder()
-            .url(buildUrl(path, query))
+            .url(buildUrl(path, query, queryAlreadyEncoded))
             .get()
             .build(),
     ).execute()
@@ -210,14 +288,22 @@ class CameraHttpGateway(
             .build()
     }
 
-    private fun buildUrl(path: String, query: Map<String, String>): HttpUrl {
+    private fun buildUrl(
+        path: String,
+        query: Map<String, String>,
+        queryAlreadyEncoded: Boolean = false,
+    ): HttpUrl {
         val builder = baseHttpUrl.newBuilder()
         path.trimStart('/')
             .split('/')
             .filter { it.isNotBlank() }
             .forEach(builder::addPathSegment)
         query.forEach { (key, value) ->
-            builder.addQueryParameter(key, value)
+            if (queryAlreadyEncoded) {
+                builder.addEncodedQueryParameter(key, value)
+            } else {
+                builder.addQueryParameter(key, value)
+            }
         }
         return builder.build()
     }

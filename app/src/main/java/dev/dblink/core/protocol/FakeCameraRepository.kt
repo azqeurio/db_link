@@ -107,7 +107,11 @@ class FakeCameraRepository(
     override suspend fun getFullImage(image: CameraImage): Result<ByteArray> =
         Result.success(ByteArray(0))
 
-    override suspend fun downloadFullImageTo(image: CameraImage, output: OutputStream): Result<Long> =
+    override suspend fun downloadFullImageTo(
+        image: CameraImage,
+        output: OutputStream,
+        onProgress: ((bytesCopied: Long, totalBytes: Long) -> Unit)?,
+    ): Result<Long> =
         Result.success(0L)
 
     override suspend fun getPlayTargetSlot(): Result<Int> =

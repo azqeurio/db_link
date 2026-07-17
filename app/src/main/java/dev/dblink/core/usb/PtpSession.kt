@@ -46,6 +46,14 @@ data class OlympusPcModeInitResult(
         get() = (valueAfter ?: valueBefore) != 0
 }
 
+data class PtpObjectPropertyValue(
+    val handle: Int,
+    val propertyCode: Int,
+    val dataType: Int,
+    val numericValue: Long? = null,
+    val textValue: String? = null,
+)
+
 /**
  * PTP session manager.
  *
@@ -53,7 +61,7 @@ data class OlympusPcModeInitResult(
  * high-level PTP operations over the low-level USB connection.
  */
 class PtpSession(
-    private val transport: PtpUsbConnection,
+    private val transport: PtpTransport,
 ) {
     data class OlympusLiveViewModeDescriptor(
         val dataType: Int,
@@ -1006,6 +1014,33 @@ class PtpSession(
         PtpObjectInfo.parse(data, handle)
     }
 
+    fun getObjectPropertyList(
+        propertyCode: Int,
+        timeoutMs: Int = 30_000,
+    ): Result<List<PtpObjectPropertyValue>> = runCatching {
+        checkOpen()
+        val cmd = PtpContainer.command(
+            PtpConstants.Op.GetObjectPropList,
+            nextTransactionId(),
+            -1,
+            0,
+            propertyCode,
+            0,
+            -1,
+        )
+        check(transport.sendCommand(cmd)) {
+            "Failed to send GetObjectPropList for property 0x${propertyCode.toString(16)}"
+        }
+
+        val (data, response) = transport.receiveDataAndResponse(timeoutMs = timeoutMs)
+            ?: throw IllegalStateException("No response to GetObjectPropList")
+        check(response.code == PtpConstants.Resp.OK) {
+            "GetObjectPropList(0x${propertyCode.toString(16)}) failed: ${PtpConstants.Resp.name(response.code)}"
+        }
+        parseObjectPropertyList(data)
+            .filter { it.propertyCode == propertyCode }
+    }
+
     /**
      * Download an object (image file) by handle.
      */
@@ -1120,6 +1155,119 @@ class PtpSession(
         return (0 until count).mapNotNull {
             if (buf.remaining() >= 4) buf.getInt() else null
         }
+    }
+
+    private data class ObjectPropertyScalar(
+        val numericValue: Long? = null,
+        val textValue: String? = null,
+    )
+
+    private fun parseObjectPropertyList(data: ByteArray): List<PtpObjectPropertyValue> {
+        if (data.size < 4) return emptyList()
+        val buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        val count = buf.getInt()
+        if (count < 0) return emptyList()
+
+        val values = mutableListOf<PtpObjectPropertyValue>()
+        for (index in 0 until count) {
+            if (buf.remaining() < 8) {
+                D.ptp("Short MTP ObjectPropList at index=$index count=$count")
+                break
+            }
+            val handle = buf.getInt()
+            val propertyCode = buf.short.toInt() and 0xFFFF
+            val dataType = buf.short.toInt() and 0xFFFF
+            val value = readObjectPropertyScalar(buf, dataType) ?: run {
+                D.ptp(
+                    "Unsupported or short MTP ObjectPropList value " +
+                        "prop=0x${propertyCode.toString(16)} type=0x${dataType.toString(16)}",
+                )
+                break
+            }
+            values += PtpObjectPropertyValue(
+                handle = handle,
+                propertyCode = propertyCode,
+                dataType = dataType,
+                numericValue = value.numericValue,
+                textValue = value.textValue,
+            )
+        }
+        return values
+    }
+
+    private fun readObjectPropertyScalar(buf: ByteBuffer, dataType: Int): ObjectPropertyScalar? {
+        return when (dataType) {
+            PtpPropertyDesc.TYPE_INT8 -> readNumericObjectProperty(buf, 1) { it.get().toLong() }
+            PtpPropertyDesc.TYPE_UINT8 -> readNumericObjectProperty(buf, 1) {
+                (it.get().toInt() and 0xFF).toLong()
+            }
+            PtpPropertyDesc.TYPE_INT16 -> readNumericObjectProperty(buf, 2) { it.short.toLong() }
+            PtpPropertyDesc.TYPE_UINT16 -> readNumericObjectProperty(buf, 2) {
+                (it.short.toInt() and 0xFFFF).toLong()
+            }
+            PtpPropertyDesc.TYPE_INT32 -> readNumericObjectProperty(buf, 4) { it.int.toLong() }
+            PtpPropertyDesc.TYPE_UINT32 -> readNumericObjectProperty(buf, 4) {
+                it.int.toLong() and 0xFFFFFFFFL
+            }
+            PtpPropertyDesc.TYPE_INT64,
+            PtpPropertyDesc.TYPE_UINT64,
+            -> readNumericObjectProperty(buf, 8) { it.long }
+            PtpPropertyDesc.TYPE_STR -> readObjectPropertyString(buf)?.let { ObjectPropertyScalar(textValue = it) }
+            0x0009,
+            0x000A,
+            -> {
+                if (advanceBuffer(buf, 16)) ObjectPropertyScalar() else null
+            }
+            else -> skipObjectPropertyArray(buf, dataType)
+        }
+    }
+
+    private fun readNumericObjectProperty(
+        buf: ByteBuffer,
+        size: Int,
+        read: (ByteBuffer) -> Long,
+    ): ObjectPropertyScalar? {
+        if (buf.remaining() < size) return null
+        return ObjectPropertyScalar(numericValue = read(buf))
+    }
+
+    private fun readObjectPropertyString(buf: ByteBuffer): String? {
+        if (buf.remaining() < 1) return null
+        val charCount = buf.get().toInt() and 0xFF
+        if (charCount == 0) return ""
+        val byteCount = charCount * 2
+        if (buf.remaining() < byteCount) return null
+        val bytes = ByteArray(byteCount)
+        buf.get(bytes)
+        return String(bytes, Charsets.UTF_16LE).trimEnd('\u0000')
+    }
+
+    private fun skipObjectPropertyArray(buf: ByteBuffer, dataType: Int): ObjectPropertyScalar? {
+        val scalarType = dataType and 0x0FFF
+        val elementSize = when (scalarType) {
+            PtpPropertyDesc.TYPE_INT8,
+            PtpPropertyDesc.TYPE_UINT8,
+            -> 1
+            PtpPropertyDesc.TYPE_INT16,
+            PtpPropertyDesc.TYPE_UINT16,
+            -> 2
+            PtpPropertyDesc.TYPE_INT32,
+            PtpPropertyDesc.TYPE_UINT32,
+            -> 4
+            PtpPropertyDesc.TYPE_INT64,
+            PtpPropertyDesc.TYPE_UINT64,
+            -> 8
+            0x0009,
+            0x000A,
+            -> 16
+            else -> return null
+        }
+        if ((dataType and 0x4000) == 0 || buf.remaining() < 4) return null
+        val count = buf.getInt()
+        if (count < 0) return null
+        val bytesToSkip = count.toLong() * elementSize
+        if (bytesToSkip > Int.MAX_VALUE) return null
+        return if (advanceBuffer(buf, bytesToSkip.toInt())) ObjectPropertyScalar() else null
     }
 
     private fun parseCountPrefixedUint16ArrayOrNull(data: ByteArray): List<Int>? {

@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -176,6 +177,7 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
         ) {
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                 val isExpanded = maxWidth >= 840.dp
+                val compactNavigation = maxWidth < 390.dp
 
                 Box(modifier = Modifier.fillMaxSize()) {
                     LensBackdrop()
@@ -228,7 +230,10 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                 Surface(
                                     modifier = Modifier
                                         .navigationBarsPadding()
-                                        .padding(horizontal = 20.dp, vertical = 8.dp),
+                                        .padding(
+                                            horizontal = if (compactNavigation) 8.dp else 20.dp,
+                                            vertical = if (compactNavigation) 6.dp else 8.dp,
+                                        ),
                                     color = Graphite.copy(alpha = 0.98f),
                                     shape = RoundedCornerShape(30.dp),
                                     border = BorderStroke(1.dp, LeicaBorder),
@@ -236,8 +241,11 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 6.dp, vertical = 8.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            .padding(
+                                                horizontal = if (compactNavigation) 4.dp else 6.dp,
+                                                vertical = if (compactNavigation) 6.dp else 8.dp,
+                                            ),
+                                        horizontalArrangement = Arrangement.spacedBy(if (compactNavigation) 2.dp else 4.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         AppDestination.entries.forEach { destination ->
@@ -252,30 +260,35 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                                             else Color.Transparent,
                                                     )
                                                     .clickable { navigateTo(destination) }
-                                                    .padding(horizontal = 2.dp, vertical = 8.dp),
+                                                    .heightIn(min = if (compactNavigation) 58.dp else 62.dp)
+                                                    .padding(
+                                                        horizontal = if (compactNavigation) 1.dp else 2.dp,
+                                                        vertical = if (compactNavigation) 6.dp else 8.dp,
+                                                    ),
                                                 contentAlignment = Alignment.Center,
                                             ) {
                                                 Column(
                                                     horizontalAlignment = Alignment.CenterHorizontally,
-                                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(if (compactNavigation) 2.dp else 4.dp),
                                                 ) {
                                                     Icon(
                                                         destination.icon,
                                                         contentDescription = stringResource(destination.labelRes),
-                                                        modifier = Modifier.size(22.dp),
+                                                        modifier = Modifier.size(if (compactNavigation) 20.dp else 22.dp),
                                                         tint = iconTint,
                                                     )
                                                     Text(
                                                         text = stringResource(destination.labelRes),
                                                         modifier = Modifier.fillMaxWidth(),
                                                         style = MaterialTheme.typography.labelSmall.copy(
-                                                            fontSize = 10.sp,
+                                                            fontSize = if (compactNavigation) 9.sp else 10.sp,
+                                                            lineHeight = if (compactNavigation) 10.sp else 11.sp,
                                                         ),
                                                         color = iconTint,
                                                         textAlign = TextAlign.Center,
-                                                        maxLines = 1,
+                                                        maxLines = if (compactNavigation) 2 else 1,
                                                         overflow = TextOverflow.Ellipsis,
-                                                        softWrap = false,
+                                                        softWrap = true,
                                                     )
                                                 }
                                             }
@@ -309,7 +322,15 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                                 selected = selected,
                                                 onClick = { navigateTo(destination) },
                                                 icon = { Icon(destination.icon, contentDescription = stringResource(destination.labelRes)) },
-                                                label = { Text(stringResource(destination.labelRes)) },
+                                                label = {
+                                                    Text(
+                                                        text = stringResource(destination.labelRes),
+                                                        textAlign = TextAlign.Center,
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        style = MaterialTheme.typography.labelSmall.copy(lineHeight = 11.sp),
+                                                    )
+                                                },
                                                 colors = NavigationRailItemDefaults.colors(
                                                     indicatorColor = AppleBlue.copy(alpha = 0.18f),
                                                     selectedIconColor = Chalk,
@@ -492,20 +513,23 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                             uiState.workspace.protocol.commandList.commands.any {
                                                 it.supported && it.name.equals("set_playtargetslot", ignoreCase = true)
                                             }
+                                    val wifiLibraryReady =
+                                        uiState.sessionState is dev.dblink.core.session.CameraSessionState.Connected &&
+                                            uiState.wifiState is dev.dblink.core.wifi.WifiConnectionState.CameraWifi
+                                    val usbLibraryReady = viewModel.isOmCaptureUsbLibraryAvailable()
                                     LaunchedEffect(
-                                        uiState.sessionState,
+                                        wifiLibraryReady,
+                                        usbLibraryReady,
                                         uiState.selectedCameraSsid,
                                         uiState.transferState.sourceCameraSsid,
                                         uiState.transferState.images.size,
                                         uiState.transferState.isLoading,
+                                        uiState.transferState.errorMessage,
                                     ) {
                                         val selectedCameraSsid = uiState.selectedCameraSsid
                                         val shouldRefreshForCamera =
                                             !selectedCameraSsid.isNullOrBlank() &&
                                                 !uiState.transferState.sourceCameraSsid.equals(selectedCameraSsid, ignoreCase = true)
-                                        val wifiLibraryReady =
-                                            uiState.sessionState is dev.dblink.core.session.CameraSessionState.Connected
-                                        val usbLibraryReady = viewModel.isOmCaptureUsbLibraryAvailable()
                                         val shouldRefreshForWifiSource =
                                             wifiLibraryReady &&
                                                 (
@@ -515,9 +539,14 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                         val shouldRefreshForUsbSource =
                                             usbLibraryReady &&
                                                 uiState.transferState.sourceKind != TransferSourceKind.OmCaptureUsb
+                                        val canAutoRefreshAfterError =
+                                            uiState.transferState.errorMessage == null ||
+                                                shouldRefreshForWifiSource ||
+                                                shouldRefreshForUsbSource
                                         if (
                                             (wifiLibraryReady || usbLibraryReady) &&
                                             !uiState.transferState.isLoading &&
+                                            canAutoRefreshAfterError &&
                                             (
                                                 uiState.transferState.images.isEmpty() ||
                                                     shouldRefreshForWifiSource ||
@@ -529,7 +558,9 @@ fun DbLinkApp(viewModel: MainViewModel = viewModel(), onExportLogs: () -> Unit) 
                                     }
                                     TransferScreen(
                                         transferState = uiState.transferState,
+                                        autoLoadImages = wifiLibraryReady || usbLibraryReady,
                                         onLoadImages = viewModel::loadCameraImages,
+                                        onStartHighSpeedWifiTransfer = viewModel::loadHighSpeedWifiTransferImages,
                                         onDownloadImage = viewModel::downloadImage,
                                         onCancelDownload = viewModel::cancelBackgroundDownload,
                                         onDeleteImage = viewModel::deleteImage,

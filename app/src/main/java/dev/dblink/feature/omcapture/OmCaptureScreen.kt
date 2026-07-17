@@ -36,6 +36,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.dblink.core.model.ActivePropertyPicker
 import dev.dblink.core.model.CameraExposureMode
 import dev.dblink.core.model.DriveMode
@@ -341,8 +342,9 @@ private fun UsbPropertyRow(
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                             style = MaterialTheme.typography.bodySmall,
                             color = if (selected) Color.White else Chalk.copy(alpha = 0.8f),
-                            maxLines = 1,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
+                            lineHeight = 14.sp,
                         )
                     }
                 }

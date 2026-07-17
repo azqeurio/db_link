@@ -23,7 +23,7 @@ The goal is to make the main OI.Share workflows available with a more stable imp
 
 ## Compatibility
 
-Android 14+ is supported. The app is currently validated on OM-1; other camera bodies are listed by expected protocol support and still need device-backed testing.
+Android 12+ is supported. The app is currently validated on OM-1; other camera bodies are listed by expected protocol support and still need device-backed testing.
 
 Legend:
 
@@ -62,7 +62,7 @@ Legend:
 
 ## Notes
 
-- Android 14+ is supported
+- Android 12+ is supported
 - development and testing are currently based on an OM-1 camera
 - behavior on other camera bodies and firmware versions is not guaranteed
 - camera compatibility depends on the protocol features exposed by the device
@@ -76,4 +76,3 @@ Legend:
 
 ## support
 https://buymeacoffee.com/modang
-

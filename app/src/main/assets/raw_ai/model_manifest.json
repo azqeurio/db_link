@@ -1,26 +1,36 @@
 {
-  "contract_version": 2,
-  "model_name": "raw_denoise",
+  "contract_version": 3,
   "runtime_api": "tflite_interpreter_reference",
   "model_domain": "rawforge_bayer_to_linear_rec2020_rgb",
+  "preprocess_contract": "rawforge-bayer-rec2020-malvar-v1",
   "production_enabled": false,
+  "automatic_model_selection": false,
+  "silent_model_fallback": false,
   "validated_backends": ["CPU_FP32"],
   "model_files": {
-    "cpu_reference": {
-      "path": "model_fp32.tflite",
-      "sha256": "0efe3fd811cb8691e6347021fbb147fd81282952145274460d1238da58715806",
-      "runtime_status": "VALIDATED_ANDROID_CPU_FP32"
+    "standard": {
+      "id": "RAWFORGE_STANDARD_FP32",
+      "display_label": "High Quality",
+      "path": "rawforge_standard_fp32.tflite",
+      "sha256": "918865821c35f7404c9fca8cb6cfb51360a210fb1b46f2ab4ad7ab3328434540",
+      "source_checkpoint": "ShadowWeightedL1.pt",
+      "source_checkpoint_sha256": "eb65f9703aef24f2bf35082a93e8caafd38d0953a2e6557e7c37b77d483fca05",
+      "runtime_status": "VALIDATED_DESKTOP_CPU_FP32",
+      "tensor_indices": {"input": 1, "cond": 0, "output": 619}
     },
-    "accelerated": {
-      "path": "model_fp16.tflite",
-      "sha256": "03842593e1295f94e44d3cab6bc3f7fae2022941f0659d54233114398d1376b3",
-      "runtime_status": "UNSUPPORTED_CURRENT_CPU_RUNTIME",
-      "production_eligible": false
+    "superlight": {
+      "id": "RAWFORGE_SUPERLIGHT_FP32",
+      "display_label": "Fast",
+      "path": "rawforge_superlight_fp32.tflite",
+      "sha256": "0efe3fd811cb8691e6347021fbb147fd81282952145274460d1238da58715806",
+      "source_checkpoint": "ShadowWeightedL1_super_light.pt",
+      "source_checkpoint_sha256": "e05e460e02fbeb745ab2984edf4f4898c5035f6a475183be4ee16f52226b45b1",
+      "runtime_status": "VALIDATED_ANDROID_CPU_FP32",
+      "tensor_indices": {"input": 0, "cond": 3, "output": 902}
     }
   },
   "image_input": {
     "tensor_name": "input",
-    "tensor_index": 0,
     "shape": [1, 256, 256, 3],
     "layout": "NHWC",
     "dtype": "float32",
@@ -28,17 +38,15 @@
   },
   "condition_input": {
     "tensor_name": "cond",
-    "tensor_index": 3,
     "shape": [1, 1],
     "dtype": "float32",
     "formula": "min(iso,65535)/6400",
     "oracle_value": 0.0,
-    "clamp": false,
+    "clamp": true,
     "range": [0.0, 10.23984375]
   },
   "image_output": {
     "tensor_name": "output",
-    "tensor_index": 902,
     "shape": [1, 3, 256, 256],
     "layout": "NCHW",
     "dtype": "float32",
@@ -66,9 +74,5 @@
     "padding": "REPLICATE",
     "weight_window": "SEPARABLE_SMOOTHSTEP"
   },
-  "backend_order": [
-    "QUALCOMM_NPU",
-    "GPU",
-    "CPU"
-  ]
+  "backend_order": ["CPU"]
 }

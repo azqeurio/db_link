@@ -1,6 +1,7 @@
 package dev.dblink.core.rawai
 
 data class RawAiRequest(
+    val modelId: RawAiModelId,
     val inputPath: String,
     val outputPath: String,
     val width: Int,

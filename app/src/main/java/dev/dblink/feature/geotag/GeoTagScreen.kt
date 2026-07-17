@@ -59,6 +59,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.google.android.gms.maps.GoogleMap as GoogleMapSdk
 import com.google.android.gms.maps.MapsInitializer
@@ -663,8 +664,9 @@ private fun GeoActionButton(
             Text(
                 text = label,
                 fontWeight = FontWeight.Bold,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
+                lineHeight = 15.sp,
                 textAlign = TextAlign.Center,
             )
         }

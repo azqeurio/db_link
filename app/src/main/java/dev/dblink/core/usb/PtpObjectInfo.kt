@@ -60,6 +60,14 @@ data class PtpObjectInfo(
     val isImportableImage: Boolean
         get() = !isDirectory && (isJpeg || isRaw)
 
+    val rating: Int? by lazy(LazyThreadSafetyMode.NONE) {
+        parseRatingMetadata(keywords)
+    }
+
+    val isCameraSelected: Boolean by lazy(LazyThreadSafetyMode.NONE) {
+        parseCameraSelectionMetadata(keywords)
+    }
+
     /** Uppercased file stem for JPEG/RAW pairing. */
     val normalizedBaseName: String by lazy(LazyThreadSafetyMode.NONE) {
         filename
@@ -92,6 +100,8 @@ data class PtpObjectInfo(
         /** Known RAW file extensions for Olympus/OM System cameras. */
         private val RAW_EXTENSIONS = setOf("ORF", "ORI")
         private val CAPTURE_INDEX_REGEX = Regex("(\\d{4,})$")
+        private val RATING_PATTERN = Regex("""(?:rating|stars?|rank)\D*([0-5])""", RegexOption.IGNORE_CASE)
+        private val TRAILING_RATING_PATTERN = Regex("""\b([0-5])\s*(?:stars?|rating)\b""", RegexOption.IGNORE_CASE)
 
         private val timestampPatterns = listOf(
             "yyyyMMdd'T'HHmmss",
@@ -159,6 +169,52 @@ data class PtpObjectInfo(
                     }.parse(value)?.time
                 }.getOrNull()
             }
+        }
+
+        fun parseRatingMetadata(rawValue: String): Int? {
+            if (rawValue.isBlank()) return null
+            val compact = rawValue
+                .lowercase(Locale.US)
+                .replace(Regex("[\\s_:\\-=]+"), "")
+            if ("5star" in compact || "star5" in compact || "rating5" in compact) {
+                return 5
+            }
+            val directMatch = RATING_PATTERN
+                .find(rawValue)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+            if (directMatch != null) {
+                return directMatch.coerceIn(0, 5)
+            }
+            return TRAILING_RATING_PATTERN
+                .find(rawValue)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+                ?.coerceIn(0, 5)
+        }
+
+        fun parseCameraSelectionMetadata(rawValue: String): Boolean {
+            if (rawValue.isBlank()) return false
+            val normalized = rawValue.lowercase(Locale.US)
+            val compact = normalized.replace(Regex("[\\s_:\\-=]+"), "")
+            return listOf(
+                "selected",
+                "selection",
+                "picked",
+                "pick",
+                "favorite",
+                "favourite",
+                "share order",
+                "share-order",
+                "share_order",
+                "sharemark",
+                "share mark",
+                "share",
+            ).any { token -> token in normalized } ||
+                "shareorder" in compact ||
+                "sharemark" in compact
         }
 
         private fun readPtpString(buf: ByteBuffer): String {

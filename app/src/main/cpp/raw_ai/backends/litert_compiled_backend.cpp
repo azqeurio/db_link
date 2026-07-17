@@ -4,6 +4,18 @@
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/delegates/gpu/delegate.h"
 #include <chrono>
+#include <cstring>
+
+namespace {
+bool hasShape(const TfLiteTensor* tensor, std::initializer_list<int> expected) {
+    if (!tensor || !tensor->dims || tensor->dims->size != static_cast<int>(expected.size())) return false;
+    int position = 0;
+    for (int value : expected) {
+        if (tensor->dims->data[position++] != value) return false;
+    }
+    return true;
+}
+}
 
 LiteRtCompiledBackend::LiteRtCompiledBackend(BackendType type) : type_(type) {
     worker_.start();
@@ -124,24 +136,36 @@ bool LiteRtCompiledBackend::initializeOnWorker(
         return false;
     }
 
-    // 5. Check layout constraints
-    int inputIdx = config_.imageInput.index;
-    TfLiteTensor* inputTensor = interpreter_->tensor(inputIdx);
-    if (!inputTensor) {
-        if (error) *error = "Input tensor not found at index";
+    // 5. Resolve the stable public contract by name. Tensor indices differ by model graph.
+    for (int index : interpreter_->inputs()) {
+        const TfLiteTensor* tensor = interpreter_->tensor(index);
+        if (tensor && tensor->name && std::strcmp(tensor->name, "input") == 0) imageInputIndex_ = index;
+        if (tensor && tensor->name && std::strcmp(tensor->name, "cond") == 0) conditionInputIndex_ = index;
+    }
+    for (int index : interpreter_->outputs()) {
+        const TfLiteTensor* tensor = interpreter_->tensor(index);
+        if (tensor && tensor->name && std::strcmp(tensor->name, "output") == 0) imageOutputIndex_ = index;
+    }
+    const TfLiteTensor* inputTensor = interpreter_->tensor(imageInputIndex_);
+    const TfLiteTensor* conditionTensor = interpreter_->tensor(conditionInputIndex_);
+    const TfLiteTensor* outputTensor = interpreter_->tensor(imageOutputIndex_);
+    if (!hasShape(inputTensor, {1, 256, 256, 3}) || inputTensor->type != kTfLiteFloat32 ||
+        !hasShape(conditionTensor, {1, 1}) || conditionTensor->type != kTfLiteFloat32 ||
+        !hasShape(outputTensor, {1, 3, 256, 256}) || outputTensor->type != kTfLiteFloat32) {
+        if (error) *error = "Model tensor contract mismatch: expected input NHWC float32, cond float32, output NCHW float32";
         return false;
     }
 
     // 6. Warmup Run (3 iterations)
     for (int i = 0; i < 3; ++i) {
         // Zero out inputs for warmup safely
-        float* inputData = interpreter_->typed_tensor<float>(inputIdx);
+        float* inputData = interpreter_->typed_tensor<float>(imageInputIndex_);
         if (inputData) {
             size_t bytes = inputTensor->bytes;
             std::memset(inputData, 0, bytes);
         }
 
-        float* condData = interpreter_->typed_tensor<float>(config_.conditionInput.index);
+        float* condData = interpreter_->typed_tensor<float>(conditionInputIndex_);
         if (condData) {
             *condData = 0.0f;
         }
@@ -185,7 +209,7 @@ bool LiteRtCompiledBackend::runOnWorker(
     auto startCopyIn = std::chrono::high_resolution_clock::now();
 
     // 1. Copy Image Input Data
-    int inputIdx = config_.imageInput.index;
+    int inputIdx = imageInputIndex_;
     float* inputTensorData = interpreter_->typed_tensor<float>(inputIdx);
     if (!inputTensorData) {
         if (error) *error = "Input tensor pointer is null";
@@ -201,7 +225,7 @@ bool LiteRtCompiledBackend::runOnWorker(
     std::copy(imageInput.begin(), imageInput.begin() + inputSizeElements, inputTensorData);
 
     // 2. Copy Condition Input Data
-    int condIdx = config_.conditionInput.index;
+    int condIdx = conditionInputIndex_;
     float* condTensorData = interpreter_->typed_tensor<float>(condIdx);
     if (condTensorData && !conditionInput.empty()) {
         *condTensorData = conditionInput[0];
@@ -220,7 +244,7 @@ bool LiteRtCompiledBackend::runOnWorker(
     stats->inferenceMs = std::chrono::duration<double, std::milli>(startCopyOut - startInference).count();
 
     // 4. Copy Image Output Data
-    int outputIdx = config_.imageOutput.index;
+    int outputIdx = imageOutputIndex_;
     const float* outputTensorData = interpreter_->typed_tensor<float>(outputIdx);
     if (!outputTensorData) {
         if (error) *error = "Output tensor pointer is null";

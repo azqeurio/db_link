@@ -3,6 +3,7 @@
 #include <fstream>
 #include <chrono>
 #include <cstring>
+#include <algorithm>
 
 namespace raw_ai {
 
@@ -53,15 +54,6 @@ bool RawAiEngine::initialize(
     // 2. Override default reference path with the exact local path provided
     config_.cpuModelPath = modelPath;
 
-    // Extract base directory for the accelerated model if present
-    size_t lastSlash = modelPath.find_last_of("/\\");
-    if (lastSlash != std::string::npos && !config_.fp16ModelPath.empty()) {
-        std::string baseDir = modelPath.substr(0, lastSlash + 1);
-        config_.fp16ModelPath = baseDir + config_.fp16ModelPath;
-    } else {
-        config_.fp16ModelPath = modelPath; // fallback
-    }
-
     // 3. Define target fallback priority
     // PR 2 starts with CPU reference compilation
     BackendPolicy policy;
@@ -111,8 +103,9 @@ bool RawAiEngine::processSingleTile(
         return false;
     }
 
-    // 2. Set condition input vector (constant zero for this model)
-    std::vector<float> condData = { 0.0f };
+    // 2. Match the documented training/runtime condition contract.
+    const float boundedIso = std::min(std::max(iso, 0.0f), 65535.0f);
+    std::vector<float> condData = { boundedIso / 6400.0f };
 
     // 3. Prepare output float vector: 3x256x256 = 196608 floats
     size_t expectedOutSize = config_.imageOutput.shape[1] * config_.imageOutput.shape[2] * config_.imageOutput.shape[3];
